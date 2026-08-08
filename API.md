@@ -2907,7 +2907,10 @@ Returns all items (including unavailable) for management purposes.
         "discountedPrice": 120,
         "effectivePrice": 120,
         "prepTime": 10,
-        "ingredients": ["tomato", "cream"],
+        "ingredients": [
+          { "name": "tomato", "quantity": "500", "unit": "gm", "cost": 50 },
+          { "name": "cream", "quantity": "100", "unit": "ml", "cost": 80 }
+        ],
         "badges": ["bestseller"],
         "vegVariantId": null,
         "image": "https://...",
@@ -2939,8 +2942,8 @@ POST /api/owner/:restaurantId/menu-items
 | `sellingPrice` | number | Yes | MRP |
 | `discountedPrice` | number | No | Offer price; `effectivePrice` uses this if set |
 | `prepTime` | number | No | Minutes |
-| `ingredients` | JSON array string | No | e.g. `'["tomato","cream"]'` |
-| `badges` | JSON array string | No | e.g. `'["bestseller","highly_reordered"]'` — same encoding as `ingredients` |
+| `ingredients` | JSON array string | No | e.g. `'[{"name":"tomato","quantity":"500","unit":"gm","cost":50}]'` — see Ingredient Object Fields below |
+| `badges` | JSON array string | No | e.g. `'["bestseller","highly_reordered"]'` — array of strings |
 | `vegVariantId` | string | No | ObjectId of this item's veg substitute (e.g. a "Hyderabadi Biryani" item pointing at a "Veg Hyderabadi Biryani" item). Only meaningful on a `non_veg` item; not auto-generated — set only when a real veg alternative exists. |
 | `image` | file | No | Max 5 MB |
 
@@ -2954,6 +2957,28 @@ POST /api/owner/:restaurantId/menu-items
     "item": { ... }
   }
 }
+```
+
+**Ingredient Object Format**
+
+When sending ingredients (for both create and update), use this structure:
+
+```json
+{
+  "name": "string (required)",
+  "quantity": "string (optional, e.g., '100', '500')",
+  "unit": "string (optional, e.g., 'gm', 'ml', 'piece')",
+  "cost": "number (optional, cost in rupees)"
+}
+```
+
+**Example - Multiple Ingredients:**
+```json
+"ingredients": '[
+  { "name": "Basmati Rice", "quantity": "100", "unit": "gm", "cost": 100 },
+  { "name": "Chicken", "quantity": "300", "unit": "gm", "cost": 400 },
+  { "name": "Ghee", "quantity": "50", "unit": "ml", "cost": 150 }
+]'
 ```
 
 ---
@@ -3026,9 +3051,22 @@ PATCH /api/owner/:restaurantId/menu-items/:itemId/ingredients
 
 ```json
 {
-  "ingredients": ["tomato", "basil", "mozzarella"]
+  "ingredients": [
+    { "name": "tomato", "quantity": "500", "unit": "gm", "cost": 50 },
+    { "name": "basil", "quantity": "50", "unit": "gm", "cost": 100 },
+    { "name": "mozzarella", "quantity": "200", "unit": "gm", "cost": 300 }
+  ]
 }
 ```
+
+**Ingredient Object Fields:**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `name` | string | Yes | Ingredient name (e.g., "tomato", "basil") |
+| `quantity` | string | No | Amount (e.g., "500") |
+| `unit` | string | No | Measurement unit (e.g., "gm", "ml", "piece") |
+| `cost` | number | No | Cost per unit in rupees |
 
 **Response `200`**
 
@@ -3037,7 +3075,15 @@ PATCH /api/owner/:restaurantId/menu-items/:itemId/ingredients
   "status": "success",
   "message": "Ingredients updated",
   "data": {
-    "item": { ... }
+    "item": {
+      "_id": "664item...",
+      "name": "Tomato Basil Pizza",
+      "ingredients": [
+        { "name": "tomato", "quantity": "500", "unit": "gm", "cost": 50 },
+        { "name": "basil", "quantity": "50", "unit": "gm", "cost": 100 },
+        { "name": "mozzarella", "quantity": "200", "unit": "gm", "cost": 300 }
+      ]
+    }
   }
 }
 ```

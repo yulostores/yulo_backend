@@ -10,12 +10,21 @@ export const list = asyncHandler(async (req, res) => {
   sendSuccess(res, 200, 'Menu items', { items });
 });
 
-// Also used for `badges` — both are array fields arriving as a JSON-encoded string over
-// multipart/form-data (e.g. '["tomato","cream"]'), same as the rest of this form.
+// Parse JSON-encoded array fields from multipart/form-data
 const parseArrayField = (raw) => {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw;
   try { return JSON.parse(raw); } catch { return [raw]; }
+};
+
+// Clean ingredient data by removing auto-generated _id fields from subdocuments
+const cleanIngredients = (ingredients) => {
+  if (!Array.isArray(ingredients)) return ingredients;
+  return ingredients.map(ing => {
+    const cleaned = { ...ing };
+    delete cleaned._id; // Remove MongoDB-generated or user-sent _id
+    return cleaned;
+  });
 };
 
 export const create = asyncHandler(async (req, res) => {
@@ -32,7 +41,7 @@ export const create = asyncHandler(async (req, res) => {
     sellingPrice: Number(sellingPrice),
     discountedPrice: discountedPrice != null ? Number(discountedPrice) : null,
     prepTime: prepTime != null ? Number(prepTime) : undefined,
-    ingredients: parseArrayField(ingredients),
+    ingredients: cleanIngredients(parseArrayField(ingredients)),
     badges: parseArrayField(badges),
     vegVariantId: vegVariantId || null,
   };
@@ -84,7 +93,7 @@ export const update = asyncHandler(async (req, res) => {
   if (updates.sellingPrice != null) updates.sellingPrice = Number(updates.sellingPrice);
   if (updates.discountedPrice != null) updates.discountedPrice = Number(updates.discountedPrice);
   if (updates.prepTime != null) updates.prepTime = Number(updates.prepTime);
-  if (updates.ingredients != null) updates.ingredients = parseArrayField(updates.ingredients);
+  if (updates.ingredients != null) updates.ingredients = cleanIngredients(parseArrayField(updates.ingredients));
   if (updates.badges != null) updates.badges = parseArrayField(updates.badges);
   if (updates.vegVariantId === '') updates.vegVariantId = null;
   let uploadedPublicId;
@@ -146,7 +155,12 @@ export const toggle = asyncHandler(async (req, res) => {
 });
 
 export const updateIngredients = asyncHandler(async (req, res) => {
-  const { ingredients } = req.body;
+  let { ingredients } = req.body;
+
+  if (ingredients != null) {
+    ingredients = cleanIngredients(parseArrayField(ingredients));
+  }
+
   const item = await MenuItem.findOneAndUpdate(
     { _id: req.params.itemId, restaurantId: req.restaurant._id },
     { $set: { ingredients } },

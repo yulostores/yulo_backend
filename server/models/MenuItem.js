@@ -1,5 +1,15 @@
 import mongoose from 'mongoose';
 
+const ingredientSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, trim: true },
+    quantity: { type: String },
+    unit: { type: String },
+    cost: { type: Number, min: 0 },
+  },
+  { _id: false }
+);
+
 const menuItemSchema = new mongoose.Schema(
   {
     restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Restaurant', required: true },
@@ -12,19 +22,9 @@ const menuItemSchema = new mongoose.Schema(
     foodType: { type: String, enum: ['veg', 'non_veg', 'egg'], required: true },
     sellingPrice: { type: Number, required: true, min: 0 },
     discountedPrice: { type: Number, default: null },
-    ingredients: [String],
+    ingredients: [ingredientSchema],
     isAvailable: { type: Boolean, default: true },
-    // Free-form tags for menu/search cards (e.g. "bestseller", "highly_reordered") —
-    // no dedicated boolean existed to replace; populated once search/home (prompts 7-8)
-    // have something to put here.
     badges: [String],
-    // Points from a non-veg item to its veg substitute (e.g. "Hyderabadi Biryani" ->
-    // "Veg Hyderabadi Biryani"), so veg-mode menu serving can swap one for the other at
-    // the same catalog position instead of just hiding the non-veg item. Opt-in per pair,
-    // set by the owner only when a real veg alternative exists — never auto-generated.
-    // Deliberately not restaurant-scoped or existence-checked at this layer (see the
-    // owner menu-item controller) — the same way categoryId/subCategoryId aren't either;
-    // the actual substitution *lookup* is prompt 8's job, not this one.
     vegVariantId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem', default: null },
   },
   { timestamps: true }

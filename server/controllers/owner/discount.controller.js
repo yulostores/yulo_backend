@@ -42,6 +42,10 @@ const validate = (body) => {
 };
 
 export const list = asyncHandler(async (req, res) => {
+  if (!req.restaurant) {
+    throw new ApiError(403, 'FORBIDDEN', 'Restaurant not found or access denied');
+  }
+
   const discounts = await Discount.find({ restaurantId: req.restaurant._id }).lean();
   sendSuccess(res, 200, 'Discounts', { discounts });
 });
