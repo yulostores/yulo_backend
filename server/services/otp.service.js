@@ -37,7 +37,7 @@ export const requestOtp = async (phone) => {
   }
 
   // TODO: send `code` via a real SMS provider here once one is integrated.
-  return { phone };
+  return { phone, devOtp: code };
 };
 
 export const verifyOtp = async (phone, code) => {
