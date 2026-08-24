@@ -4,6 +4,7 @@ import { redis } from '../config/redis.js';
 import { env } from '../config/env.js';
 import logger from '../utils/logger.js';
 import { ApiError } from '../utils/ApiError.js';
+import * as messageCentralService from './messageCentral.service.js';
 
 const OTP_TTL_SECONDS = 5 * 60;
 const REQUEST_WINDOW_SECONDS = 10 * 60;
@@ -15,9 +16,9 @@ const otpRequestCountKey = (phone) => `otp:reqcount:${phone}`;
 
 const generateSixDigitCode = () => String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
 
-// No SMS provider exists anywhere in this codebase (no Twilio/MSG91/etc in package.json). This
-// module is the seam where a real provider call replaces the dev-mode log/return below, without
-// changing the requestOtp/verifyOtp contract the controller depends on.
+// SMS_PROVIDER=mock (dev default) generates and hashes the code locally, same as before
+// messageCentral.service.js existed. SMS_PROVIDER=messagecentral delegates OTP generation and
+// delivery to MessageCentral and stores its verificationId instead of a local hash.
 export const requestOtp = async (phone) => {
   const requestCount = await redis.incr(otpRequestCountKey(phone));
   if (requestCount === 1) {
@@ -25,6 +26,17 @@ export const requestOtp = async (phone) => {
   }
   if (requestCount > MAX_REQUESTS_PER_WINDOW) {
     throw new ApiError(429, 'RATE_LIMITED', 'Too many OTP requests — try again later');
+  }
+
+  if (env.SMS_PROVIDER === 'messagecentral') {
+    const verificationId = await messageCentralService.sendSms(phone);
+    await redis.set(
+      otpKey(phone),
+      JSON.stringify({ verificationId, attempts: 0 }),
+      'EX',
+      OTP_TTL_SECONDS
+    );
+    return { phone };
   }
 
   const code = generateSixDigitCode();
@@ -36,8 +48,7 @@ export const requestOtp = async (phone) => {
     return { phone, devOtp: code };
   }
 
-  // TODO: send `code` via a real SMS provider here once one is integrated.
-  return { phone, devOtp: code };
+  return { phone };
 };
 
 export const verifyOtp = async (phone, code) => {
@@ -52,7 +63,10 @@ export const verifyOtp = async (phone, code) => {
     throw new ApiError(400, 'OTP_LOCKED', 'Too many incorrect attempts — request a new OTP');
   }
 
-  const valid = await argon2.verify(entry.hash, code);
+  const valid = entry.verificationId
+    ? await messageCentralService.validateSms(entry.verificationId, code)
+    : await argon2.verify(entry.hash, code);
+
   if (!valid) {
     entry.attempts += 1;
     if (entry.attempts >= MAX_VERIFY_ATTEMPTS) {

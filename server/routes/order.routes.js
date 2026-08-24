@@ -5,6 +5,7 @@ import {
   createOrder,
   checkout,
   verifyPayment,
+  simulatePayment,
   listOrders,
   getOrder,
   getTracking,
@@ -21,6 +22,7 @@ router.use(authenticate, authorizeRole('customer'));
 router.post('/', createOrder);
 router.post('/checkout', checkout);
 router.post('/:id/payment/verify', verifyPayment);
+router.post('/:id/payment/simulate', simulatePayment);
 router.get('/', listOrders);
 router.get('/:id', getOrder);
 router.get('/:id/tracking', getTracking);

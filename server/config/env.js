@@ -32,6 +32,11 @@ const schema = z.object({
   DELIVERY_PARTNER_PER_KM_RATE: z.coerce.number().default(5),
   CART_PLATFORM_FEE: z.coerce.number().default(6),
   CART_TAX_PERCENT: z.coerce.number().default(5),
+  MESSAGECENTRAL_CUSTOMER_ID: z.string().optional(),
+  MESSAGECENTRAL_KEY: z.string().optional(),
+  MESSAGECENTRAL_EMAIL: z.string().email().optional(),
+  MESSAGECENTRAL_BASE_URL: z.string().url().default('https://cpaas.messagecentral.com'),
+  SMS_PROVIDER: z.enum(['mock', 'messagecentral']).default('mock'),
 });
 
 const result = schema.safeParse(process.env);
