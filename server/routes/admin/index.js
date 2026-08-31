@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate.js';
 import { authorizeRole } from '../../middleware/authorizeRole.js';
+import adminAuthRoutes from './auth.routes.js';
 import storeRoutes from './store.routes.js';
 import customerRoutes from './customer.routes.js';
 import deliveryPartnerRoutes from './deliveryPartner.routes.js';
@@ -11,6 +12,10 @@ import financeRoutes from './finance.routes.js';
 import orderRoutes from './order.routes.js';
 
 const router = Router();
+
+// Admin login — no auth required, kept separate from /api/auth/* so the admin portal
+// has its own entry point (mirrors /api/staff/auth and /api/partner/auth).
+router.use('/auth', adminAuthRoutes);
 
 router.use(authenticate, authorizeRole('admin'));
 

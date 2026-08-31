@@ -15,13 +15,15 @@ const REFRESH_COOKIE_OPTS = {
 };
 
 export const signup = asyncHandler(async (req, res) => {
-  const { name, email, password, role } = req.body;
+  const { name, email, password } = req.body;
 
   const existing = await User.findOne({ email });
   if (existing) throw new ApiError(409, 'DUPLICATE_KEY', 'email already exists');
 
   const passwordHash = await authService.hashPassword(password);
-  const user = await User.create({ name, email, passwordHash, role: role || 'customer' });
+  // This endpoint only ever creates customers — restaurant owners sign up at
+  // /api/owner/auth/signup, admins are provisioned separately (see seedSuperAdmin.js).
+  const user = await User.create({ name, email, passwordHash, role: 'customer' });
 
   const { accessToken, refreshToken } = authService.generateTokens(user._id, user.role);
   res.cookie('refreshToken', refreshToken, REFRESH_COOKIE_OPTS);
@@ -32,7 +34,9 @@ export const signup = asyncHandler(async (req, res) => {
 export const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
 
-  const user = await User.findOne({ email });
+  // This endpoint is customer-only — owners log in at /api/owner/auth/login and admins
+  // at /api/admin/auth/login, so a non-customer account never mints a token here.
+  const user = await User.findOne({ email, role: 'customer' });
   if (!user || !user.isActive) {
     throw new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid email or password');
   }
