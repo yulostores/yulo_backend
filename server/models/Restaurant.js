@@ -57,6 +57,14 @@ const restaurantSchema = new mongoose.Schema(
       state: { type: String },
       pincode: { type: String },
     },
+    // Public contact details for the storefront — distinct from the owner's own
+    // User.email / User.phone, which are login credentials and must not be shown to
+    // customers. A restaurant's published address book lives here so it can be edited
+    // (and displayed) without touching the owner account.
+    email: { type: String, lowercase: true, trim: true },
+    phone: { type: String, trim: true },
+    website: { type: String, trim: true },
+    establishedYear: { type: Number, min: 1800 },
     location: {
       type: { type: String, enum: ['Point'], default: 'Point' },
       coordinates: { type: [Number], required: true },

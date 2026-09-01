@@ -28,4 +28,12 @@ export const deleteImage = async (publicId) => {
   await cloudinary.uploader.destroy(publicId);
 };
 
+// Recover the public id from a stored secure URL, for deleting an asset we only kept the
+// URL of. Cloudinary URLs look like
+// https://res.cloudinary.com/<cloud>/image/upload/v1712345678/<folder>/<name>.jpg
+// with the version segment optional; the public id is everything after it, extension
+// stripped. Returns null for anything that isn't a Cloudinary upload URL.
+export const extractPublicId = (url) =>
+  (typeof url === 'string' ? url.match(/\/upload\/(?:v\d+\/)?(.+)\.[^.]+$/)?.[1] : null) ?? null;
+
 export { cloudinary };

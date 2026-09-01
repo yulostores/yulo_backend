@@ -6,15 +6,15 @@ Frontend integration guide for all REST endpoints and WebSocket events.
 
 ## Table of Contents
 
-1. [Base URL & Transport](#base-url--transport)
-2. [Authentication](#authentication)
-3. [Response Envelope](#response-envelope)
-4. [Error Codes](#error-codes)
-5. [Rate Limiting](#rate-limiting)
-6. [Public — Auth](#public--auth)
-7. [Public — Restaurants](#public--restaurants)
-8. [Customer — Profile](#customer--profile)
-9. [Customer — Orders](#customer--orders)
+ 1. [Base URL & Transport](#base-url--transport)
+ 2. [Authentication](#authentication)
+ 3. [Response Envelope](#response-envelope)
+ 4. [Error Codes](#error-codes)
+ 5. [Rate Limiting](#rate-limiting)
+ 6. [Public — Auth](#public--auth)
+ 7. [Public — Restaurants](#public--restaurants)
+ 8. [Customer — Profile](#customer--profile)
+ 9. [Customer — Orders](#customer--orders)
 10. [Customer — Reviews](#customer--reviews)
 11. [Owner — Authentication](#owner--authentication)
 12. [Owner — Restaurant Management](#owner--restaurant-management)
@@ -50,13 +50,10 @@ All request and response bodies are `application/json` unless the endpoint accep
 
 ## Authentication
 
-Each portal has its own login endpoint — a token minted by one portal's login is only ever
-usable for that portal's role, and each login endpoint only accepts credentials for its own
-role (e.g. an admin account gets `401 INVALID_CREDENTIALS` at `/api/owner/auth/login`, not just
-a wrong-role error — the account is treated as if it doesn't exist there).
+Each portal has its own login endpoint — a token minted by one portal's login is only ever usable for that portal's role, and each login endpoint only accepts credentials for its own role (e.g. an admin account gets `401 INVALID_CREDENTIALS` at `/api/owner/auth/login`, not just a wrong-role error — the account is treated as if it doesn't exist there).
 
 | Portal | Login endpoint | Role |
-|--------|----------------|------|
+| --- | --- | --- |
 | Customer | `POST /api/auth/login` | `customer` |
 | Restaurant Owner | `POST /api/owner/auth/login` | `restaurant_owner` |
 | Super Admin | `POST /api/admin/auth/login` | `admin` |
@@ -66,7 +63,7 @@ a wrong-role error — the account is treated as if it doesn't exist there).
 Each of the three login endpoints above issues the same shape of token pair:
 
 | Token | Where sent | Lifetime |
-|-------|-----------|---------|
+| --- | --- | --- |
 | `accessToken` | `Authorization: Bearer <token>` header | 15 min |
 | `refreshToken` | `Set-Cookie: refreshToken=...; HttpOnly; SameSite=Strict` | 7 days |
 
@@ -76,8 +73,7 @@ Include the access token on every protected request:
 Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
-`POST /api/auth/refresh` and `POST /api/auth/logout` are shared across all three roles — they
-key off the `refreshToken` cookie / access token itself, not off which login endpoint was used.
+`POST /api/auth/refresh` and `POST /api/auth/logout` are shared across all three roles — they key off the `refreshToken` cookie / access token itself, not off which login endpoint was used.
 
 ### Staff token
 
@@ -142,7 +138,7 @@ The `restaurantId` in the URL must match the staff member's assigned restaurant,
 ## Error Codes
 
 | HTTP | Code | Meaning |
-|------|------|---------|
+| --- | --- | --- |
 | 400 | `VALIDATION_ERROR` | Request body failed schema validation — check `details` |
 | 400 | `INVALID_TRANSITION` | Kitchen status change is not allowed from `currentStatus` to `newStatus` |
 | 400 | `ORDER_ITEM_UNAVAILABLE` | One or more cart items are currently unavailable |
@@ -165,13 +161,16 @@ The `restaurantId` in the URL must match the staff member's assigned restaurant,
 | 500 | `INTERNAL_ERROR` | Unexpected server error |
 | 502 | `SMS_PROVIDER_ERROR` | The SMS provider failed to send or validate the OTP |
 | 500 | `UPLOAD_FAILED` | Cloudinary upload failed |
+| 400 | `INVALID_FILE_TYPE` | Uploaded file is not one of the accepted image types |
+| 400 | `LIMIT_FILE_SIZE` | Uploaded file exceeds the endpoint's size limit — `details.field` names the input |
+| 400 | `LIMIT_UNEXPECTED_FILE` | A file was sent under a field name the endpoint doesn't accept |
 
 ---
 
 ## Rate Limiting
 
 | Scope | Limit |
-|-------|-------|
+| --- | --- |
 | Auth endpoints (`/api/auth/*`, `/api/owner/auth/*`, `/api/admin/auth/*`, `/api/staff/auth/*`) | 10 requests / 15 min per IP |
 | All other `/api/*` endpoints | 100 requests / 15 min per IP |
 
@@ -181,8 +180,7 @@ Exceeded limits return `429` with `Retry-After` header.
 
 ## Public — Auth
 
-Customer-only. Restaurant owners sign up at [`POST /api/owner/auth/signup`](#owner--authentication)
-instead — admins have no public signup endpoint at all (see [Admin — Authentication](#admin)).
+Customer-only. Restaurant owners sign up at `POST /api/owner/auth/signup`instead — admins have no public signup endpoint at all (see [Admin — Authentication](#admin)).
 
 ### Sign Up
 
@@ -203,15 +201,14 @@ POST /api/auth/signup
 ```
 
 | Field | Type | Required | Notes |
-|-------|------|----------|-------|
+| --- | --- | --- | --- |
 | `name` | string | Yes | Min 2 chars |
 | `email` | string | Yes | Valid email |
 | `password` | string | Yes | Min 8 chars |
 
-Always creates a `customer` account — there is no `role` field here anymore. This keeps the
-customer portal from ever being able to mint a `restaurant_owner` or `admin` account.
+Always creates a `customer` account — there is no `role` field here anymore. This keeps the customer portal from ever being able to mint a `restaurant_owner` or `admin` account.
 
-**Response `201`**
+**Response** `201`
 
 ```json
 {
@@ -239,9 +236,7 @@ A `refreshToken` cookie is also set automatically.
 POST /api/auth/login
 ```
 
-**No auth required.** Customer accounts only — a `restaurant_owner` or `admin` email/password
-gets `401 INVALID_CREDENTIALS` here (not a role error) even if the password is correct; use
-that role's own login endpoint instead.
+**No auth required.** Customer accounts only — a `restaurant_owner` or `admin` email/password gets `401 INVALID_CREDENTIALS` here (not a role error) even if the password is correct; use that role's own login endpoint instead.
 
 **Body**
 
@@ -252,7 +247,7 @@ that role's own login endpoint instead.
 }
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -291,10 +286,10 @@ POST /api/auth/customer/otp/send
 ```
 
 | Field | Type | Required | Notes |
-|-------|------|----------|-------|
+| --- | --- | --- | --- |
 | `phone` | string | Yes | 10-digit phone number |
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -306,9 +301,7 @@ POST /api/auth/customer/otp/send
 }
 ```
 
-Outside production (`NODE_ENV !== 'production'`), `data` also includes a `devOtp` field with the
-generated code, since no real SMS is sent in that mode. In production this field is always
-absent — the OTP is delivered via SMS through MessageCentral.
+Outside production (`NODE_ENV !== 'production'`), `data` also includes a `devOtp` field with the generated code, since no real SMS is sent in that mode. In production this field is always absent — the OTP is delivered via SMS through MessageCentral.
 
 ---
 
@@ -331,12 +324,12 @@ POST /api/auth/customer/otp/verify
 ```
 
 | Field | Type | Required | Notes |
-|-------|------|----------|-------|
+| --- | --- | --- | --- |
 | `phone` | string | Yes | 10-digit phone number |
 | `code` | string | Yes | 6-digit OTP |
 | `tosAccepted` | boolean | Yes | Must be `true` |
 
-**Response `200` / `201`**
+**Response** `200` **/** `201`
 
 ```json
 {
@@ -354,9 +347,7 @@ POST /api/auth/customer/otp/verify
 }
 ```
 
-`201` + `"Account created"` + `isNewUser: true` on first verification for a phone number that has
-no existing account; `200` + `"Login successful"` + `isNewUser: false` otherwise. A `refreshToken`
-HttpOnly cookie is also set.
+`201` + `"Account created"` + `isNewUser: true` on first verification for a phone number that has no existing account; `200` + `"Login successful"` + `isNewUser: false` otherwise. A `refreshToken`HttpOnly cookie is also set.
 
 ---
 
@@ -370,7 +361,7 @@ POST /api/auth/refresh
 
 **Body** — none
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -396,7 +387,7 @@ POST /api/auth/logout
 
 **Body** — none
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -423,7 +414,7 @@ GET /api/restaurants
 **Query parameters**
 
 | Param | Type | Example | Notes |
-|-------|------|---------|-------|
+| --- | --- | --- | --- |
 | `lat` | number | `28.6139` | Required for geo-sort |
 | `lng` | number | `77.2090` | Required for geo-sort |
 | `radius` | number | `5000` | Meters, default 5000 |
@@ -431,7 +422,7 @@ GET /api/restaurants
 | `page` | number | `1` | Default 1 |
 | `limit` | number | `20` | Default 20, max 50 |
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -480,7 +471,7 @@ GET /api/restaurants/:id
 
 **No auth required.**
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -520,7 +511,7 @@ GET /api/restaurants/:id/menu
 
 **No auth required.**
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -574,11 +565,11 @@ GET /api/restaurants/:id/reviews
 **Query parameters**
 
 | Param | Type | Default |
-|-------|------|---------|
+| --- | --- | --- |
 | `page` | number | 1 |
 | `limit` | number | 20 |
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -614,7 +605,7 @@ All routes require `Authorization: Bearer <accessToken>` with role `customer` or
 GET /api/users/me
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -663,7 +654,30 @@ PATCH /api/users/me
 }
 ```
 
-**Response `200`**
+Also accepts `multipart/form-data` so a profile photo can be uploaded directly.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `name` | text | No | Min 2 characters |
+| `phone` | text | No | |
+| `avatar` | file | No | Max 2 MB, JPEG/PNG/WebP |
+| `profilePicture` | text | No | An already-hosted image URL. `avatarUrl` is an accepted alias for the same field. |
+
+An uploaded `avatar` is stored in Cloudinary under `yulostores/avatars/<userId>` and its
+secure URL written to `user.profilePicture`, overriding any `profilePicture`/`avatarUrl`
+string sent in the same request. The previous photo is deleted from Cloudinary only after
+the database write succeeds; if the write fails, the newly uploaded file is removed instead.
+
+Over multipart every field arrives as text, and blank fields are ignored rather than
+rejected — so an untouched input does not trip `name`'s minimum length.
+
+| Status | Code | When |
+|---|---|---|
+| 400 | `INVALID_FILE_TYPE` | `avatar` is not JPEG, PNG or WebP |
+| 400 | `LIMIT_FILE_SIZE` | `avatar` exceeds 2 MB (`details.field` names the input) |
+| 500 | `UPLOAD_FAILED` | Cloudinary upload failed |
+
+**Response** `200`
 
 ```json
 {
@@ -698,7 +712,7 @@ POST /api/users/me/addresses
 
 `label` accepts any string (e.g. `"Home"`, `"Office"`, `"Parents' Place"`). Defaults to `"home"` if omitted.
 
-**Response `201`**
+**Response** `201`
 
 ```json
 {
@@ -718,7 +732,7 @@ POST /api/users/me/addresses
 DELETE /api/users/me/addresses/:addrId
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -743,7 +757,7 @@ POST /api/orders
 **Headers**
 
 | Header | Required | Notes |
-|--------|----------|-------|
+| --- | --- | --- |
 | `Authorization` | Yes | Bearer token |
 | `Idempotency-Key` | Recommended | UUID v4 — prevents duplicate orders on network retry |
 
@@ -769,16 +783,16 @@ POST /api/orders
 ```
 
 | Field | Type | Required | Notes |
-|-------|------|----------|-------|
+| --- | --- | --- | --- |
 | `restaurantId` | string | Yes | MongoDB ObjectId |
 | `type` | `"delivery"` | Yes | Customer orders are always delivery |
 | `items` | array | Yes | Min 1 item |
-| `items[].menuItemId` | string | Yes | |
+| `items[].menuItemId` | string | Yes |  |
 | `items[].quantity` | number | Yes | Min 1 |
-| `deliveryAddress` | object | Yes | |
-| `specialInstructions` | string | No | |
+| `deliveryAddress` | object | Yes |  |
+| `specialInstructions` | string | No |  |
 
-**Response `201`** (or `200` if idempotency key matched)
+**Response** `201` (or `200` if idempotency key matched)
 
 ```json
 {
@@ -822,11 +836,11 @@ GET /api/orders
 **Query parameters**
 
 | Param | Type | Default |
-|-------|------|---------|
+| --- | --- | --- |
 | `page` | number | 1 |
 | `limit` | number | 20 |
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -849,7 +863,7 @@ GET /api/orders
 GET /api/orders/:id
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -889,11 +903,11 @@ POST /api/reviews/:orderId/review
 ```
 
 | Field | Type | Required | Notes |
-|-------|------|----------|-------|
+| --- | --- | --- | --- |
 | `rating` | number | Yes | 1–5 |
-| `comment` | string | No | |
+| `comment` | string | No |  |
 
-**Response `201`**
+**Response** `201`
 
 ```json
 {
@@ -919,22 +933,14 @@ Submitting a review automatically recalculates and updates the restaurant's `avg
 
 ## Owner — Authentication
 
-The owner portal has its own signup and login, separate from `/api/auth/*` — an owner account
-can never log in at the customer endpoint, and vice versa (see [Authentication](#authentication)).
+The owner portal has its own signup and login, separate from `/api/auth/*` — an owner account can never log in at the customer endpoint, and vice versa (see [Authentication](#authentication)).
 
 **The approval flow:**
 
 1. `POST /api/owner/auth/signup` — create the owner account (no approval needed for this step).
-2. `POST /api/owner/restaurants` — submit a restaurant profile. This is unrestricted too; it's
-   the application itself, created with `approvalStatus: "pending"`.
-3. An admin reviews it and calls `PATCH /api/admin/stores/:id/approve` (or `/reject`) — see
-   [Approve Store](#approve-store).
-4. Only once `approvalStatus` is `"active"` can the owner create staff
-   (`POST /api/owner/:restaurantId/staff`) or build out the menu
-   (`POST /api/owner/:restaurantId/categories`, `POST /api/owner/:restaurantId/menu-items`).
-   Before that, all three return `403 RESTAURANT_NOT_APPROVED`. Viewing/editing the restaurant's
-   own profile (`/restaurant`, `/settings`) is allowed at any approval status, so the owner can
-   finish filling out their profile while waiting on review.
+2. `POST /api/owner/restaurants` — submit a restaurant profile. This is unrestricted too; it's the application itself, created with `approvalStatus: "pending"`.
+3. An admin reviews it and calls `PATCH /api/admin/stores/:id/approve` (or `/reject`) — see [Approve Store](#approve-store).
+4. Only once `approvalStatus` is `"active"` can the owner create staff (`POST /api/owner/:restaurantId/staff`) or build out the menu (`POST /api/owner/:restaurantId/categories`, `POST /api/owner/:restaurantId/menu-items`). Before that, all three return `403 RESTAURANT_NOT_APPROVED`. Viewing/editing the restaurant's own profile (`/restaurant`, `/settings`) is allowed at any approval status, so the owner can finish filling out their profile while waiting on review.
 
 ### Sign Up
 
@@ -956,15 +962,15 @@ POST /api/owner/auth/signup
 ```
 
 | Field | Type | Required | Notes |
-|-------|------|----------|-------|
+| --- | --- | --- | --- |
 | `name` | string | Yes | Min 2 chars |
 | `email` | string | Yes | Valid email |
 | `password` | string | Yes | Min 8 chars |
-| `phone` | string | No | |
+| `phone` | string | No |  |
 
 Always creates a `restaurant_owner` account.
 
-**Response `201`**
+**Response** `201`
 
 ```json
 {
@@ -992,8 +998,7 @@ A `refreshToken` cookie is also set automatically.
 POST /api/owner/auth/login
 ```
 
-**No auth required.** Restaurant-owner accounts only — a `customer` or `admin` email/password
-gets `401 INVALID_CREDENTIALS` here, not a role error.
+**No auth required.** Restaurant-owner accounts only — a `customer` or `admin` email/password gets `401 INVALID_CREDENTIALS` here, not a role error.
 
 **Body**
 
@@ -1004,7 +1009,7 @@ gets `401 INVALID_CREDENTIALS` here, not a role error.
 }
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -1034,15 +1039,14 @@ POST /api/owner/auth/logout
 
 **Requires**: `Authorization: Bearer <accessToken>` with role `restaurant_owner`.
 
-Blacklists the access token and clears the `refreshToken` cookie. Behaves identically to
-[`POST /api/auth/logout`](#log-out) — provided here too so the owner portal is fully
-self-contained.
+Blacklists the access token and clears the `refreshToken` cookie. Behaves identically to `POST /api/auth/logout` — provided here too so the owner portal is fully self-contained.
 
 ---
 
 ## Owner — Restaurant Management
 
 All owner routes require:
+
 - `Authorization: Bearer <accessToken>` with role `restaurant_owner`
 - Scoped routes: `:restaurantId` must belong to the authenticated owner
 
@@ -1052,7 +1056,7 @@ All owner routes require:
 GET /api/owner/restaurants
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -1077,27 +1081,28 @@ POST /api/owner/restaurants
   "name": "Spice Garden",
   "description": "Authentic Indian cuisine",
   "cuisineTypes": ["Indian", "Mughlai"],
-  "address": { "street": "12 Main Road", "city": "Delhi", "state": "Delhi", "pincode": "110001" },
-  "location": { "coordinates": [77.2090, 28.6139] }
+  "address": { "street": "12 Main Road", "city": "Delhi", "state": "Delhi", "pincode": "110001" }
 }
 ```
 
 | Field | Required | Notes |
-|-------|----------|-------|
-| `name` | Yes | |
-| `location.coordinates` | Yes | `[longitude, latitude]` — GeoJSON order |
-| others | No | |
+| --- | --- | --- |
+| `name` | Yes |  |
+| `address.street` | Yes |  |
+| `address.city` | Yes |  |
+| `address.state`, `address.pincode` | No | Improve geocoding accuracy |
+| `location.coordinates` | No | `[longitude, latitude]` — GeoJSON order. Omit it: the address is geocoded server-side. Only send it when you already have a real point (admin tooling, imports, a map picker) |
+| others | No |  |
 
-Always created with `approvalStatus: "pending"` — no approval is needed to submit this, it
-*is* the submission. See [Owner — Authentication](#owner--authentication) for the full flow.
+The map point is derived from `address` — the client never asks an owner for latitude/longitude. Geocoding uses Google when `GOOGLE_MAPS_API_KEY` is set and OpenStreetMap Nominatim otherwise. If the address can't be placed, the request fails with `400 ADDRESS_NOT_FOUND` rather than storing a bogus point. Editing the address later (`PATCH /owner/:restaurantId/restaurant` or `PATCH /owner/:restaurantId/settings`) re-geocodes it, keeping the old point if the lookup fails.
 
-**Response `201`**
+Always created with `approvalStatus: "pending"` — no approval is needed to submit this, it *is* the submission. See [Owner — Authentication](#owner--authentication) for the full flow.
+
+**Response** `201`
 
 ---
 
-Base path for all scoped routes: `/api/owner/:restaurantId`. Viewing/editing the profile below
-is allowed regardless of `approvalStatus`; staff and menu routes further down are not (see
-[Owner — Staff Management](#owner--staff-management) and [Owner — Categories & Subcategories](#owner--categories--subcategories)).
+Base path for all scoped routes: `/api/owner/:restaurantId`. Viewing/editing the profile below is allowed regardless of `approvalStatus`; staff and menu routes further down are not (see [Owner — Staff Management](#owner--staff-management) and [Owner — Categories & Subcategories](#owner--categories--subcategories)).
 
 ### Get / Update Restaurant Profile
 
@@ -1117,7 +1122,35 @@ GET   /api/owner/:restaurantId/settings
 PATCH /api/owner/:restaurantId/settings
 ```
 
-`PATCH` accepts `multipart/form-data`. Optional file fields: `logo` and `banner` (both max 5 MB, images only). JSON fields: `name`, `description`, `cuisineTypes`, `address`, `settings`.
+`PATCH` accepts `multipart/form-data`. Optional file fields: `logo` and `banner` (both max
+5 MB; JPEG, PNG or WebP only). Scalar text fields: `name`, `description`, `email`, `phone`,
+`website`, `establishedYear`. Structured fields: `cuisineTypes`, `address`, `settings`.
+
+`email`/`phone`/`website` are the **restaurant's** public contact details, stored on the
+restaurant document. They are not the owner's `User.email` / `User.phone`, which are login
+credentials and are edited through `PATCH /api/users/me`.
+
+Over multipart, `cuisineTypes`, `address` and `settings` must be **JSON-encoded strings**
+(e.g. `address={"street":"12 MG Rd","city":"Pune"}`) — they are decoded server-side. A value
+that isn't valid JSON, or that decodes to the wrong shape (`address`/`settings` must be
+objects, `cuisineTypes` an array), returns `400 VALIDATION_ERROR` rather than being stored
+as-is.
+
+`address` is merged field-by-field, so sending only `{"street":"…"}` leaves the stored city,
+state and pincode intact. The map point is re-geocoded from the **merged** address; a
+geocoder miss leaves the existing coordinates alone rather than failing the save.
+
+Keys omitted from `settings` are left untouched (this is how `gstPercent` and
+`serviceChargePercent` keep their values); a key sent as `""` clears that field. `licenseExpiry`
+and `tradeLicenseExpiry` store `null` when blank.
+
+The banner is stored on the restaurant's **`bannerImage`** field — not `coverImage`, which is
+a separate field this endpoint never writes.
+
+A replaced `logo` or `banner` is deleted from Cloudinary after the database write succeeds;
+if the write fails, the newly uploaded files are removed instead. An over-limit file returns
+`400 LIMIT_FILE_SIZE` with `details.field` naming the input, and an unsupported format returns
+`400 INVALID_FILE_TYPE` — neither is silently discarded behind a `200`.
 
 ---
 
@@ -1166,9 +1199,7 @@ PATCH /api/owner/:restaurantId/settings/delivery
 
 Base path: `/api/owner/:restaurantId/staff`
 
-**Requires the restaurant to be approved** — every route below (including `GET`) returns
-`403 RESTAURANT_NOT_APPROVED` until an admin sets `approvalStatus` to `"active"` via
-`PATCH /api/admin/stores/:id/approve`. See [Owner — Authentication](#owner--authentication).
+**Requires the restaurant to be approved** — every route below (including `GET`) returns `403 RESTAURANT_NOT_APPROVED` until an admin sets `approvalStatus` to `"active"` via `PATCH /api/admin/stores/:id/approve`. See [Owner — Authentication](#owner--authentication).
 
 ### List Staff
 
@@ -1176,7 +1207,7 @@ Base path: `/api/owner/:restaurantId/staff`
 GET /api/owner/:restaurantId/staff
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -1212,13 +1243,13 @@ POST /api/owner/:restaurantId/staff
 ```
 
 | Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `name` | string | Yes | |
-| `role` | `"waiter"` \| `"chef"` | Yes | `chef` = kitchen display; waiter routes check for `waiter`, kitchen routes check for `chef` |
+| --- | --- | --- | --- |
+| `name` | string | Yes |  |
+| `role` | `"waiter"` | `"chef"` | Yes | `chef` = kitchen display; waiter routes check for `waiter`, kitchen routes check for `chef` |
 | `pin` | string | Yes | 4–8 digits, stored as argon2id hash |
-| `email` | string | No | |
+| `email` | string | No |  |
 
-**Response `201`**
+**Response** `201`
 
 ---
 
@@ -1240,7 +1271,7 @@ DELETE /api/owner/:restaurantId/staff/:staffId
 
 Soft delete — sets `isActive: false`.
 
-**Response `200`** — `data: null`
+**Response** `200` — `data: null`
 
 ---
 
@@ -1248,9 +1279,7 @@ Soft delete — sets `isActive: false`.
 
 Base path: `/api/owner/:restaurantId/categories`
 
-**Requires the restaurant to be approved** — every route below (including `GET`) returns
-`403 RESTAURANT_NOT_APPROVED` until an admin sets `approvalStatus` to `"active"` via
-`PATCH /api/admin/stores/:id/approve`. See [Owner — Authentication](#owner--authentication).
+**Requires the restaurant to be approved** — every route below (including `GET`) returns `403 RESTAURANT_NOT_APPROVED` until an admin sets `approvalStatus` to `"active"` via `PATCH /api/admin/stores/:id/approve`. See [Owner — Authentication](#owner--authentication).
 
 ### List Categories
 
@@ -1258,7 +1287,7 @@ Base path: `/api/owner/:restaurantId/categories`
 GET /api/owner/:restaurantId/categories
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -1295,7 +1324,7 @@ POST /api/owner/:restaurantId/categories
 }
 ```
 
-**Response `201`**
+**Response** `201`
 
 ```json
 {
@@ -1325,7 +1354,7 @@ PATCH /api/owner/:restaurantId/categories/:cId
 }
 ```
 
-**Response `200`**
+**Response** `200`
 
 ---
 
@@ -1335,7 +1364,7 @@ PATCH /api/owner/:restaurantId/categories/:cId
 DELETE /api/owner/:restaurantId/categories/:cId
 ```
 
-**Response `200`** — `data: null`
+**Response** `200` — `data: null`
 
 ---
 
@@ -1345,7 +1374,7 @@ DELETE /api/owner/:restaurantId/categories/:cId
 GET /api/owner/:restaurantId/categories/:cId/subcategories
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -1381,7 +1410,7 @@ POST /api/owner/:restaurantId/categories/:cId/subcategories
 }
 ```
 
-**Response `201`**
+**Response** `201`
 
 ---
 
@@ -1405,9 +1434,7 @@ DELETE /api/owner/:restaurantId/categories/:cId/subcategories/:sId
 
 Base path: `/api/owner/:restaurantId/menu-items`
 
-**Requires the restaurant to be approved** — every route below (including `GET`) returns
-`403 RESTAURANT_NOT_APPROVED` until an admin sets `approvalStatus` to `"active"` via
-`PATCH /api/admin/stores/:id/approve`. See [Owner — Authentication](#owner--authentication).
+**Requires the restaurant to be approved** — every route below (including `GET`) returns `403 RESTAURANT_NOT_APPROVED` until an admin sets `approvalStatus` to `"active"` via `PATCH /api/admin/stores/:id/approve`. See [Owner — Authentication](#owner--authentication).
 
 ### List Menu Items
 
@@ -1417,7 +1444,7 @@ GET /api/owner/:restaurantId/menu-items
 
 Returns all items (including unavailable) for management purposes.
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -1458,10 +1485,10 @@ POST /api/owner/:restaurantId/menu-items
 **Content-Type:** `multipart/form-data`
 
 | Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `name` | string | Yes | |
-| `description` | string | No | |
-| `foodType` | `"veg"` \| `"non_veg"` \| `"egg"` | Yes | |
+| --- | --- | --- | --- |
+| `name` | string | Yes |  |
+| `description` | string | No |  |
+| `foodType` | `"veg"` | `"non_veg"` | `"egg"` | Yes |  |
 | `categoryId` | string | Yes | ObjectId |
 | `subCategoryId` | string | No | ObjectId |
 | `sellingPrice` | number | Yes | MRP |
@@ -1470,7 +1497,7 @@ POST /api/owner/:restaurantId/menu-items
 | `ingredients` | JSON array string | No | e.g. `'["tomato","cream"]'` |
 | `image` | file | No | Max 5 MB |
 
-**Response `201`**
+**Response** `201`
 
 ```json
 {
@@ -1490,7 +1517,7 @@ POST /api/owner/:restaurantId/menu-items
 GET /api/owner/:restaurantId/menu-items/:itemId
 ```
 
-**Response `200`**
+**Response** `200`
 
 ---
 
@@ -1504,7 +1531,7 @@ PATCH /api/owner/:restaurantId/menu-items/:itemId
 
 If a new `image` is uploaded, the old Cloudinary image is deleted automatically after the DB write succeeds.
 
-**Response `200`**
+**Response** `200`
 
 ---
 
@@ -1516,7 +1543,7 @@ DELETE /api/owner/:restaurantId/menu-items/:itemId
 
 Sets `isAvailable: false`. Does not hard-delete to preserve order history.
 
-**Response `200`** — `data: null`
+**Response** `200` — `data: null`
 
 ---
 
@@ -1528,7 +1555,7 @@ PATCH /api/owner/:restaurantId/menu-items/:itemId/toggle
 
 **Body** — none
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -1556,7 +1583,7 @@ PATCH /api/owner/:restaurantId/menu-items/:itemId/ingredients
 }
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -1580,7 +1607,7 @@ Base path: `/api/owner/:restaurantId/tables`
 GET /api/owner/:restaurantId/tables
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -1621,7 +1648,7 @@ POST /api/owner/:restaurantId/tables
 }
 ```
 
-**Response `201`**
+**Response** `201`
 
 ---
 
@@ -1640,7 +1667,7 @@ PATCH /api/owner/:restaurantId/tables/:tableId
 }
 ```
 
-**Response `200`**
+**Response** `200`
 
 ---
 
@@ -1650,7 +1677,7 @@ PATCH /api/owner/:restaurantId/tables/:tableId
 DELETE /api/owner/:restaurantId/tables/:tableId
 ```
 
-**Response `200`** — `data: null`
+**Response** `200` — `data: null`
 
 ---
 
@@ -1664,7 +1691,7 @@ Generates a QR code for the table. The QR URL encodes the `tableId` so the waite
 
 **Body** — none
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -1693,7 +1720,7 @@ Invalidates the current QR token. Any waiter scan with the old token will fail.
 
 **Body** — none
 
-**Response `200`** — `data: null`
+**Response** `200` — `data: null`
 
 ---
 
@@ -1710,13 +1737,13 @@ GET /api/owner/:restaurantId/orders
 **Query parameters**
 
 | Param | Type | Default | Notes |
-|-------|------|---------|-------|
+| --- | --- | --- | --- |
 | `status` | string | (all) | Filter by status |
-| `type` | `"dine_in"` \| `"delivery"` | (all) | |
-| `page` | number | 1 | |
-| `limit` | number | 20 | |
+| `type` | `"dine_in"` | `"delivery"` | (all) |  |
+| `page` | number | 1 |  |
+| `limit` | number | 20 |  |
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -1739,7 +1766,7 @@ GET /api/owner/:restaurantId/orders
 GET /api/owner/:restaurantId/orders/:orderId
 ```
 
-**Response `200`**
+**Response** `200`
 
 ---
 
@@ -1756,12 +1783,12 @@ GET /api/owner/:restaurantId/bills
 **Query parameters**
 
 | Param | Type | Notes |
-|-------|------|-------|
-| `status` | `"open"` \| `"paid"` | Filter |
-| `page` | number | |
-| `limit` | number | |
+| --- | --- | --- |
+| `status` | `"open"` | `"paid"` | Filter |
+| `page` | number |  |
+| `limit` | number |  |
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -1794,7 +1821,7 @@ GET /api/owner/:restaurantId/bills
 GET /api/owner/:restaurantId/bills/:billId
 ```
 
-**Response `200`**
+**Response** `200`
 
 ---
 
@@ -1810,7 +1837,7 @@ Discounts start in `draft` status. They must be explicitly published to become `
 GET /api/owner/:restaurantId/discounts
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -1846,21 +1873,22 @@ POST /api/owner/:restaurantId/discounts
 **Common fields (all types)**
 
 | Field | Type | Required | Notes |
-|-------|------|----------|-------|
+| --- | --- | --- | --- |
 | `type` | see below | Yes | Discriminated union |
-| `offerName` | string | Yes | |
+| `offerName` | string | Yes |  |
 | `code` | string | No | Coupon code (unique per restaurant) |
-| `applicableTo` | `"dine_in"` \| `"delivery"` \| `"both"` | No | Default `"both"` |
+| `applicableTo` | `"dine_in"` | `"delivery"` | `"both"` | No | Default `"both"` |
 | `minimumOrderValue` | number | No | Default 0 |
-| `startDate` | ISO date string | Yes | |
+| `startDate` | ISO date string | Yes |  |
 | `endDate` | ISO date string | Yes | Must be after `startDate` |
-| `applicableTableNumbers` | string[] | No | |
-| `applicableCategories` | ObjectId[] | No | |
-| `applicableItems` | ObjectId[] | No | |
+| `applicableTableNumbers` | string\[\] | No |  |
+| `applicableCategories` | ObjectId\[\] | No |  |
+| `applicableItems` | ObjectId\[\] | No |  |
 
 **Type-specific fields**
 
-*`"percentage"`*
+`"percentage"`
+
 ```json
 {
   "type": "percentage",
@@ -1872,10 +1900,11 @@ POST /api/owner/:restaurantId/discounts
 ```
 
 | Extra field | Type | Required |
-|-------------|------|----------|
+| --- | --- | --- |
 | `percentage` | number 1–100 | Yes |
 
-*`"flat_amount"`*
+`"flat_amount"`
+
 ```json
 {
   "type": "flat_amount",
@@ -1888,10 +1917,11 @@ POST /api/owner/:restaurantId/discounts
 ```
 
 | Extra field | Type | Required |
-|-------------|------|----------|
+| --- | --- | --- |
 | `flatAmount` | positive number | Yes |
 
-*`"free_item"`*
+`"free_item"`
+
 ```json
 {
   "type": "free_item",
@@ -1904,11 +1934,12 @@ POST /api/owner/:restaurantId/discounts
 ```
 
 | Extra field | Type | Required |
-|-------------|------|----------|
+| --- | --- | --- |
 | `freeItemId` | ObjectId string | Yes |
 | `freeItemName` | string | No |
 
-*`"tablewise"`*
+`"tablewise"`
+
 ```json
 {
   "type": "tablewise",
@@ -1921,11 +1952,11 @@ POST /api/owner/:restaurantId/discounts
 ```
 
 | Extra field | Type | Required |
-|-------------|------|----------|
+| --- | --- | --- |
 | `flatAmount` | positive number | Yes |
-| `applicableTableNumbers` | string[] min 1 | Yes |
+| `applicableTableNumbers` | string\[\] min 1 | Yes |
 
-**Response `201`**
+**Response** `201`
 
 ```json
 {
@@ -1949,7 +1980,7 @@ PATCH /api/owner/:restaurantId/discounts/:dId
 
 Same body as create. Full replacement of all fields.
 
-**Response `200`**
+**Response** `200`
 
 ---
 
@@ -1959,7 +1990,7 @@ Same body as create. Full replacement of all fields.
 DELETE /api/owner/:restaurantId/discounts/:dId
 ```
 
-**Response `200`** — `data: null`
+**Response** `200` — `data: null`
 
 ---
 
@@ -1973,7 +2004,7 @@ Transitions status: `draft` → `active`. Fails if discount is already active.
 
 **Body** — none
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -1997,7 +2028,7 @@ Transitions status: `active` → `draft`. Fails if already draft.
 
 **Body** — none
 
-**Response `200`**
+**Response** `200`
 
 ---
 
@@ -2011,7 +2042,7 @@ Base path: `/api/owner/:restaurantId/loyalty`
 GET /api/owner/:restaurantId/loyalty
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -2051,7 +2082,7 @@ Upserts — safe to call even if no program exists yet.
 }
 ```
 
-**Response `200`**
+**Response** `200`
 
 ---
 
@@ -2061,7 +2092,7 @@ Upserts — safe to call even if no program exists yet.
 GET /api/owner/:restaurantId/loyalty/milestones
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -2104,16 +2135,16 @@ POST /api/owner/:restaurantId/loyalty/milestones
 ```
 
 | Field | Type | Notes |
-|-------|------|-------|
+| --- | --- | --- |
 | `offerName` | string | Display name of the milestone offer |
-| `rewardType` | `"free_item"` \| `"flat_amount"` \| `"percentage"` \| `"tablewise"` | |
+| `rewardType` | `"free_item"` | `"flat_amount"` | `"percentage"` | `"tablewise"` |  |
 | `rewardValue` | number | Amount/percent depending on type |
 | `freeItemId` | ObjectId | Required when `rewardType` is `"free_item"` |
 | `minimumOrderValue` | number | Minimum order total to unlock reward |
 | `startDate` / `endDate` | ISO date | Optional validity window |
-| `description` | string | |
+| `description` | string |  |
 
-**Response `201`**
+**Response** `201`
 
 ---
 
@@ -2140,7 +2171,7 @@ Base path: `/api/owner/:restaurantId/dashboard`
 All responses are aggregations over the restaurant's data. Use query param `period` to control the date window.
 
 | `period` value | Meaning |
-|---------------|---------|
+| --- | --- |
 | `today` | Calendar day |
 | `week` | Last 7 days |
 | `month` | Last 30 days |
@@ -2154,7 +2185,7 @@ All responses are aggregations over the restaurant's data. Use query param `peri
 GET /api/owner/:restaurantId/dashboard?period=today
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -2181,7 +2212,7 @@ GET /api/owner/:restaurantId/dashboard?period=today
 GET /api/owner/:restaurantId/dashboard/sales?period=week
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -2203,7 +2234,7 @@ GET /api/owner/:restaurantId/dashboard/sales?period=week
 GET /api/owner/:restaurantId/dashboard/top-items?period=month
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -2232,7 +2263,7 @@ GET /api/owner/:restaurantId/dashboard/recent-orders
 
 Returns last 10 orders.
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -2266,7 +2297,7 @@ Real-time visitor and operational stats backed by Redis.
 GET /api/owner/:restaurantId/live-monitor
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -2289,7 +2320,7 @@ GET /api/owner/:restaurantId/live-monitor
 GET /api/owner/:restaurantId/live-monitor/visitors
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -2320,7 +2351,7 @@ GET /api/owner/:restaurantId/live-monitor/repeat
 
 Customers who have placed more than one order at this restaurant.
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -2363,7 +2394,7 @@ Creates a discount and broadcasts it in real time to all active visitors via Soc
 
 Same body schema as `POST /api/owner/:restaurantId/discounts`.
 
-**Response `201`**
+**Response** `201`
 
 ```json
 {
@@ -2391,12 +2422,9 @@ Every list endpoint below (`stores`, `customers`, `delivery-partners`, `tickets`
 POST /api/admin/auth/login
 ```
 
-**No auth required.** Admin accounts only — a `customer` or `restaurant_owner` email/password
-gets `401 INVALID_CREDENTIALS` here, not a role error.
+**No auth required.** Admin accounts only — a `customer` or `restaurant_owner` email/password gets `401 INVALID_CREDENTIALS` here, not a role error.
 
-**There is no public admin signup endpoint.** Admin accounts are provisioned via
-`scripts/seedSuperAdmin.js <email> <password>` (run against the target `MONGODB_URI`) or, once
-one admin exists, could be created by another admin through a future internal endpoint.
+**There is no public admin signup endpoint.** Admin accounts are provisioned via `scripts/seedSuperAdmin.js <email> <password>` (run against the target `MONGODB_URI`) or, once one admin exists, could be created by another admin through a future internal endpoint.
 
 **Body**
 
@@ -2407,7 +2435,7 @@ one admin exists, could be created by another admin through a future internal en
 }
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -2431,15 +2459,14 @@ A `refreshToken` HttpOnly cookie is set.
 POST /api/admin/auth/logout
 ```
 
-**Requires**: `Authorization: Bearer <accessToken>` with role `admin`. Blacklists the access
-token and clears the `refreshToken` cookie.
+**Requires**: `Authorization: Bearer <accessToken>` with role `admin`. Blacklists the access token and clears the `refreshToken` cookie.
 
 ---
 
 ### Quick Reference
 
 | Method | Path | Body | Description |
-|--------|------|------|--------------|
+| --- | --- | --- | --- |
 | `POST` | `/api/admin/auth/login` | `{ email, password }` | [Admin login](#admin--authentication) |
 | `GET` | `/api/admin/dashboard` | — | [Platform KPI totals](#platform-overview) |
 | `GET` | `/api/admin/dashboard/revenue-overview?range=` | — | [Revenue chart points](#revenue-overview) |
@@ -2447,10 +2474,10 @@ token and clears the `refreshToken` cookie.
 | `GET` | `/api/admin/reports/top-delivery-partners?limit=` | — | [Top delivery partners by deliveries](#top-delivery-partners) |
 | `GET` | `/api/admin/stores?status=&plan=&search=&page=&limit=` | — | [List stores + tab counts](#list-stores) |
 | `GET` | `/api/admin/stores/:id` | — | [Get one store](#get-store) |
-| `PATCH` | `/api/admin/stores/:id/approve` | none | [Approve → `active`](#approve-store) |
-| `PATCH` | `/api/admin/stores/:id/reject` | `{ reason }` | [Reject → `rejected`](#reject-store) |
-| `PATCH` | `/api/admin/stores/:id/suspend` | none | [Suspend → `suspended` (from `active` only)](#suspend-store) |
-| `PATCH` | `/api/admin/stores/:id/reactivate` | none | [Reactivate → `active` (from `suspended` only)](#reactivate-store) |
+| `PATCH` | `/api/admin/stores/:id/approve` | none | [Approve → ](#approve-store)`active` |
+| `PATCH` | `/api/admin/stores/:id/reject` | `{ reason }` | [Reject → ](#reject-store)`rejected` |
+| `PATCH` | `/api/admin/stores/:id/suspend` | none | [Suspend → ](#suspend-store)`suspended`[ (from ](#suspend-store)`active`[ only)](#suspend-store) |
+| `PATCH` | `/api/admin/stores/:id/reactivate` | none | [Reactivate → ](#reactivate-store)`active`[ (from ](#reactivate-store)`suspended`[ only)](#reactivate-store) |
 | `PATCH` | `/api/admin/stores/:id` | whitelisted fields | [Update store profile](#update-store) |
 | `POST` | `/api/admin/stores/:id/notes` | `{ note }` | [Add internal note](#add-admin-note) |
 | `PATCH` | `/api/admin/stores/:id/documents/:docId` | `{ status }` | [Verify/reject a document](#verify-document) |
@@ -2483,14 +2510,14 @@ GET /api/admin/stores
 **Query parameters**
 
 | Param | Type | Notes |
-|-------|------|-------|
-| `status` | `"pending"` \| `"active"` \| `"suspended"` \| `"rejected"` \| `"expired"` | Filters by `approvalStatus` |
-| `plan` | `"trial"` \| `"basic"` \| `"standard"` \| `"premium"` | |
+| --- | --- | --- |
+| `status` | `"pending"` | `"active"` | `"suspended"` | `"rejected"` | `"expired"` | Filters by `approvalStatus` |
+| `plan` | `"trial"` | `"basic"` | `"standard"` | `"premium"` |  |
 | `search` | string | Case-insensitive match on `name` |
 | `page` | number | Default 1 |
 | `limit` | number | Default 20 |
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -2518,7 +2545,7 @@ GET /api/admin/stores/:id
 
 Populates `ownerId` with `name email phone`. `404 NOT_FOUND` if the store doesn't exist.
 
-**Response `200`** — `data: { store }`
+**Response** `200` — `data: { store }`
 
 ---
 
@@ -2532,7 +2559,7 @@ PATCH /api/admin/stores/:id/approve
 
 Sets `approvalStatus: 'active'`, `reviewedAt: now`, `reviewedBy: <adminId>`. Logs `STORE_APPROVED`.
 
-**Response `200`** — `data: { store }`
+**Response** `200` — `data: { store }`
 
 ---
 
@@ -2549,12 +2576,12 @@ PATCH /api/admin/stores/:id/reject
 ```
 
 | Field | Type | Required |
-|-------|------|----------|
+| --- | --- | --- |
 | `reason` | string | Yes, min 1 char |
 
 Sets `approvalStatus: 'rejected'`, `rejectionReason`, `reviewedAt`, `reviewedBy`. Logs `STORE_REJECTED` with `metadata: { reason }`.
 
-**Response `200`** — `data: { store }`
+**Response** `200` — `data: { store }`
 
 ---
 
@@ -2568,7 +2595,7 @@ PATCH /api/admin/stores/:id/suspend
 
 Only allowed from `approvalStatus: 'active'` — otherwise `400 INVALID_STATE`. Logs `STORE_SUSPENDED`.
 
-**Response `200`** — `data: { store }`
+**Response** `200` — `data: { store }`
 
 ---
 
@@ -2582,7 +2609,7 @@ PATCH /api/admin/stores/:id/reactivate
 
 Only allowed from `approvalStatus: 'suspended'` — otherwise `400 INVALID_STATE`. Logs `STORE_REACTIVATED`.
 
-**Response `200`** — `data: { store }`
+**Response** `200` — `data: { store }`
 
 ---
 
@@ -2595,16 +2622,16 @@ PATCH /api/admin/stores/:id
 **Body** — any subset of a fixed whitelist; any other field is silently dropped
 
 | Field | Notes |
-|-------|-------|
-| `name` | |
-| `description` | |
-| `cuisineTypes` | |
-| `address` | |
-| `delivery` | |
-| `settings` | |
-| `plan` | |
+| --- | --- |
+| `name` |  |
+| `description` |  |
+| `cuisineTypes` |  |
+| `address` |  |
+| `delivery` |  |
+| `settings` |  |
+| `plan` |  |
 
-**Response `200`** — `data: { store }`
+**Response** `200` — `data: { store }`
 
 ---
 
@@ -2622,7 +2649,7 @@ POST /api/admin/stores/:id/notes
 
 Pushes `{ note, addedBy: <adminId>, addedAt: now }` onto `adminNotes`. Logs `STORE_NOTE_ADDED`.
 
-**Response `200`** — `data: { store }`
+**Response** `200` — `data: { store }`
 
 ---
 
@@ -2639,12 +2666,12 @@ PATCH /api/admin/stores/:id/documents/:docId
 ```
 
 | Field | Type | Notes |
-|-------|------|-------|
-| `status` | `"verified"` \| `"rejected"` | |
+| --- | --- | --- |
+| `status` | `"verified"` | `"rejected"` |  |
 
 Updates the matching entry inside the store's `documents` array in place. `404 NOT_FOUND` if the store or the document id doesn't match.
 
-**Response `200`** — `data: null`
+**Response** `200` — `data: null`
 
 ---
 
@@ -2656,7 +2683,7 @@ DELETE /api/admin/stores/:id
 
 Soft-delete only — sets `isActive: false`; `approvalStatus` is left unchanged. Order/bill history referencing this `restaurantId` is preserved. Logs `STORE_REMOVED`.
 
-**Response `200`** — `data: { store }`
+**Response** `200` — `data: { store }`
 
 ---
 
@@ -2673,13 +2700,13 @@ GET /api/admin/customers
 **Query parameters**
 
 | Param | Type | Notes |
-|-------|------|-------|
+| --- | --- | --- |
 | `search` | string | Matches `name`, `email`, or `phone` |
-| `status` | `"active"` \| `"inactive"` | Maps to `isActive` |
+| `status` | `"active"` | `"inactive"` | Maps to `isActive` |
 | `page` | number | Default 1 |
 | `limit` | number | Default 20 |
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -2706,7 +2733,7 @@ GET /api/admin/customers/:id
 
 `404 NOT_FOUND` if no customer (i.e. `role: 'customer'`) matches.
 
-**Response `200`** — `data: { customer }`
+**Response** `200` — `data: { customer }`
 
 ---
 
@@ -2724,7 +2751,7 @@ PATCH /api/admin/customers/:id/status
 
 Logs `CUSTOMER_ACTIVATED` or `CUSTOMER_DEACTIVATED` depending on the value.
 
-**Response `200`** — `data: { customer }`
+**Response** `200` — `data: { customer }`
 
 ---
 
@@ -2741,13 +2768,13 @@ GET /api/admin/delivery-partners
 **Query parameters**
 
 | Param | Type | Notes |
-|-------|------|-------|
+| --- | --- | --- |
 | `search` | string | Matches `fullName`, `email`, or `phone` |
-| `status` | `"active"` \| `"busy"` \| `"inactive"` \| `"suspended"` | |
+| `status` | `"active"` | `"busy"` | `"inactive"` | `"suspended"` |  |
 | `page` | number | Default 1 |
 | `limit` | number | Default 20 |
 
-**Response `200`** — `data: { partners, total, page, pages }`
+**Response** `200` — `data: { partners, total, page, pages }`
 
 ---
 
@@ -2757,7 +2784,7 @@ GET /api/admin/delivery-partners
 GET /api/admin/delivery-partners/:id
 ```
 
-**Response `200`** — `data: { partner }`
+**Response** `200` — `data: { partner }`
 
 ---
 
@@ -2770,16 +2797,16 @@ POST /api/admin/delivery-partners
 **Content-Type:** `multipart/form-data`
 
 | Field | Type | Notes |
-|-------|------|-------|
-| `fullName`, `email`, `phone` | string | |
-| `dateOfBirth` | date string | |
-| `gender` | `"male"` \| `"female"` \| `"other"` | |
-| `emergencyPhone`, `aadharNumber`, `panNumber` | string | |
-| `vehicleModel`, `vehicleNumber`, `vehicleRcNumber`, `insuranceProvider`, `insuranceNumber` | string | |
-| `vehicleType` | `"2_wheeler"` \| `"ev_2_wheeler"` \| `"non_rto_2_wheeler"` | |
-| `insuranceValidTill` | date string | |
-| `bankName`, `accountHolderName`, `accountNumber`, `ifscCode`, `branchName`, `upiId` | string | |
-| `accountType` | `"savings"` \| `"current"` | |
+| --- | --- | --- |
+| `fullName`, `email`, `phone` | string |  |
+| `dateOfBirth` | date string |  |
+| `gender` | `"male"` | `"female"` | `"other"` |  |
+| `emergencyPhone`, `aadharNumber`, `panNumber` | string |  |
+| `vehicleModel`, `vehicleNumber`, `vehicleRcNumber`, `insuranceProvider`, `insuranceNumber` | string |  |
+| `vehicleType` | `"2_wheeler"` | `"ev_2_wheeler"` | `"non_rto_2_wheeler"` |  |
+| `insuranceValidTill` | date string |  |
+| `bankName`, `accountHolderName`, `accountNumber`, `ifscCode`, `branchName`, `upiId` | string |  |
+| `accountType` | `"savings"` | `"current"` |  |
 | `aadharCard` | file | Optional, max 5 MB, JPEG/PNG/WebP/PDF |
 | `drivingLicense` | file | Optional, same limits |
 | `vehicleRc` | file | Optional, same limits |
@@ -2788,7 +2815,7 @@ POST /api/admin/delivery-partners
 
 Each uploaded file is stored in Cloudinary under `yulostores/delivery-partners/<timestamp>` (PDFs use `resource_type: 'auto'`, images use `'image'`) and recorded in the partner's `documents` array with the matching type (`aadhar_card`, `driving_license`, `vehicle_rc`, `insurance_document`, `profile_photo`). If any upload fails partway through, the files already uploaded for this request are deleted from Cloudinary and the request fails with `500 UPLOAD_FAILED`. Logs `DELIVERY_PARTNER_ADDED`.
 
-**Response `201`** — `data: { partner }`
+**Response** `201` — `data: { partner }`
 
 ---
 
@@ -2801,10 +2828,10 @@ PATCH /api/admin/delivery-partners/:id
 **Body** — any subset of a fixed whitelist
 
 | Field |
-|-------|
+| --- |
 | `fullName`, `phone`, `dateOfBirth`, `gender`, `emergencyPhone`, `aadharNumber`, `panNumber`, `vehicle`, `bankDetails`, `status` |
 
-**Response `200`** — `data: { partner }`
+**Response** `200` — `data: { partner }`
 
 ---
 
@@ -2816,7 +2843,7 @@ DELETE /api/admin/delivery-partners/:id
 
 Hard delete — no other collection references `DeliveryPartner` yet. Logs `DELIVERY_PARTNER_REMOVED` before deleting.
 
-**Response `200`** — `data: null`
+**Response** `200` — `data: null`
 
 ---
 
@@ -2833,15 +2860,15 @@ GET /api/admin/tickets
 **Query parameters**
 
 | Param | Type |
-|-------|------|
-| `status` | `"open"` \| `"in_progress"` \| `"resolved"` \| `"closed"` |
-| `priority` | `"low"` \| `"medium"` \| `"high"` |
-| `category` | `"billing"` \| `"technical"` \| `"account"` \| `"delivery"` \| `"other"` |
+| --- | --- |
+| `status` | `"open"` | `"in_progress"` | `"resolved"` | `"closed"` |
+| `priority` | `"low"` | `"medium"` | `"high"` |
+| `category` | `"billing"` | `"technical"` | `"account"` | `"delivery"` | `"other"` |
 | `page` / `limit` | number |
 
 Populates `assignedTo` with `name email`.
 
-**Response `200`** — `data: { tickets, total, page, pages }`
+**Response** `200` — `data: { tickets, total, page, pages }`
 
 ---
 
@@ -2851,7 +2878,7 @@ Populates `assignedTo` with `name email`.
 GET /api/admin/tickets/:id
 ```
 
-**Response `200`** — `data: { ticket }`
+**Response** `200` — `data: { ticket }`
 
 ---
 
@@ -2872,14 +2899,14 @@ PATCH /api/admin/tickets/:id
 ```
 
 | Field | Type | Notes |
-|-------|------|-------|
-| `status` | `"open"` \| `"in_progress"` \| `"resolved"` \| `"closed"` | No |
-| `priority` | `"low"` \| `"medium"` \| `"high"` | No |
+| --- | --- | --- |
+| `status` | `"open"` | `"in_progress"` | `"resolved"` | `"closed"` | No |
+| `priority` | `"low"` | `"medium"` | `"high"` | No |
 | `assignedTo` | ObjectId string | No |
 
 When `status` is set to `"resolved"` or `"closed"`, `resolvedAt` is set automatically.
 
-**Response `200`** — `data: { ticket }`
+**Response** `200` — `data: { ticket }`
 
 ---
 
@@ -2897,7 +2924,7 @@ POST /api/admin/tickets/:id/messages
 
 Pushes `{ senderType: 'admin', sender: <adminId>, text, sentAt: now }` onto `messages`. If the ticket's `status` is `"open"`, it automatically flips to `"in_progress"`.
 
-**Response `200`** — `data: { ticket }`
+**Response** `200` — `data: { ticket }`
 
 ---
 
@@ -2911,7 +2938,7 @@ Base path: `/api/admin/dashboard`
 GET /api/admin/dashboard
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -2939,17 +2966,17 @@ GET /api/admin/dashboard/revenue-overview
 **Query parameters**
 
 | Param | Type | Default | Notes |
-|-------|------|---------|-------|
-| `range` | `"day"` \| `"week"` \| `"month"` \| `"year"` | `"month"` | Bucket granularity + lookback window |
+| --- | --- | --- | --- |
+| `range` | `"day"` | `"week"` | `"month"` | `"year"` | `"month"` | Bucket granularity + lookback window |
 
 | `range` | Bucketed by | Lookback |
-|---------|-------------|----------|
+| --- | --- | --- |
 | `day` | hour | last 24 hours |
 | `week` | day | last 7 days |
 | `month` | day | last 30 days |
 | `year` | month | last 12 months |
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -2980,12 +3007,12 @@ GET /api/admin/reports/top-stores
 **Query parameters**
 
 | Param | Type | Default |
-|-------|------|---------|
+| --- | --- | --- |
 | `limit` | number | 10 |
 
 Aggregates paid `Bill`s grouped by `restaurantId`, sorted by revenue descending, joined against `restaurants` for `name`/`avgRating`.
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -3010,12 +3037,12 @@ GET /api/admin/reports/top-delivery-partners
 **Query parameters**
 
 | Param | Type | Default |
-|-------|------|---------|
+| --- | --- | --- |
 | `limit` | number | 10 |
 
 Sorted by `totalDeliveries` descending.
 
-**Response `200`** — `data: { partners }`
+**Response** `200` — `data: { partners }`
 
 ---
 
@@ -3039,11 +3066,11 @@ POST /api/staff/auth/login
 ```
 
 | Field | Type | Required | Notes |
-|-------|------|----------|-------|
+| --- | --- | --- | --- |
 | `restaurantId` | string | Yes | ObjectId |
 | `pin` | string | Yes | 4–8 digits |
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -3075,7 +3102,7 @@ POST /api/staff/auth/logout
 
 **Body** — none
 
-**Response `200`** — `data: null`
+**Response** `200` — `data: null`
 
 The staff token is blacklisted in Redis.
 
@@ -3107,7 +3134,7 @@ The QR URL has the form: `https://yourdomain.com/menu?restaurantId=<id>&tableId=
 
 `qrToken` is the table's `_id` (extracted from the `tableId` query param in the QR URL).
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -3139,7 +3166,7 @@ GET /api/staff/:restaurantId/waiter/tables
 
 Returns all active tables with their current open session (if any).
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -3191,7 +3218,7 @@ POST /api/staff/:restaurantId/waiter/orders
 **Headers**
 
 | Header | Required | Notes |
-|--------|----------|-------|
+| --- | --- | --- |
 | `Authorization` | Yes | Staff Bearer token |
 | `Idempotency-Key` | Recommended | UUID v4 |
 
@@ -3209,14 +3236,14 @@ POST /api/staff/:restaurantId/waiter/orders
 ```
 
 | Field | Type | Required |
-|-------|------|----------|
+| --- | --- | --- |
 | `tableSessionId` | string | Yes |
 | `items` | array | Yes, min 1 |
 | `items[].menuItemId` | string | Yes |
 | `items[].quantity` | number | Yes, min 1 |
 | `specialInstructions` | string | No |
 
-**Response `201`** (or `200` if idempotency key matched)
+**Response** `201` (or `200` if idempotency key matched)
 
 ```json
 {
@@ -3260,7 +3287,7 @@ GET /api/staff/:restaurantId/waiter/sessions
 
 Returns all open table sessions with their orders and a running total.
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -3291,7 +3318,7 @@ GET /api/staff/:restaurantId/waiter/sessions/:sessionId/bill
 
 Assembles (or fetches cached) bill for the session. Idempotent — safe to call multiple times.
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -3342,10 +3369,10 @@ Closes the bill, closes the table session, and marks the table as available.
 ```
 
 | `paymentMethod` | Values |
-|-----------------|--------|
+| --- | --- |
 | Accepted values | `"cash"`, `"upi"`, `"card"`, `"online"` |
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -3381,7 +3408,7 @@ GET /api/staff/:restaurantId/kitchen/queue
 
 Returns active orders (status: `placed` or `confirmed`) sorted by creation time ascending.
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -3422,7 +3449,7 @@ GET /api/staff/:restaurantId/kitchen/board
 
 Returns orders grouped by status for the Kanban board view.
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -3457,20 +3484,20 @@ Uses optimistic concurrency control — you must send the status you currently s
 ```
 
 | Field | Type | Required | Notes |
-|-------|------|----------|-------|
+| --- | --- | --- | --- |
 | `currentStatus` | string | Yes | The status the client currently sees |
 | `newStatus` | string | Yes | The desired next status |
 
 **Allowed transitions**
 
 | From | To (allowed values) |
-|------|---------------------|
+| --- | --- |
 | `placed` | `confirmed`, `cancelled` |
 | `confirmed` | `preparing`, `cancelled` |
 | `preparing` | `ready`, `cancelled` |
 | `ready` | `out_for_delivery`, `delivered`, `cancelled` |
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -3486,7 +3513,7 @@ Uses optimistic concurrency control — you must send the status you currently s
 }
 ```
 
-**Response `409`** — if `currentStatus` no longer matches (another client updated it first)
+**Response** `409` — if `currentStatus` no longer matches (another client updated it first)
 
 ```json
 {
@@ -3506,7 +3533,7 @@ An `order_status_updated` Socket.IO event is emitted to kitchen, waiter, restaur
 GET /api/staff/:restaurantId/kitchen/orders/:orderId
 ```
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -3530,8 +3557,7 @@ GET /api/staff/:restaurantId/kitchen/orders/:orderId
 
 ## Partner — Authentication
 
-Delivery partner phone/OTP login. This section covers only the OTP endpoints — the rest of the
-delivery-partner backend (onboarding, duty, orders, earnings, etc.) is not yet documented here.
+Delivery partner phone/OTP login. This section covers only the OTP endpoints — the rest of the delivery-partner backend (onboarding, duty, orders, earnings, etc.) is not yet documented here.
 
 ### Request OTP
 
@@ -3550,10 +3576,10 @@ POST /partner/auth/request-otp
 ```
 
 | Field | Type | Required | Notes |
-|-------|------|----------|-------|
+| --- | --- | --- | --- |
 | `phone` | string | Yes | 10-digit phone number |
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -3565,8 +3591,7 @@ POST /partner/auth/request-otp
 }
 ```
 
-Outside production, `data` also includes a `devOtp` field (no real SMS in that mode) — same
-convention as `POST /api/auth/customer/otp/send`.
+Outside production, `data` also includes a `devOtp` field (no real SMS in that mode) — same convention as `POST /api/auth/customer/otp/send`.
 
 ---
 
@@ -3588,11 +3613,11 @@ POST /partner/auth/verify-otp
 ```
 
 | Field | Type | Required | Notes |
-|-------|------|----------|-------|
+| --- | --- | --- | --- |
 | `phone` | string | Yes | 10-digit phone number |
 | `otp` | string | Yes | 6-digit OTP |
 
-**Response `200`**
+**Response** `200`
 
 ```json
 {
@@ -3611,9 +3636,7 @@ POST /partner/auth/verify-otp
 }
 ```
 
-A brand-new phone number auto-creates a partner record (`verificationStatus: "pending_documents"`,
-`status: "inactive"`) — full onboarding (name, vehicle, bank, documents) happens in later, separate
-steps. `401 ACCOUNT_SUSPENDED` if the partner's `status` is `"suspended"`.
+A brand-new phone number auto-creates a partner record (`verificationStatus: "pending_documents"`, `status: "inactive"`) — full onboarding (name, vehicle, bank, documents) happens in later, separate steps. `401 ACCOUNT_SUSPENDED` if the partner's `status` is `"suspended"`.
 
 ---
 
@@ -3646,7 +3669,7 @@ socket.emit('join_restaurant', { restaurantId: '664abc...' });
 ```
 
 | Field | Type |
-|-------|------|
+| --- | --- |
 | `restaurantId` | string |
 
 ---

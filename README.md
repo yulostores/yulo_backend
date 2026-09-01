@@ -140,7 +140,7 @@ curl http://localhost:3000/health
 | `CLOUDINARY_CLOUD_NAME` | **Yes** | Cloudinary cloud name |
 | `CLOUDINARY_API_KEY` | **Yes** | Cloudinary API key |
 | `CLOUDINARY_API_SECRET` | **Yes** | Cloudinary API secret |
-| `GOOGLE_MAPS_API_KEY` | No | For geo-distance queries |
+| `GOOGLE_MAPS_API_KEY` | No | Geocoding of restaurant addresses; falls back to OpenStreetMap Nominatim when unset |
 | `RAZORPAY_KEY_ID` | No | Razorpay key (online payments optional) |
 | `RAZORPAY_KEY_SECRET` | No | Razorpay secret |
 | `RAZORPAY_WEBHOOK_SECRET` | No | For verifying payment webhooks |

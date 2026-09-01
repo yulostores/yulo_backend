@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/authenticate.js';
+import { upload } from '../middleware/upload.js';
 import { validate } from '../middleware/validate.js';
 import {
   getMe,
@@ -104,7 +105,10 @@ const deviceRegisterSchema = z.object({
 });
 
 router.get('/me', getMe);
-router.patch('/me', updateMe);
+// Optional `avatar` file (2 MB) rides along with the JSON fields. Multer skips any
+// request that isn't multipart/form-data, so callers still sending application/json
+// (including a `profilePicture`/`avatarUrl` string) are unaffected.
+router.patch('/me', upload('avatar', 2), updateMe);
 router.post('/me/addresses', validate(addressCreateSchema), addAddress);
 router.patch('/me/addresses/:addrId', validate(addressUpdateSchema), updateAddress);
 router.patch('/me/addresses/:addrId/default', setDefaultAddress);

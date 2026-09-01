@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import User from '../models/User.js';
 import * as userService from '../services/user.service.js';
+import * as uploadService from '../services/upload.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -23,15 +24,62 @@ export const getMe = asyncHandler(async (req, res) => {
 });
 
 export const updateMe = asyncHandler(async (req, res) => {
-  const result = updateProfileSchema.safeParse(req.body);
+  // multipart/form-data delivers every field as a string, and a form typically posts an
+  // empty string for an input the user left blank. Drop those before validation so an
+  // untouched Name doesn't trip `min(2)` and an untouched avatar URL isn't parsed as a
+  // malformed URL. JSON callers are unchanged — they simply omit the keys.
+  const body = { ...req.body };
+  for (const [key, value] of Object.entries(body)) {
+    if (typeof value === 'string' && value.trim() === '') delete body[key];
+  }
+
+  const result = updateProfileSchema.safeParse(body);
   if (!result.success) {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid input', result.error.flatten());
   }
-  const user = await User.findByIdAndUpdate(
-    req.user._id,
-    { $set: result.data },
-    { new: true }
-  );
+
+  const updates = { ...result.data };
+
+  // `authenticate` puts only _id/role/name/email on req.user, so the outgoing avatar has
+  // to be read before the write to know what to reap afterwards. Only worth a query on
+  // the upload path.
+  let previousPicture = null;
+  let uploadedPublicId;
+
+  if (req.file) {
+    const current = await User.findById(req.user._id).select('profilePicture').lean();
+    previousPicture = current?.profilePicture ?? null;
+
+    try {
+      const { secureUrl, publicId } = await uploadService.uploadBuffer({
+        buffer: req.file.buffer,
+        folder: `yulostores/avatars/${req.user._id}`,
+        publicId: `avatar_${Date.now()}`,
+      });
+      // An uploaded file wins over a profilePicture/avatarUrl string in the same request.
+      updates.profilePicture = secureUrl;
+      uploadedPublicId = publicId;
+    } catch (uploadErr) {
+      throw new ApiError(500, 'UPLOAD_FAILED', uploadErr?.message ?? 'Avatar upload failed');
+    }
+  }
+
+  let user;
+  try {
+    user = await User.findByIdAndUpdate(req.user._id, { $set: updates }, { new: true });
+  } catch (err) {
+    // The DB write failed — don't strand the image we just pushed to Cloudinary.
+    if (uploadedPublicId) await uploadService.deleteImage(uploadedPublicId).catch(() => {});
+    throw err;
+  }
+
+  // Delete the superseded avatar only after the write succeeds, so a failed save never
+  // costs the user the picture they still have.
+  if (previousPicture && previousPicture !== updates.profilePicture) {
+    const oldPublicId = uploadService.extractPublicId(previousPicture);
+    if (oldPublicId) await uploadService.deleteImage(oldPublicId).catch(() => {});
+  }
+
   sendSuccess(res, 200, 'Profile updated', { user });
 });
 
