@@ -1,4 +1,5 @@
 import Restaurant from '../models/Restaurant.js';
+import { PUBLIC_RESTAURANT_FILTER } from '../utils/publicRestaurant.js';
 import MenuItem from '../models/MenuItem.js';
 import Discount from '../models/Discount.js';
 import SearchHistory from '../models/SearchHistory.js';
@@ -26,7 +27,7 @@ export const typeahead = async (q) => {
   const regex = new RegExp(escapeRegExp(q.trim()), 'i');
 
   const [restaurants, items] = await Promise.all([
-    Restaurant.find({ name: regex, isActive: true })
+    Restaurant.find({ name: regex, ...PUBLIC_RESTAURANT_FILTER })
       .select('name logo')
       .limit(TYPEAHEAD_LIMIT_PER_SOURCE)
       .lean(),

@@ -187,7 +187,17 @@ export const getOne = asyncHandler(async (req, res) => {
 export const approve = asyncHandler(async (req, res) => {
   const store = await Restaurant.findByIdAndUpdate(
     req.params.id,
-    { $set: { approvalStatus: 'active', reviewedAt: new Date(), reviewedBy: req.user._id } },
+    // rejectionReason is cleared, not left behind: approving is the resolution of whatever
+    // the earlier rejection said, and a live store carrying "your FSSAI licence is
+    // unreadable" is one unguarded read away from being shown that as if it still applied.
+    {
+      $set: {
+        approvalStatus: 'active',
+        reviewedAt: new Date(),
+        reviewedBy: req.user._id,
+        rejectionReason: null,
+      },
+    },
     { new: true }
   );
   if (!store) throw new ApiError(404, 'NOT_FOUND', 'Store not found');

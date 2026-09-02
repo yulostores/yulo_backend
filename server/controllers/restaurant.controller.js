@@ -6,6 +6,7 @@ import * as favoriteService from '../services/favorite.service.js';
 import * as searchService from '../services/search.service.js';
 import * as restaurantService from '../services/restaurant.service.js';
 import { escapeRegExp } from '../utils/regex.js';
+import { PUBLIC_RESTAURANT_FILTER } from '../utils/publicRestaurant.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { ApiError } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -74,7 +75,11 @@ export const listRestaurants = asyncHandler(async (req, res) => {
     data = { restaurants, page: parsedPage };
   } else {
     const regex = new RegExp(escapeRegExp(q.trim()), 'i');
-    const filter = { isActive: true, ...extraFilter, $or: [{ name: regex }, { cuisineTypes: regex }] };
+    const filter = {
+      ...PUBLIC_RESTAURANT_FILTER,
+      ...extraFilter,
+      $or: [{ name: regex }, { cuisineTypes: regex }],
+    };
 
     const [restaurants, total] = await Promise.all([
       Restaurant.find(filter)
@@ -97,11 +102,8 @@ export const listRestaurants = asyncHandler(async (req, res) => {
 });
 
 export const getRestaurant = asyncHandler(async (req, res) => {
-  const restaurant = await Restaurant.findOne({
-    _id: req.params.id,
-    isActive: true,
-  }).lean();
-  if (!restaurant) throw new ApiError(404, 'NOT_FOUND', 'Restaurant not found');
+  // Already loaded (and approval-checked) by loadPublicRestaurant on the route.
+  const restaurant = req.publicRestaurant;
 
   const favoritedIds = await getFavoritedRestaurantIds(req);
   favoriteService.annotateRestaurants(restaurant, favoritedIds);

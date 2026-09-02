@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
 import User from '../models/User.js';
@@ -124,8 +125,10 @@ export const refresh = asyncHandler(async (req, res) => {
     throw new ApiError(401, 'INVALID_TOKEN', 'Session belongs to another portal');
   }
 
+  // jti, same as every other access-token mint (services/auth.service.js) — without one a
+  // token refreshed here could never be revoked by a later logout.
   const accessToken = jwt.sign(
-    { userId: user._id, role: user.role },
+    { userId: user._id, role: user.role, jti: randomUUID() },
     env.JWT_ACCESS_SECRET,
     { expiresIn: env.JWT_ACCESS_EXPIRES }
   );

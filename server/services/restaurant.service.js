@@ -1,4 +1,5 @@
 import Restaurant from '../models/Restaurant.js';
+import { PUBLIC_RESTAURANT_FILTER } from '../utils/publicRestaurant.js';
 
 const DEFAULT_PAGE_SIZE = 20;
 
@@ -21,7 +22,7 @@ export const findNearby = async (
         $maxDistance: parseFloat(radiusKm) * 1000,
       },
     },
-    isActive: true,
+    ...PUBLIC_RESTAURANT_FILTER,
     ...extraFilter,
   })
     .skip((parsedPage - 1) * limit)

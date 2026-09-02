@@ -73,7 +73,17 @@ Include the access token on every protected request:
 Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
-`POST /api/auth/refresh` and `POST /api/auth/logout` are shared across all three roles — they key off the `refreshToken` cookie / access token itself, not off which login endpoint was used.
+`POST /api/auth/refresh` and `POST /api/auth/logout` are shared across all three roles — they key off the refresh cookie / access token itself, not off which login endpoint was used.
+
+Each portal gets its **own** refresh cookie, because cookies ignore the port and every portal on one host therefore shares a jar:
+
+| Portal | Cookie |
+| --- | --- |
+| Customer | `yulo_rt_customer` |
+| Restaurant owner | `yulo_rt_owner` |
+| Super admin | `yulo_rt_admin` |
+
+So `POST /api/auth/refresh?portal=owner` reads `yulo_rt_owner` and will only ever mint a `restaurant_owner` access token. A request with no `?portal=` falls back to the legacy shared `refreshToken` cookie, which existing sessions still carry until it expires. `logout` clears only the calling portal's cookie — signing out of the QR ordering app no longer signs the owner out of the portal on the same machine.
 
 ### Staff token
 
@@ -354,10 +364,12 @@ POST /api/auth/customer/otp/verify
 ### Refresh Access Token
 
 ```
-POST /api/auth/refresh
+POST /api/auth/refresh?portal=owner
 ```
 
-**No auth required.** Reads the `refreshToken` cookie automatically.
+**No auth required.** Reads that portal's refresh cookie automatically.
+
+**Query** — `portal`: `customer` | `owner` | `admin`. Optional, but always send it: without it the endpoint falls back to the legacy shared `refreshToken` cookie and cannot tell one portal's session from another's. A cookie whose role does not match the requested portal is rejected with `401 INVALID_TOKEN`.
 
 **Body** — none
 

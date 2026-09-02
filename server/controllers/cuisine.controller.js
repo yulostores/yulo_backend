@@ -2,6 +2,7 @@ import Restaurant from '../models/Restaurant.js';
 import * as cacheService from '../services/cache.service.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { PUBLIC_RESTAURANT_FILTER } from '../utils/publicRestaurant.js';
 
 const CACHE_KEY = 'cache:cuisines';
 // Short enough that a cuisine a new restaurant introduces starts being suggested the
@@ -21,7 +22,7 @@ const CACHE_TTL_SECONDS = 15 * 60;
 const aggregateCuisines = () =>
   Restaurant.aggregate([
     // Same visibility rule the public restaurant endpoints use.
-    { $match: { isActive: true } },
+    { $match: { ...PUBLIC_RESTAURANT_FILTER } },
     { $unwind: '$cuisineTypes' },
     { $set: { cuisine: { $trim: { input: '$cuisineTypes' } } } },
     { $match: { cuisine: { $ne: '' } } },

@@ -2,6 +2,7 @@ import Favorite from '../models/Favorite.js';
 import Restaurant from '../models/Restaurant.js';
 import MenuItem from '../models/MenuItem.js';
 import { ApiError } from '../utils/ApiError.js';
+import { PUBLIC_RESTAURANT_FILTER } from '../utils/publicRestaurant.js';
 
 const PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
@@ -49,7 +50,7 @@ export const annotateMenuFavorites = (menu, favoritedIds) => {
 };
 
 export const addRestaurantFavorite = async (userId, restaurantId) => {
-  const exists = await Restaurant.exists({ _id: restaurantId, isActive: true });
+  const exists = await Restaurant.exists({ _id: restaurantId, ...PUBLIC_RESTAURANT_FILTER });
   if (!exists) throw new ApiError(404, 'NOT_FOUND', 'Restaurant not found');
 
   // Upsert, not insert — favoriting an already-favorited restaurant is a no-op success,
@@ -92,7 +93,10 @@ export const listFavoriteRestaurants = async (userId, page = 1, limit = PAGE_SIZ
   ]);
 
   const restaurantIds = favorites.map((f) => f.entityId);
-  const restaurants = await Restaurant.find({ _id: { $in: restaurantIds }, isActive: true }).lean();
+  const restaurants = await Restaurant.find({
+    _id: { $in: restaurantIds },
+    ...PUBLIC_RESTAURANT_FILTER,
+  }).lean();
 
   // `$in` doesn't preserve order — re-sort to most-recently-favorited-first, and drop any
   // favorite whose restaurant was deactivated/deleted since (rather than erroring).

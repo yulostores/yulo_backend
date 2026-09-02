@@ -35,20 +35,28 @@ ownerRouter.post('/restaurants', createRestaurant);
 // Scoped per-restaurant sub-router — mergeParams exposes :restaurantId to children
 const restaurantScopedRouter = Router({ mergeParams: true });
 restaurantScopedRouter.use(authorizeRestaurant);
-restaurantScopedRouter.use('/dashboard', dashboardRoutes);
+// Running the restaurant is locked until an admin approves it. Only the two things an
+// owner needs in order to *get* approved stay open: their store profile and its settings,
+// which are how an application is submitted and how a rejected one is corrected.
+//
+// Everything below used to be locked in the client alone (ApprovalGate, see the restaurant
+// portal's lib/approval.js) while the API answered 200 to the same calls — so the lock held
+// for anyone using the app and not at all for anyone holding the owner's token directly.
 restaurantScopedRouter.use('/restaurant', restaurantRoutes);
 restaurantScopedRouter.use('/settings', settingsRoutes);
-// Staff and menu build-out are locked until admin approves the restaurant — an owner can
-// view/edit their pending restaurant's profile, but can't staff it or publish a menu yet.
-restaurantScopedRouter.use('/categories', requireRestaurantApproved, categoryRoutes);
-restaurantScopedRouter.use('/menu-items', requireRestaurantApproved, menuItemRoutes);
+
+restaurantScopedRouter.use(requireRestaurantApproved);
+
+restaurantScopedRouter.use('/dashboard', dashboardRoutes);
+restaurantScopedRouter.use('/categories', categoryRoutes);
+restaurantScopedRouter.use('/menu-items', menuItemRoutes);
 restaurantScopedRouter.use('/tables', tableRoutes);
 restaurantScopedRouter.use('/orders', orderRoutes);
 restaurantScopedRouter.use('/bills', billRoutes);
 restaurantScopedRouter.use('/discounts', discountRoutes);
 restaurantScopedRouter.use('/loyalty', loyaltyRoutes);
 restaurantScopedRouter.use('/live-monitor', liveMonitorRoutes);
-restaurantScopedRouter.use('/staff', requireRestaurantApproved, staffRoutes);
+restaurantScopedRouter.use('/staff', staffRoutes);
 
 ownerRouter.use('/:restaurantId', restaurantScopedRouter);
 

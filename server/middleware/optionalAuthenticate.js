@@ -1,8 +1,8 @@
 import jwt from 'jsonwebtoken';
-import { redis } from '../config/redis.js';
 import { env } from '../config/env.js';
 import User from '../models/User.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { isTokenRevoked } from '../services/auth.service.js';
 
 // Like authenticate.js, but never rejects the request. Public browse endpoints (restaurant
 // list/detail/menu) need to know WHO is asking — to thread `isFavorited` into the response —
@@ -15,10 +15,9 @@ export const optionalAuthenticate = asyncHandler(async (req, res, next) => {
 
   const token = header.slice(7);
   try {
-    const revoked = await redis.get(`blacklist:${token}`);
-    if (revoked !== null) return next();
-
     const decoded = jwt.verify(token, env.JWT_ACCESS_SECRET);
+    if (await isTokenRevoked(decoded, token)) return next();
+
     const user = await User.findById(decoded.userId).lean();
     if (user && user.isActive) {
       req.user = { _id: user._id, role: user.role, name: user.name, email: user.email };

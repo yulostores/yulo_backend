@@ -12,6 +12,7 @@ import * as cartService from './cart.service.js';
 import * as discountService from './discount.service.js';
 import { VEG_FLEET_SEARCH_WINDOW_MS } from './deliveryAssignment.service.js';
 import { ApiError } from '../utils/ApiError.js';
+import { isPubliclyVisible } from '../utils/publicRestaurant.js';
 import { notifyService } from './notify.service.js';
 
 export const createOrder = async ({
@@ -34,7 +35,10 @@ export const createOrder = async ({
 
   // Step 1 — Validate restaurant
   const restaurant = await Restaurant.findById(restaurantId).lean();
-  if (!restaurant || !restaurant.isActive) {
+  // isPubliclyVisible, not just isActive: a suspended or not-yet-approved restaurant is
+  // one a customer should never have reached a checkout for in the first place, and this
+  // is the last point at which that can still be caught.
+  if (!isPubliclyVisible(restaurant)) {
     throw new ApiError(404, 'NOT_FOUND', 'Restaurant not found');
   }
 
@@ -168,7 +172,7 @@ export const createOrderFromCart = async ({
   }
 
   const restaurant = await Restaurant.findById(cart.restaurantId).lean();
-  if (!restaurant || !restaurant.isActive) {
+  if (!isPubliclyVisible(restaurant)) {
     throw new ApiError(404, 'NOT_FOUND', 'Restaurant not found');
   }
 

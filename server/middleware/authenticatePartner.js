@@ -1,9 +1,9 @@
 import jwt from 'jsonwebtoken';
-import { redis } from '../config/redis.js';
 import { env } from '../config/env.js';
 import DeliveryPartner from '../models/DeliveryPartner.js';
 import { ApiError } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { isTokenRevoked } from '../services/auth.service.js';
 
 export const authenticatePartner = asyncHandler(async (req, res, next) => {
   const header = req.headers.authorization;
@@ -12,12 +12,14 @@ export const authenticatePartner = asyncHandler(async (req, res, next) => {
   }
   const token = header.slice(7);
 
-  const revoked = await redis.get(`blacklist:${token}`);
-  if (revoked !== null) {
+  // Verify before consulting the denylist: revocation is keyed on the token's `jti`
+  // (services/auth.service.js), which only means anything once the signature has been
+  // checked — and a forged token never needs a Redis round-trip to be rejected.
+  const decoded = jwt.verify(token, env.JWT_PARTNER_SECRET);
+
+  if (await isTokenRevoked(decoded, token)) {
     throw new ApiError(401, 'INVALID_TOKEN', 'Token has been revoked');
   }
-
-  const decoded = jwt.verify(token, env.JWT_PARTNER_SECRET);
 
   const partner = await DeliveryPartner.findById(decoded.partnerId).lean();
   if (!partner) {
