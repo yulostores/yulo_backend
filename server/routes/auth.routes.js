@@ -9,7 +9,7 @@ import {
   verifyCustomerOtp,
 } from '../controllers/auth.controller.js';
 import { authenticate } from '../middleware/authenticate.js';
-import { authLimiter } from '../middleware/rateLimiter.js';
+import { authLimiter, refreshLimiter } from '../middleware/rateLimiter.js';
 import { validate } from '../middleware/validate.js';
 
 const router = Router();
@@ -46,7 +46,9 @@ router.post(
   validate(customerOtpVerifySchema),
   verifyCustomerOtp
 );
-router.post('/refresh', refresh);
+// refreshLimiter, not the global apiLimiter: a page that burns through the API
+// budget must still be able to restore its session (see rateLimiter.js).
+router.post('/refresh', refreshLimiter, refresh);
 router.post('/logout', authenticate, logout);
 
 export default router;

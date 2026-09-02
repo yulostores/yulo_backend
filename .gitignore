@@ -1,0 +1,10 @@
+# Secrets — these must NEVER be committed. Production values live in the
+# DigitalOcean App Platform dashboard, not in files. See DEPLOYMENT.md.
+.env
+.env.*
+!.env.example
+
+node_modules/
+dist/
+.DS_Store
+npm-debug.log*

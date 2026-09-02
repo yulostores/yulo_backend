@@ -24,6 +24,12 @@ const schema = z.object({
   RAZORPAY_KEY_SECRET: z.string().optional(),
   RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
   ALLOWED_ORIGINS: z.string().default('http://localhost:5173'),
+  // Per-IP requests/minute across /api. A dashboard load costs ~25.
+  RATE_LIMIT_MAX: z.coerce.number().default(600),
+  // 'none' (which forces Secure) is required when the frontend is served from a
+  // different site than this API. 'lax' covers localhost ports and a shared
+  // registrable domain. See utils/refreshCookie.js.
+  REFRESH_COOKIE_SAMESITE: z.enum(['lax', 'strict', 'none']).default('lax'),
   CUSTOMER_APP_URL: z.string().url().optional(),
   PLATFORM_COMMISSION_PERCENT: z.coerce.number().default(15),
   DELIVERY_PARTNER_PER_DELIVERY_RATE: z.coerce.number().default(30),

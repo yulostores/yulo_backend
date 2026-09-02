@@ -6,13 +6,13 @@ import * as otpService from '../services/otp.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-
-const REFRESH_COOKIE_OPTS = {
-  httpOnly: true,
-  secure: env.NODE_ENV === 'production',
-  sameSite: 'strict',
-  maxAge: 7 * 24 * 60 * 60 * 1000,
-};
+import {
+  setRefreshCookie,
+  clearRefreshCookie,
+  readRefreshToken,
+  portalForRole,
+  isPortal,
+} from '../utils/refreshCookie.js';
 
 export const signup = asyncHandler(async (req, res) => {
   const { name, email, password } = req.body;
@@ -26,7 +26,7 @@ export const signup = asyncHandler(async (req, res) => {
   const user = await User.create({ name, email, passwordHash, role: 'customer' });
 
   const { accessToken, refreshToken } = authService.generateTokens(user._id, user.role);
-  res.cookie('refreshToken', refreshToken, REFRESH_COOKIE_OPTS);
+  setRefreshCookie(res, user.role, refreshToken);
 
   sendSuccess(res, 201, 'Account created', { user, accessToken });
 });
@@ -45,7 +45,7 @@ export const login = asyncHandler(async (req, res) => {
   if (!valid) throw new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid email or password');
 
   const { accessToken, refreshToken } = authService.generateTokens(user._id, user.role);
-  res.cookie('refreshToken', refreshToken, REFRESH_COOKIE_OPTS);
+  setRefreshCookie(res, user.role, refreshToken);
 
   sendSuccess(res, 200, 'Login successful', { user, accessToken });
 });
@@ -91,7 +91,7 @@ export const verifyCustomerOtp = asyncHandler(async (req, res) => {
   }
 
   const { accessToken, refreshToken } = authService.generateTokens(user._id, user.role);
-  res.cookie('refreshToken', refreshToken, REFRESH_COOKIE_OPTS);
+  setRefreshCookie(res, user.role, refreshToken);
 
   sendSuccess(res, isNewUser ? 201 : 200, isNewUser ? 'Account created' : 'Login successful', {
     user,
@@ -100,14 +100,29 @@ export const verifyCustomerOtp = asyncHandler(async (req, res) => {
   });
 });
 
+// Shared by the customer, owner and admin portals — they differ only in which
+// refresh cookie is read, which the caller names with ?portal=. Requests without
+// one fall back to the old shared cookie so clients that predate portal-scoped
+// cookies keep working (utils/refreshCookie.js).
 export const refresh = asyncHandler(async (req, res) => {
-  const token = req.cookies?.refreshToken;
+  const { portal } = req.query;
+  if (portal !== undefined && !isPortal(portal)) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Unknown portal');
+  }
+
+  const token = readRefreshToken(req, portal);
   if (!token) throw new ApiError(401, 'INVALID_TOKEN', 'No refresh token');
 
   const decoded = jwt.verify(token, env.JWT_REFRESH_SECRET);
 
   const user = await User.findById(decoded.userId).lean();
   if (!user || !user.isActive) throw new ApiError(401, 'INVALID_TOKEN', 'User not found');
+
+  // Never hand a portal an access token for a different role — a stale legacy
+  // cookie from another portal would otherwise silently take over this session.
+  if (portal && portalForRole(user.role) !== portal) {
+    throw new ApiError(401, 'INVALID_TOKEN', 'Session belongs to another portal');
+  }
 
   const accessToken = jwt.sign(
     { userId: user._id, role: user.role },
@@ -123,6 +138,8 @@ export const logout = asyncHandler(async (req, res) => {
   if (header?.startsWith('Bearer ')) {
     await authService.blacklistToken(header.slice(7));
   }
-  res.clearCookie('refreshToken');
+  // Only this portal's cookie — signing out of the QR app must not sign the
+  // owner out of the portal running on the same host.
+  clearRefreshCookie(res, portalForRole(req.user?.role) ?? 'customer');
   sendSuccess(res, 200, 'Logged out', null);
 });

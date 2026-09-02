@@ -10,7 +10,28 @@ import { logActivity } from '../../services/activityLog.service.js';
 import { hashPassword } from '../../services/auth.service.js';
 import { STORE_STATUSES, shapeCounts } from '../../services/adminStats.service.js';
 
-const UPDATABLE_FIELDS = ['name', 'description', 'category', 'cuisineTypes', 'address', 'delivery', 'settings', 'plan'];
+// `operatingHours` and the two image fields are here because the admin console edits them
+// (Business Hours card, banner URL field on the store profile) — without them those saves
+// returned 200 while silently discarding the payload.
+const UPDATABLE_FIELDS = [
+  'name',
+  'description',
+  'category',
+  'cuisineTypes',
+  'address',
+  'delivery',
+  'settings',
+  'plan',
+  'operatingHours',
+  'logo',
+  'bannerImage',
+  // The restaurant's own public contact details — distinct from the owner's
+  // User.email / User.phone login credentials.
+  'email',
+  'phone',
+  'website',
+  'establishedYear',
+];
 
 export const list = asyncHandler(async (req, res) => {
   const { status, plan, search, page = 1, limit = 20 } = req.query;
@@ -58,6 +79,10 @@ const createSchema = z.object({
   logo: z.string().optional(),
   bannerImage: z.string().optional(),
   coverImage: z.string().optional(),
+  email: z.string().email().optional(),
+  phone: z.string().optional(),
+  website: z.string().optional(),
+  establishedYear: z.number().int().min(1800).optional(),
   address: z
     .object({
       street: z.string().optional(),
@@ -78,6 +103,25 @@ const createSchema = z.object({
     })
     .optional(),
   settings: z.record(z.any()).optional(),
+  // HHMM integers, matching Restaurant.operatingHours (900 = 09:00).
+  operatingHours: z
+    .array(
+      z.object({
+        day: z.enum([
+          'monday',
+          'tuesday',
+          'wednesday',
+          'thursday',
+          'friday',
+          'saturday',
+          'sunday',
+        ]),
+        isOpen: z.boolean().optional(),
+        openTime: z.number().int().min(0).max(2359).optional(),
+        closeTime: z.number().int().min(0).max(2359).optional(),
+      })
+    )
+    .optional(),
   plan: z.enum(['trial', 'basic', 'standard', 'premium']).optional(),
   owner: z.object({
     name: z.string().min(1),

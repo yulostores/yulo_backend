@@ -56,7 +56,13 @@ app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoute
 app.use(express.json({ limit: '10kb' }));
 app.use(cookieParser());
 app.use(pinoHttp({ logger }));
-app.use('/api', apiLimiter);
+// Session refresh is deliberately outside this budget — it carries its own,
+// higher one (routes/auth.routes.js). Sharing the global one meant a burst of
+// screen requests could 429 the refresh call, which the clients could not tell
+// apart from an expired session, so they signed the user out on every reload.
+app.use('/api', (req, res, next) =>
+  req.path === '/auth/refresh' ? next() : apiLimiter(req, res, next)
+);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
