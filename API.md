@@ -181,7 +181,8 @@ The `restaurantId` in the URL must match the staff member's assigned restaurant,
 
 | Scope | Limit |
 | --- | --- |
-| Auth endpoints (`/api/auth/*`, `/api/owner/auth/*`, `/api/admin/auth/*`, `/api/staff/auth/*`) | 10 requests / 15 min per IP |
+| Auth endpoints (`/api/auth/*`, `/api/owner/auth/*`, `/api/admin/auth/*`, `/api/staff/auth/login`) | 10 requests / 15 min per IP |
+| `GET /api/staff/auth/restaurants` (login typeahead) | 60 requests / min per IP |
 | All other `/api/*` endpoints | 100 requests / 15 min per IP |
 
 Exceeded limits return `429` with `Retry-After` header.
@@ -952,7 +953,7 @@ The owner portal has its own signup and login, separate from `/api/auth/*` — a
 1. `POST /api/owner/auth/signup` — create the owner account (no approval needed for this step).
 2. `POST /api/owner/restaurants` — submit a restaurant profile. This is unrestricted too; it's the application itself, created with `approvalStatus: "pending"`.
 3. An admin reviews it and calls `PATCH /api/admin/stores/:id/approve` (or `/reject`) — see [Approve Store](#approve-store).
-4. Only once `approvalStatus` is `"active"` can the owner create staff (`POST /api/owner/:restaurantId/staff`) or build out the menu (`POST /api/owner/:restaurantId/categories`, `POST /api/owner/:restaurantId/menu-items`). Before that, all three return `403 RESTAURANT_NOT_APPROVED`. Viewing/editing the restaurant's own profile (`/restaurant`, `/settings`) is allowed at any approval status, so the owner can finish filling out their profile while waiting on review.
+4. Only once `approvalStatus` is `"active"` can the owner create staff (`POST /api/owner/:restaurantId/staff`) or build out the menu (`POST /api/owner/:restaurantId/categories`, `POST /api/owner/:restaurantId/menu-items`). Before that, all three return `403 RESTAURANT_NOT_APPROVED`. Viewing/editing the restaurant's own profile (`/restaurant`, `/settings`) and uploading its compliance documents (`/documents`) are allowed at any approval status, so the owner can finish assembling their application while waiting on review.
 
 ### Sign Up
 
@@ -1114,7 +1115,7 @@ Always created with `approvalStatus: "pending"` — no approval is needed to sub
 
 ---
 
-Base path for all scoped routes: `/api/owner/:restaurantId`. Viewing/editing the profile below is allowed regardless of `approvalStatus`; staff and menu routes further down are not (see [Owner — Staff Management](#owner--staff-management) and [Owner — Categories & Subcategories](#owner--categories--subcategories)).
+Base path for all scoped routes: `/api/owner/:restaurantId`. Viewing/editing the profile below, and uploading compliance documents, are allowed regardless of `approvalStatus`; staff and menu routes further down are not (see [Owner — Staff Management](#owner--staff-management) and [Owner — Categories & Subcategories](#owner--categories--subcategories)).
 
 ### Get / Update Restaurant Profile
 
@@ -1202,6 +1203,80 @@ PATCH /api/owner/:restaurantId/settings/delivery
   "baseCharge": 30,
   "freeThreshold": 500,
   "estimatedMinutes": 45
+}
+```
+
+---
+
+### Compliance Documents
+
+Scans of the documents behind the licence numbers in `settings` — what admin reviews to
+approve a store (`GET /api/admin/stores/:id` returns the same array, and
+`PATCH /api/admin/stores/:id/documents/:docId` marks one verified or rejected).
+
+Allowed at any `approvalStatus`: uploading these is how a pending store gets approved, and
+how a rejected one answers what admin asked for.
+
+```
+GET    /api/owner/:restaurantId/documents
+GET    /api/owner/:restaurantId/documents/:docId/file
+POST   /api/owner/:restaurantId/documents
+DELETE /api/owner/:restaurantId/documents/:docId
+```
+
+`GET .../:docId/file` streams the document's bytes with its real `Content-Type` and
+`Content-Disposition: inline`. **The `url` on a document is not a link you can open** —
+read the file through this endpoint (or, admin-side, through
+`GET /api/admin/stores/:id/documents/:docId/file`) instead. Two reasons:
+
+* Cloudinary refuses to deliver PDFs unless the account enables "Allow delivery of PDF and
+  ZIP files"; the asset's own URL answers `401`, and signing it or storing it as
+  `type: authenticated` does not lift that. The block keys on the URL's file extension, so
+  PDFs are uploaded to the `raw` resource type with no extension, and the recorded
+  `mimeType` is reapplied when the file is served. Documents stored before this endpoint
+  existed are recovered through an api-key-signed download URL, so nothing needs re-uploading.
+* A delivery URL is readable by anyone holding it, and these are the owner's FSSAI licence,
+  PAN card and bank statement. Going through the API means the caller's own session decides
+  access. For the same reason `documents` and `adminNotes` are projected out of every
+  customer-facing restaurant read.
+
+`type` is one of `fssai_license`, `business_registration`, `gst_certificate`, `pan_card`,
+`address_proof`, `bank_statement`.
+
+**POST** — `multipart/form-data`, one document per request:
+
+| Field      | Type   | Notes                                              |
+| ---------- | ------ | -------------------------------------------------- |
+| `type`     | string | the document type, from the list above              |
+| `document` | file   | JPEG, PNG, WebP or PDF, max 5 MB                    |
+
+Each type has exactly one slot. Uploading again replaces the stored file, resets its
+`status` to `"pending"`, and deletes the superseded asset — so a rejected document is
+corrected by uploading a new copy, not by accumulating a second entry. A document already
+marked `"verified"` cannot be replaced or deleted by the owner: both answer
+`409 DOCUMENT_VERIFIED`.
+
+**Response** (`GET`, `POST` and `DELETE` all return the full current array)
+
+```json
+{
+  "status": "success",
+  "message": "Document uploaded",
+  "data": {
+    "documents": [
+      {
+        "_id": "665f...",
+        "type": "fssai_license",
+        "url": "https://res.cloudinary.com/.../fssai_license_1712345678",
+        "name": "fssai-certificate.pdf",
+        "mimeType": "application/pdf",
+        "publicId": "yulostores/restaurants/.../fssai_license_1712345678",
+        "resourceType": "raw",
+        "status": "pending",
+        "uploadedAt": "2026-09-03T10:12:00.000Z"
+      }
+    ]
+  }
 }
 ```
 
@@ -1843,6 +1918,12 @@ Base path: `/api/owner/:restaurantId/discounts`
 
 Discounts start in `draft` status. They must be explicitly published to become `active`.
 
+Create and update accept either `application/json` or `multipart/form-data`. Send
+multipart to attach the offer artwork as an `image` file part (JPEG/PNG/WebP, max 2MB); it
+is uploaded to Cloudinary and the resulting URL is stored on the discount's `image` field.
+In a multipart body the array fields must be JSON-encoded strings (e.g.
+`applicableTableNumbers = ["T5"]`), and numbers may be sent as plain strings.
+
 ### List Discounts
 
 ```
@@ -1867,6 +1948,7 @@ GET /api/owner/:restaurantId/discounts
         "minimumOrderValue": 300,
         "startDate": "2026-06-20T00:00:00.000Z",
         "endDate": "2026-06-22T23:59:59.000Z",
+        "image": "https://res.cloudinary.com/.../yulostores/discounts/664rest.../offer_1750000000000.jpg",
         "status": "active"
       }
     ]
@@ -1896,6 +1978,7 @@ POST /api/owner/:restaurantId/discounts
 | `applicableTableNumbers` | string\[\] | No |  |
 | `applicableCategories` | ObjectId\[\] | No |  |
 | `applicableItems` | ObjectId\[\] | No |  |
+| `image` | file | No | Multipart only — offer artwork, JPEG/PNG/WebP up to 2MB |
 
 **Type-specific fields**
 
@@ -1990,7 +2073,9 @@ New discounts are created in `draft` status.
 PATCH /api/owner/:restaurantId/discounts/:dId
 ```
 
-Same body as create. Full replacement of all fields.
+Same body as create. Full replacement of all fields. A new `image` part replaces the
+stored artwork (the previous Cloudinary asset is deleted); omitting it keeps the current
+image.
 
 **Response** `200`
 
@@ -2492,6 +2577,7 @@ POST /api/admin/auth/logout
 | `PATCH` | `/api/admin/stores/:id/reactivate` | none | [Reactivate → ](#reactivate-store)`active`[ (from ](#reactivate-store)`suspended`[ only)](#reactivate-store) |
 | `PATCH` | `/api/admin/stores/:id` | whitelisted fields | [Update store profile](#update-store) |
 | `POST` | `/api/admin/stores/:id/notes` | `{ note }` | [Add internal note](#add-admin-note) |
+| `GET` | `/api/admin/stores/:id/documents/:docId/file` | — | [View a document](#view-document) |
 | `PATCH` | `/api/admin/stores/:id/documents/:docId` | `{ status }` | [Verify/reject a document](#verify-document) |
 | `DELETE` | `/api/admin/stores/:id` | — | [Soft-remove store](#remove-store) |
 | `GET` | `/api/admin/customers?search=&status=&page=&limit=` | — | [List customers](#list-customers) |
@@ -2662,6 +2748,23 @@ POST /api/admin/stores/:id/notes
 Pushes `{ note, addedBy: <adminId>, addedAt: now }` onto `adminNotes`. Logs `STORE_NOTE_ADDED`.
 
 **Response** `200` — `data: { store }`
+
+---
+
+#### View Document
+
+```
+GET /api/admin/stores/:id/documents/:docId/file
+```
+
+Streams the document's bytes with its real `Content-Type` and `Content-Disposition:
+inline`, for previewing it inside the admin portal. **Do not link to the `url` on the
+document** — Cloudinary refuses to deliver PDFs on a default-configured account, and a
+delivery URL is public to anyone holding it. See [Compliance
+Documents](#compliance-documents) for the full reasoning.
+
+**Response** `200` — the file itself (not a JSON envelope). `404` if the store or document
+doesn't exist; `502 DOCUMENT_UNAVAILABLE` if storage can't produce the file.
 
 ---
 
@@ -3060,6 +3163,70 @@ Sorted by `totalDeliveries` descending.
 
 ## Staff — Authentication
 
+Staff credentials are issued entirely by the restaurant owner in the owner portal
+([Create Staff Member](#create-staff-member)): the server assigns the `staffCode`
+(`W01`, `W02` for waiters, `C01`, `C02` for chefs) and the owner sets the PIN. There is no
+staff signup, and no seeded staff account.
+
+A `staffCode` is unique only **within** one restaurant, so `restaurantId`, `staffCode` and
+`pin` together form the identity. That is why the login screen settles the restaurant
+first, via the typeahead below.
+
+### Restaurant Typeahead (staff login picker)
+
+```
+GET /api/staff/auth/restaurants
+```
+
+**No auth required** — a staff member holds no token until they have chosen their restaurant.
+
+**Query parameters**
+
+| Param | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `q` | string | Yes | Name fragment; 1 character is enough. Empty `q` returns an empty list, never the whole table. |
+| `lat` | number | No | Device latitude. Must be sent together with `lng`. |
+| `lng` | number | No | Device longitude. |
+
+With `lat`/`lng` the name match runs inside a `$geoNear` stage, so results come back
+**nearest-first** and each row carries `distanceKm`. Without them (permission denied,
+desktop, malformed values) it falls back to name ranking — prefix matches first, then
+alphabetical — and `distanceKm` is `null`. There is no distance cut-off on purpose: an
+imprecise fix must not be able to hide the restaurant the staff member actually works at.
+
+Only restaurants a customer could already see are listed (`isActive: true` **and**
+`approvalStatus: "active"`), and the projection is deliberately narrow — no contact
+details, delivery config, settings, documents or admin notes.
+
+**Response** `200`
+
+```json
+{
+  "status": "success",
+  "message": "Restaurant suggestions",
+  "data": {
+    "restaurants": [
+      {
+        "_id": "664abc...",
+        "name": "Test Kitchen",
+        "logo": null,
+        "coverImage": null,
+        "cuisineTypes": ["Indian"],
+        "address": { "street": null, "city": "Delhi", "state": null },
+        "distanceKm": 0
+      }
+    ],
+    "nearby": true
+  }
+}
+```
+
+`nearby` reports whether the list was distance-ranked, so the client can label it honestly.
+At most 8 rows are returned. Rate limit: **60 requests / minute per IP** — the typeahead
+fires per keystroke, so it does not share the login budget.
+
+---
+
 ### Staff Login
 
 ```
@@ -3073,13 +3240,15 @@ POST /api/staff/auth/login
 ```json
 {
   "restaurantId": "664abc...",
+  "staffCode": "W01",
   "pin": "1234"
 }
 ```
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `restaurantId` | string | Yes | ObjectId |
+| `restaurantId` | string | Yes | ObjectId (24 hex chars) |
+| `staffCode` | string | Yes | 2–10 chars. Case- and whitespace-insensitive — `zz99` and `ZZ 99` both match `ZZ99`. |
 | `pin` | string | Yes | 4–8 digits |
 
 **Response** `200`
@@ -3087,20 +3256,56 @@ POST /api/staff/auth/login
 ```json
 {
   "status": "success",
-  "message": "Staff login successful",
+  "message": "Login successful",
   "data": {
+    "staffToken": "eyJ...",
     "staff": {
       "_id": "664staff...",
       "name": "Ravi Kumar",
       "role": "waiter",
-      "restaurantId": "664abc..."
-    },
-    "staffToken": "eyJ..."
+      "staffCode": "W01",
+      "restaurantId": "664abc...",
+      "restaurantName": "Test Kitchen",
+      "restaurantLogo": null
+    }
   }
 }
 ```
 
-The PIN is verified with argon2id. The same generic error (`401 UNAUTHORIZED`) is returned whether the restaurant doesn't exist or the PIN is wrong — no user enumeration.
+**Errors**
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `VALIDATION_ERROR` | Malformed `restaurantId`, `staffCode` or `pin` |
+| `404` | `NOT_FOUND` | No restaurant with that id |
+| `403` | `RESTAURANT_UNAVAILABLE` | Restaurant suspended, rejected, expired, or still pending approval |
+| `401` | `INVALID_CREDENTIALS` | Unknown staff code, wrong PIN, **or** a deactivated staff member |
+
+The PIN is verified with argon2id. A deactivated member is answered exactly like a wrong
+PIN — someone who has been let go should not learn that their code is still on file — and
+an unknown staff code still pays an argon2 verification against a throwaway hash, so the
+response time does not reveal which of the two failed.
+
+---
+
+### Staff Session
+
+```
+GET /api/staff/auth/me
+```
+
+**Auth: Staff Bearer token**
+
+Returns the same `staff` object as login. The staff token is long-lived (8 h) and is stored
+in `localStorage` so a shift survives a phone locking itself — which means it can outlive
+the facts it was minted from. The portal calls this on boot and trusts the answer rather
+than the cached profile, so a member deactivated mid-shift, or a restaurant suspended
+mid-shift, is signed out on the next page load.
+
+**Response** `200` — `data: { staff }`
+
+**Errors** — `401 INVALID_TOKEN` (revoked, expired, or the member no longer exists / is
+inactive), `403 RESTAURANT_UNAVAILABLE` (restaurant no longer active).
 
 ---
 
