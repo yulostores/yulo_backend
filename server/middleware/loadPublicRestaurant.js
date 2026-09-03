@@ -1,5 +1,5 @@
 import Restaurant from '../models/Restaurant.js';
-import { PUBLIC_RESTAURANT_FILTER } from '../utils/publicRestaurant.js';
+import { PUBLIC_RESTAURANT_FILTER, PUBLIC_RESTAURANT_PROJECTION } from '../utils/publicRestaurant.js';
 import { ApiError } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
@@ -15,7 +15,9 @@ export const loadPublicRestaurant = asyncHandler(async (req, res, next) => {
   const restaurant = await Restaurant.findOne({
     _id: req.params.id,
     ...PUBLIC_RESTAURANT_FILTER,
-  }).lean();
+  })
+    .select(PUBLIC_RESTAURANT_PROJECTION)
+    .lean();
 
   if (!restaurant) throw new ApiError(404, 'NOT_FOUND', 'Restaurant not found');
 

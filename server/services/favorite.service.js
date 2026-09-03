@@ -2,7 +2,7 @@ import Favorite from '../models/Favorite.js';
 import Restaurant from '../models/Restaurant.js';
 import MenuItem from '../models/MenuItem.js';
 import { ApiError } from '../utils/ApiError.js';
-import { PUBLIC_RESTAURANT_FILTER } from '../utils/publicRestaurant.js';
+import { PUBLIC_RESTAURANT_FILTER, PUBLIC_RESTAURANT_PROJECTION } from '../utils/publicRestaurant.js';
 
 const PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
@@ -96,7 +96,9 @@ export const listFavoriteRestaurants = async (userId, page = 1, limit = PAGE_SIZ
   const restaurants = await Restaurant.find({
     _id: { $in: restaurantIds },
     ...PUBLIC_RESTAURANT_FILTER,
-  }).lean();
+  })
+    .select(PUBLIC_RESTAURANT_PROJECTION)
+    .lean();
 
   // `$in` doesn't preserve order — re-sort to most-recently-favorited-first, and drop any
   // favorite whose restaurant was deactivated/deleted since (rather than erroring).

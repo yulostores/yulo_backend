@@ -1,5 +1,5 @@
 import Restaurant from '../models/Restaurant.js';
-import { PUBLIC_RESTAURANT_FILTER } from '../utils/publicRestaurant.js';
+import { PUBLIC_RESTAURANT_FILTER, PUBLIC_RESTAURANT_PROJECTION } from '../utils/publicRestaurant.js';
 
 const DEFAULT_PAGE_SIZE = 20;
 
@@ -25,6 +25,7 @@ export const findNearby = async (
     ...PUBLIC_RESTAURANT_FILTER,
     ...extraFilter,
   })
+    .select(PUBLIC_RESTAURANT_PROJECTION)
     .skip((parsedPage - 1) * limit)
     .limit(limit)
     .lean();

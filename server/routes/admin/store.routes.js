@@ -10,6 +10,7 @@ import {
   update,
   addNote,
   verifyDocument,
+  getDocumentFile,
   remove,
 } from '../../controllers/admin/store.controller.js';
 
@@ -24,6 +25,7 @@ router.patch('/:id/suspend', suspend);
 router.patch('/:id/reactivate', reactivate);
 router.patch('/:id', update);
 router.post('/:id/notes', addNote);
+router.get('/:id/documents/:docId/file', getDocumentFile);
 router.patch('/:id/documents/:docId', verifyDocument);
 router.delete('/:id', remove);
 

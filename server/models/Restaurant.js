@@ -27,6 +27,19 @@ const restaurantDocumentSchema = new mongoose.Schema(
       ],
     },
     url: { type: String },
+    // Original filename and content type, captured at upload. The admin portal renders the
+    // document inline (image vs. PDF viewer) and lists it by the name the owner recognises —
+    // both of which had to be guessed from the Cloudinary URL before these were stored, which
+    // gets the extension wrong for anything uploaded as `resource_type: 'auto'`.
+    name: { type: String },
+    mimeType: { type: String },
+    // Cloudinary identity, kept alongside the URL. Deleting an asset needs the resource
+    // type as well as the public id (the URL alone can't be trusted to yield either after
+    // a folder rename), and the authenticated file endpoint needs both to fall back to a
+    // signed download when plain delivery is refused — which is exactly what Cloudinary
+    // does for PDFs unless the account opts into public PDF delivery.
+    publicId: { type: String },
+    resourceType: { type: String, enum: ['image', 'raw'], default: 'image' },
     status: { type: String, enum: ['pending', 'verified', 'rejected'], default: 'pending' },
     uploadedAt: { type: Date, default: Date.now },
   }

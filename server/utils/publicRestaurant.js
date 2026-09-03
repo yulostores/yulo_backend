@@ -19,3 +19,14 @@ export const PUBLIC_RESTAURANT_FILTER = Object.freeze({
 // for other reasons anyway (order placement) rather than querying by filter.
 export const isPubliclyVisible = (restaurant) =>
   restaurant?.isActive === true && restaurant?.approvalStatus === 'active';
+
+// Fields that must never leave on a customer-facing read. Every public surface below
+// returns the whole Restaurant document, so anything added to the schema is exposed by
+// default — and `documents` now holds the URLs of the owner's scanned FSSAI licence, PAN
+// card and bank statement (see controllers/owner/document.controller.js), which no
+// customer has any business fetching. `adminNotes` is the platform's internal review
+// commentary about the store, for the same reason.
+//
+// Applied with `.select()` on the queries that return full documents; the surfaces that
+// already project a narrow field list (search typeahead) don't need it.
+export const PUBLIC_RESTAURANT_PROJECTION = '-documents -adminNotes';

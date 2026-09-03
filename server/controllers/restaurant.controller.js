@@ -6,7 +6,7 @@ import * as favoriteService from '../services/favorite.service.js';
 import * as searchService from '../services/search.service.js';
 import * as restaurantService from '../services/restaurant.service.js';
 import { escapeRegExp } from '../utils/regex.js';
-import { PUBLIC_RESTAURANT_FILTER } from '../utils/publicRestaurant.js';
+import { PUBLIC_RESTAURANT_FILTER, PUBLIC_RESTAURANT_PROJECTION } from '../utils/publicRestaurant.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { ApiError } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -83,6 +83,7 @@ export const listRestaurants = asyncHandler(async (req, res) => {
 
     const [restaurants, total] = await Promise.all([
       Restaurant.find(filter)
+        .select(PUBLIC_RESTAURANT_PROJECTION)
         .skip((parsedPage - 1) * PAGE_SIZE)
         .limit(PAGE_SIZE)
         .lean(),

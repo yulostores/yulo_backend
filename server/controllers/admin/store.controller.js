@@ -7,6 +7,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { logActivity } from '../../services/activityLog.service.js';
+import { streamDocument } from '../../services/restaurantDocument.service.js';
 import { hashPassword } from '../../services/auth.service.js';
 import { STORE_STATUSES, shapeCounts } from '../../services/adminStats.service.js';
 
@@ -319,6 +320,20 @@ export const addNote = asyncHandler(async (req, res) => {
   });
 
   sendSuccess(res, 200, 'Note added', { store });
+});
+
+// Streams the document to the reviewing admin. Same reasoning as the owner-side endpoint
+// (services/restaurantDocument.service.js): a Cloudinary delivery URL is public to whoever
+// holds it, refuses to serve PDFs on this account, and would hand a reviewer a download
+// prompt instead of a preview.
+export const getDocumentFile = asyncHandler(async (req, res) => {
+  const store = await Restaurant.findById(req.params.id).select('documents');
+  if (!store) throw new ApiError(404, 'NOT_FOUND', 'Store not found');
+
+  const doc = store.documents?.id(req.params.docId);
+  if (!doc) throw new ApiError(404, 'NOT_FOUND', 'Document not found');
+
+  await streamDocument(doc, res);
 });
 
 const verifyDocumentSchema = z.object({ status: z.enum(['verified', 'rejected']) });

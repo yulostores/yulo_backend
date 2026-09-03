@@ -8,6 +8,7 @@ import ownerAuthRoutes from './auth.routes.js';
 import dashboardRoutes from './dashboard.routes.js';
 import restaurantRoutes from './restaurant.routes.js';
 import settingsRoutes from './settings.routes.js';
+import documentRoutes from './document.routes.js';
 import categoryRoutes from './category.routes.js';
 import menuItemRoutes from './menuItem.routes.js';
 import tableRoutes from './table.routes.js';
@@ -44,6 +45,9 @@ restaurantScopedRouter.use(authorizeRestaurant);
 // for anyone using the app and not at all for anyone holding the owner's token directly.
 restaurantScopedRouter.use('/restaurant', restaurantRoutes);
 restaurantScopedRouter.use('/settings', settingsRoutes);
+// Compliance documents belong to the same open set: uploading them is how a pending
+// restaurant gets approved, and how a rejected one answers what admin asked for.
+restaurantScopedRouter.use('/documents', documentRoutes);
 
 restaurantScopedRouter.use(requireRestaurantApproved);
 
