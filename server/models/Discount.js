@@ -10,6 +10,9 @@ const discountSchema = new mongoose.Schema(
     },
     offerName: { type: String, required: true },
     code: { type: String, default: null },
+    // Cloudinary secure URL of the offer artwork (yulostores/discounts/<restaurantId>),
+    // uploaded with the create/update request as the `image` file part.
+    image: { type: String, default: null },
     percentage: { type: Number, default: null },
     flatAmount: { type: Number, default: null },
     freeItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem', default: null },

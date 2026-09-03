@@ -104,6 +104,7 @@ const getFeaturedBanner = async (restaurantIds) => {
     restaurantId: discount.restaurantId,
     offerName: discount.offerName,
     code: discount.code,
+    image: discount.image ?? null,
     type: discount.type,
     percentage: discount.percentage,
     flatAmount: discount.flatAmount,
