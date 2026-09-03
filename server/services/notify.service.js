@@ -70,4 +70,26 @@ export const notifyService = {
       sessionStatus,
     });
   },
+
+  newRequest(request) {
+    const io = getIO();
+    io.to(`restaurant:${request.restaurantId}`).emit('new_request', {
+      requestId: request._id,
+      tableId: request.tableId,
+      type: request.type,
+      note: request.note,
+      status: request.status,
+      createdAt: request.createdAt,
+    });
+  },
+
+  requestStatusUpdated(request) {
+    const io = getIO();
+    io.to(`restaurant:${request.restaurantId}`).emit('request_status_updated', {
+      requestId: request._id,
+      tableId: request.tableId,
+      status: request.status,
+      resolvedAt: request.resolvedAt,
+    });
+  },
 };

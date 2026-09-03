@@ -2,6 +2,7 @@ import { Router } from 'express';
 import staffAuthRoutes from './auth.routes.js';
 import waiterRoutes from './waiter.routes.js';
 import kitchenRoutes from './kitchen.routes.js';
+import requestRoutes from './request.routes.js';
 
 const staffRouter = Router();
 
@@ -12,6 +13,7 @@ staffRouter.use('/auth', staffAuthRoutes);
 const staffRestaurantRouter = Router({ mergeParams: true });
 staffRestaurantRouter.use('/waiter', waiterRoutes);
 staffRestaurantRouter.use('/kitchen', kitchenRoutes);
+staffRestaurantRouter.use('/requests', requestRoutes);
 
 staffRouter.use('/:restaurantId', staffRestaurantRouter);
 

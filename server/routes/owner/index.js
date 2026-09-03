@@ -18,6 +18,7 @@ import discountRoutes from './discount.routes.js';
 import loyaltyRoutes from './loyalty.routes.js';
 import liveMonitorRoutes from './liveMonitor.routes.js';
 import staffRoutes from './staff.routes.js';
+import requestRoutes from './request.routes.js';
 
 const ownerRouter = Router();
 
@@ -61,6 +62,7 @@ restaurantScopedRouter.use('/discounts', discountRoutes);
 restaurantScopedRouter.use('/loyalty', loyaltyRoutes);
 restaurantScopedRouter.use('/live-monitor', liveMonitorRoutes);
 restaurantScopedRouter.use('/staff', staffRoutes);
+restaurantScopedRouter.use('/requests', requestRoutes);
 
 ownerRouter.use('/:restaurantId', restaurantScopedRouter);
 
