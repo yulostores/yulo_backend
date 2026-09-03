@@ -54,7 +54,26 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 | `NODE_ENV` | `production` | Enables the production Razorpay warning and framework prod paths. |
 | `ALLOWED_ORIGINS` | `https://<your-app>.vercel.app,https://<your-domain>` | Comma-separated. Defaults to `http://localhost:5173`, which blocks all browser calls from the deployed frontend (CORS + Socket.IO both read this). |
 | `CUSTOMER_APP_URL` | `https://<your-domain>` | Base URL baked into table QR deep links. Left unset, generated QR codes point at `localhost:5173` and are useless in the real world. |
+| `REFRESH_COOKIE_SAMESITE` | `none` | Only if the portals and this API are on **different registrable domains** (the default Vercel + DigitalOcean setup). Unset, `NODE_ENV=production` already resolves to `none`; set it explicitly to `lax` if you move the API onto a subdomain of the app's domain. See the warning below. |
 | `REDIS_URL` | Managed Redis URL (SECRET) | Optional in schema, but needed for sessions/queues in production. |
+
+> **The cross-site cookie trap.** The refresh token lives in an httpOnly cookie
+> set by the API. When the API is on `*.ondigitalocean.app` and the portals are on
+> `*.vercel.app`, those are unrelated sites, so the cookie must be
+> `SameSite=None; Secure` or the browser will store it and never send it back to
+> `POST /api/auth/refresh`. The failure is silent and delayed: login works (the
+> access token is held in memory), then `JWT_ACCESS_EXPIRES` (15m) later every
+> screen starts erroring — "could not load…, refresh the page" — and the reload
+> signs the user out, because the refresh that should have healed the session
+> answers 401. `config/env.js` now resolves this to `none` whenever
+> `NODE_ENV=production`, so the only way back into this is setting the variable
+> to `lax` by hand.
+>
+> `SameSite=None` still makes it a third-party cookie, which Safari's ITP blocks
+> outright and Chrome is phasing out. The durable fix is to put the API on a
+> subdomain of the app's own domain — `api.example.com` serving
+> `app.example.com` — which makes the cookie first-party; then set
+> `REFRESH_COOKIE_SAMESITE=lax`.
 
 ### Do NOT set
 

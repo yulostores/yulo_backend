@@ -29,7 +29,11 @@ const schema = z.object({
   // 'none' (which forces Secure) is required when the frontend is served from a
   // different site than this API. 'lax' covers localhost ports and a shared
   // registrable domain. See utils/refreshCookie.js.
-  REFRESH_COOKIE_SAMESITE: z.enum(['lax', 'strict', 'none']).default('lax'),
+  //
+  // Deliberately no static default: the safe value differs per environment, and the
+  // wrong one fails silently (the browser keeps the cookie but never sends it, so every
+  // page reload signs the user out). Resolved from NODE_ENV below.
+  REFRESH_COOKIE_SAMESITE: z.enum(['lax', 'strict', 'none']).optional(),
   CUSTOMER_APP_URL: z.string().url().optional(),
   PLATFORM_COMMISSION_PERCENT: z.coerce.number().default(15),
   DELIVERY_PARTNER_PER_DELIVERY_RATE: z.coerce.number().default(30),
@@ -55,4 +59,17 @@ if (!result.success) {
   process.exit(1);
 }
 
-export const env = result.data;
+// The production deploy is cross-site by construction — the portals are served from
+// Vercel and this API from DigitalOcean, which are unrelated registrable domains — so a
+// refresh cookie written with the 'lax' dev default is stored by the browser and then
+// never sent back to POST /api/auth/refresh. Nothing errors: the access token in memory
+// keeps working until it expires, then every screen starts failing 401 and the next page
+// reload ends the session. Defaulting to 'none' in production removes that footgun;
+// 'none' is also correct for a same-registrable-domain deploy, just less tight, and an
+// explicit REFRESH_COOKIE_SAMESITE still wins if you have one.
+export const env = {
+  ...result.data,
+  REFRESH_COOKIE_SAMESITE:
+    result.data.REFRESH_COOKIE_SAMESITE ??
+    (result.data.NODE_ENV === 'production' ? 'none' : 'lax'),
+};
