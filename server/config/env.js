@@ -35,6 +35,9 @@ const schema = z.object({
   // page reload signs the user out). Resolved from NODE_ENV below.
   REFRESH_COOKIE_SAMESITE: z.enum(['lax', 'strict', 'none']).optional(),
   CUSTOMER_APP_URL: z.string().url().optional(),
+  // Where table QR codes point — the yulo_menu guest-ordering app. Falls back to
+  // CUSTOMER_APP_URL below so nothing breaks before this is set in each environment.
+  MENU_APP_URL: z.string().url().optional(),
   PLATFORM_COMMISSION_PERCENT: z.coerce.number().default(15),
   DELIVERY_PARTNER_PER_DELIVERY_RATE: z.coerce.number().default(30),
   DELIVERY_PARTNER_MAX_CONCURRENT_ORDERS: z.coerce.number().default(1),

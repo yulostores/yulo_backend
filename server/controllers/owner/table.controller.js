@@ -53,7 +53,7 @@ export const generateQR = asyncHandler(async (req, res) => {
     restaurantId: req.restaurant._id.toString(),
     tableId: table._id.toString(),
     tableNumber: table.identifier,
-    baseUrl: env.CUSTOMER_APP_URL || 'http://localhost:5173',
+    baseUrl: env.MENU_APP_URL || env.CUSTOMER_APP_URL || 'http://localhost:5174',
   });
 
   sendSuccess(res, 200, 'QR code generated', { qr });

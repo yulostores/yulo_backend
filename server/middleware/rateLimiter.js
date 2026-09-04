@@ -28,6 +28,19 @@ export const apiLimiter = rateLimit({
   skip: skipPreflight,
 });
 
+// The guest QR-ordering endpoint is the most abuse-exposed route in the app: public, no
+// JWT, and it writes an order straight to the kitchen. It still sits under the global
+// apiLimiter above, but gets its own tighter per-IP budget on top — one prankster
+// refreshing a checkout button shouldn't be able to flood a restaurant's kitchen queue.
+export const guestOrderLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  message: { status: 'error', code: 'RATE_LIMITED', message: 'Too many orders placed — please wait a moment' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipPreflight,
+});
+
 // Session refresh gets its own budget so a busy (or runaway) page can never cost
 // the user their session: being rate limited out of /auth/refresh is
 // indistinguishable, client-side, from having no session left. It is cheap —

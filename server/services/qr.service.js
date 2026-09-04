@@ -4,7 +4,11 @@ import Table from '../models/Table.js';
 import { env } from '../config/env.js';
 
 export const generateTableQR = async ({ restaurantId, tableId, tableNumber, baseUrl }) => {
-  const menuUrl = `${baseUrl}/menu?restaurantId=${restaurantId}&tableId=${tableId}`;
+  // Query-string-only landing — the guest app (yulo_menu) reads ?r=&t= off its root route,
+  // so this never depends on a specific client-side path existing. The previous
+  // `/menu?restaurantId=&tableId=` shape pointed at a route yulo_restaurant's SPA never
+  // actually had, which bounced every scan to its owner-login screen.
+  const menuUrl = `${baseUrl}/?r=${restaurantId}&t=${tableId}`;
 
   const dataUrl = await qrcode.toDataURL(menuUrl, { width: 300, margin: 2 });
 
