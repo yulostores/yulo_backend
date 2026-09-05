@@ -13,7 +13,10 @@ export const notifyService = {
     const payload = {
       orderId: order._id,
       type: order.type,
+      tableId: order.tableId,
       tableNumber: order.tableNumber,
+      staffId: order.staffId,
+      placedBy: order.placedBy,
       batchNumber: order.batchNumber,
       items: order.items,
       specialInstructions: order.specialInstructions,
@@ -43,7 +46,19 @@ export const notifyService = {
 
   orderStatusUpdated(order) {
     const io = getIO();
-    const payload = { orderId: order._id, status: order.status, updatedAt: order.updatedAt };
+    // tableNumber and the last history entry ride along so a listening client can update
+    // its row in place — naming the table and who moved it — without a refetch.
+    const lastChange = order.statusHistory?.at?.(-1) ?? null;
+    const payload = {
+      orderId: order._id,
+      status: order.status,
+      tableId: order.tableId,
+      tableNumber: order.tableNumber,
+      updatedAt: order.updatedAt,
+      changedBy: lastChange
+        ? { staffId: lastChange.byStaffId, name: lastChange.byStaffName, role: lastChange.byRole }
+        : null,
+    };
     io.to(`restaurant:${order.restaurantId}`).emit('order_status_updated', payload);
     io.to(`kitchen:${order.restaurantId}`).emit('order_status_updated', payload);
     io.to(`order:${order._id}`).emit('order_status_updated', payload);

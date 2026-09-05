@@ -2,10 +2,14 @@ import { z } from 'zod';
 import Table from '../../models/Table.js';
 import TableSession from '../../models/TableSession.js';
 import Bill from '../../models/Bill.js';
+import Order from '../../models/Order.js';
 import * as waiterService from '../../services/waiter.service.js';
+import * as kitchenService from '../../services/kitchen.service.js';
+import * as orderViewService from '../../services/orderView.service.js';
 import * as menuService from '../../services/menu.service.js';
 import * as orderService from '../../services/order.service.js';
 import * as billingService from '../../services/billing.service.js';
+import * as billViewService from '../../services/billView.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
@@ -81,17 +85,89 @@ export const getSessions = asyncHandler(async (req, res) => {
     .populate('orders')
     .lean();
 
-  const result = sessions.map((s) => ({
-    ...s,
-    runningTotal: s.orders.reduce((sum, o) => sum + o.subtotal, 0),
-  }));
+  // Resolve the table identifier and each order's staff attribution once for the whole
+  // page. The waiter's Active Orders screen shows a row per round, so it needs to name
+  // who took each one — not just the session as a whole.
+  const tableIds = [...new Set(sessions.map((s) => String(s.tableId)))];
+  const tables = tableIds.length
+    ? await Table.find({ _id: { $in: tableIds } }).select('identifier capacity').lean()
+    : [];
+  const tableById = new Map(tables.map((t) => [String(t._id), t]));
+
+  const enrichedOrders = await orderViewService.enrichOrders(sessions.flatMap((s) => s.orders));
+  const orderById = new Map(enrichedOrders.map((o) => [String(o._id), o]));
+
+  const result = sessions.map((s) => {
+    const table = tableById.get(String(s.tableId)) ?? null;
+    const orders = s.orders
+      .map((o) => orderById.get(String(o._id)) ?? o)
+      .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+      .map((o, i) => ({ ...o, round: o.batchNumber ?? i + 1 }));
+
+    return {
+      ...s,
+      orders,
+      tableNumber: table?.identifier ?? null,
+      table: table ? { _id: table._id, identifier: table.identifier, capacity: table.capacity } : null,
+      runningTotal: orders
+        .filter((o) => o.status !== 'cancelled')
+        .reduce((sum, o) => sum + (o.subtotal ?? 0), 0),
+    };
+  });
 
   sendSuccess(res, 200, 'Active sessions', { sessions: result });
 });
 
+// A waiter marking a ticket served — the floor half of the order lifecycle, which until
+// now had no endpoint at all: every transition ran through the chef KDS (role: chef), so
+// nothing could record that food actually reached the table.
+//
+// Deliberately not limited to 'served' alone: plenty of restaurants run no KDS, and there
+// the waiter is the only person moving the ticket. The shared transition table in
+// kitchen.service.js still enforces the ordering, so a waiter can advance a ticket but
+// never skip backwards or invent a state.
+const waiterStatusSchema = z.object({
+  newStatus: z.enum(['confirmed', 'preparing', 'ready', 'served']),
+});
+
+export const updateOrderStatus = asyncHandler(async (req, res) => {
+  const result = waiterStatusSchema.safeParse(req.body);
+  if (!result.success) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid status', result.error.flatten());
+  }
+
+  const existing = await Order.findOne({
+    _id: req.params.orderId,
+    restaurantId: req.staff.restaurantId,
+  })
+    .select('status type')
+    .lean();
+  if (!existing) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
+
+  // 'served' means "carried to the table" — meaningless for delivery/takeaway, which
+  // reach the customer via 'out_for_delivery' -> 'delivered' instead.
+  if (result.data.newStatus === 'served' && existing.type !== 'dine_in') {
+    throw new ApiError(400, 'INVALID_TRANSITION', "Only dine-in orders can be marked 'served'");
+  }
+
+  const order = await kitchenService.updateOrderStatus({
+    orderId: req.params.orderId,
+    currentStatus: existing.status,
+    newStatus: result.data.newStatus,
+    actor: { staffId: req.staff._id, staffName: req.staff.name, role: 'waiter' },
+  });
+
+  sendSuccess(res, 200, 'Order status updated', {
+    order: await orderViewService.enrichOrder(order.toObject ? order.toObject() : order),
+  });
+});
+
 export const getBill = asyncHandler(async (req, res) => {
   const bill = await billingService.assembleBill(req.params.sessionId);
-  sendSuccess(res, 200, 'Bill', { bill });
+  // Shaped by billView.service.js, the same shape the owner console, the guest's own bill
+  // screen and the platform admin read — the floor and the guest must never be looking at
+  // two different readings of one bill.
+  sendSuccess(res, 200, 'Bill', { bill: await billViewService.buildBillView(bill) });
 });
 
 export const markPaid = asyncHandler(async (req, res) => {
@@ -113,5 +189,5 @@ export const markPaid = asyncHandler(async (req, res) => {
     paymentMethod,
   });
 
-  sendSuccess(res, 200, 'Bill marked as paid', { bill: paid });
+  sendSuccess(res, 200, 'Bill marked as paid', { bill: await billViewService.buildBillView(paid) });
 });

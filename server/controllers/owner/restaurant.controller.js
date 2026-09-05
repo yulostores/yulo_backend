@@ -3,13 +3,22 @@ import { geocodeAddress } from '../../services/geocode.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { validateCreateRestaurant } from '../../config/storeSettings.config.js';
 
 export const createRestaurant = asyncHandler(async (req, res) => {
   const { name, description, cuisineTypes, address, location } = req.body;
 
-  if (!name) throw new ApiError(400, 'VALIDATION_ERROR', 'name is required');
-  if (!address?.street?.trim() || !address?.city?.trim()) {
-    throw new ApiError(400, 'VALIDATION_ERROR', 'address.street and address.city are required');
+  // Same field contract the store-settings form is held to (config/storeSettings.config.js),
+  // narrowed to what this endpoint accepts — creating a restaurant is the first half of
+  // filling that form in, so the two shouldn't disagree about what a complete address is.
+  const fieldErrors = validateCreateRestaurant({ name, address });
+  if (Object.keys(fieldErrors).length > 0) {
+    throw new ApiError(
+      400,
+      'VALIDATION_ERROR',
+      'Some required details are missing or invalid',
+      { fieldErrors }
+    );
   }
 
   // Owners submit an address, not coordinates. `location.coordinates` is still honoured

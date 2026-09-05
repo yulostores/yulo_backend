@@ -4,24 +4,29 @@ import DeliveryPartner from '../models/DeliveryPartner.js';
 import { ApiError } from '../utils/ApiError.js';
 import { haversineKm, estimateEtaMinutes, isLocationFresh } from './geo.service.js';
 
-// Order.status is a single mutable field with no per-stage history (no statusHistory
-// array exists) — updatedAt only ever reflects the LAST write, so it's only trustworthy
-// as a timestamp for whichever stage is the order's CURRENT status, never for an earlier
-// one that's since been overwritten. Rather than fabricate timestamps this codebase
-// doesn't actually have, each stage below gets a real one only where genuinely available:
-// 'placed' (createdAt, always real), 'delivered' (deliveredAt, always real), the current
-// stage (updatedAt, real for that one transition), and 'out_for_delivery' additionally
-// prefers deliveryAssignment.pickupOtpVerifiedAt when set (a more precise, independently
-// real signal of when the partner actually picked up) — every other already-completed
-// stage gets `timestamp: null` rather than a guess.
+// Order.statusHistory now records every accepted transition with its own timestamp, so a
+// completed stage can carry a real time rather than a null. Where it's missing — orders
+// placed before that field existed — the original fallbacks still apply, because
+// updatedAt only ever reflects the LAST write and is trustworthy only for whichever stage
+// is the order's CURRENT status: 'placed' falls back to createdAt (always real),
+// 'delivered' to deliveredAt (always real), the current stage to updatedAt, and
+// 'out_for_delivery' prefers deliveryAssignment.pickupOtpVerifiedAt when set (a more
+// precise, independently real signal of when the partner actually picked up). Any other
+// already-completed stage with no history entry still gets null rather than a guess.
 const STATUS_STAGES = ['placed', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered'];
 
 const buildTimeline = (order) => {
   const currentIndex = STATUS_STAGES.indexOf(order.status);
+  const historyAt = new Map(
+    (order.statusHistory ?? []).map((entry) => [entry.status, entry.at])
+  );
+
   return STATUS_STAGES.map((stage, index) => {
     const completed = order.status === 'delivered' ? true : index <= currentIndex;
 
-    let timestamp = null;
+    let timestamp = historyAt.get(stage) ?? null;
+    if (timestamp) return { stage, timestamp, completed };
+
     if (stage === 'placed') {
       timestamp = order.createdAt;
     } else if (stage === 'delivered') {

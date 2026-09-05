@@ -16,6 +16,7 @@ import { streamDocument } from '../../services/restaurantDocument.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import logger from '../../utils/logger.js';
 
 // Must stay in step with the `type` enum on restaurantDocumentSchema (models/Restaurant.js)
 // and with STORE_DOCUMENT_TYPES in the super admin portal (src/lib/constants.js) — the
@@ -87,7 +88,26 @@ export const uploadDocument = asyncHandler(async (req, res) => {
       resourceType,
     });
   } catch (uploadErr) {
-    throw new ApiError(500, 'UPLOAD_FAILED', uploadErr?.message ?? 'Document upload failed');
+    // Cloudinary's own wording ("Invalid image file", "Resource not found in this account")
+    // is meaningless to a restaurant owner and reads as the app being broken. It goes to
+    // the log, under the request id, and the owner gets something they can act on.
+    logger.error(
+      {
+        reqId: req.id,
+        restaurantId: restaurant._id?.toString(),
+        documentType: type,
+        resourceType,
+        mimeType: req.file.mimetype,
+        size: req.file.size,
+        err: uploadErr?.message ?? String(uploadErr),
+      },
+      'Compliance document upload to storage failed'
+    );
+    throw new ApiError(
+      502,
+      'UPLOAD_FAILED',
+      'Sorry, we could not save that document right now. Please try again in a moment.'
+    );
   }
 
   // Replace in place, never append: a resubmission after rejection must overwrite the entry

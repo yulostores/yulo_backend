@@ -3,26 +3,35 @@ import { ApiError } from '../utils/ApiError.js';
 import { notifyService } from './notify.service.js';
 import { createOrderBill } from './billing.service.js';
 import { autoAssign } from './deliveryAssignment.service.js';
+import { enrichOrders } from './orderView.service.js';
 
+// 'served' is the dine-in leg: the kitchen takes a ticket to 'ready', the waiter carries
+// it to the table and marks it served. 'preparing' -> 'served' is allowed too, for the
+// common case of a restaurant that isn't running the chef KDS at all and whose waiter is
+// the only one moving the ticket. Delivery/takeaway keeps its original path untouched.
 const VALID_TRANSITIONS = {
   placed:    ['confirmed', 'preparing', 'cancelled'],
   confirmed: ['preparing', 'cancelled'],
-  preparing: ['ready', 'cancelled'],
-  ready:     ['out_for_delivery', 'delivered', 'cancelled'],
+  preparing: ['ready', 'served', 'cancelled'],
+  ready:     ['served', 'out_for_delivery', 'delivered', 'cancelled'],
+  served:    ['delivered', 'cancelled'],
   out_for_delivery: ['delivered', 'cancelled'],
 };
 
-export const getQueue = (restaurantId) => {
+// Enriched like every other order read (services/orderView.service.js) so a kitchen
+// ticket can name its table rather than making the chef decode a session id.
+export const getQueue = async (restaurantId) => {
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   // placed = new order; confirmed = accepted but chef hasn't started
-  return Order.find({
+  const orders = await Order.find({
     restaurantId,
     status: { $in: ['placed', 'confirmed'] },
     createdAt: { $gte: startOfToday },
   })
     .sort({ createdAt: 1 })
     .lean();
+  return enrichOrders(orders);
 };
 
 export const getBoard = async (restaurantId) => {
@@ -36,19 +45,28 @@ export const getBoard = async (restaurantId) => {
     }).sort({ createdAt: 1 }).lean(),
     Order.find({
       restaurantId,
-      status: { $in: ['delivered', 'out_for_delivery'] },
+      status: { $in: ['served', 'delivered', 'out_for_delivery'] },
       updatedAt: { $gte: today },
     }).sort({ updatedAt: -1 }).limit(20).lean(),
   ]);
 
+  const [enrichedActive, enrichedCompleted] = await Promise.all([
+    enrichOrders(active),
+    enrichOrders(completed),
+  ]);
+
   return {
-    preparing: active.filter((o) => o.status === 'preparing'),
-    ready:     active.filter((o) => o.status === 'ready'),
-    completed,
+    preparing: enrichedActive.filter((o) => o.status === 'preparing'),
+    ready:     enrichedActive.filter((o) => o.status === 'ready'),
+    completed: enrichedCompleted,
   };
 };
 
-export const updateOrderStatus = async ({ orderId, currentStatus, newStatus, staffId }) => {
+// `actor` identifies who drove the transition ({ staffId, staffName, role }) — recorded on
+// the order's statusHistory so the owner's per-order detail can say "marked served by
+// Ravi at 12:14pm" rather than just showing a bare status. Optional: internal/system
+// callers can omit it and the entry is attributed to 'system'.
+export const updateOrderStatus = async ({ orderId, currentStatus, newStatus, staffId, actor }) => {
   const allowed = VALID_TRANSITIONS[currentStatus];
   if (!allowed?.includes(newStatus)) {
     throw new ApiError(
@@ -58,9 +76,21 @@ export const updateOrderStatus = async ({ orderId, currentStatus, newStatus, sta
     );
   }
 
+  const now = new Date();
+  const historyEntry = {
+    status: newStatus,
+    at: now,
+    byStaffId: actor?.staffId ?? staffId ?? null,
+    byStaffName: actor?.staffName ?? null,
+    byRole: actor?.role ?? 'system',
+  };
+
   const order = await Order.findOneAndUpdate(
     { _id: orderId, status: currentStatus },
-    { $set: { status: newStatus } },
+    {
+      $set: { status: newStatus, ...(newStatus === 'served' ? { servedAt: now } : {}) },
+      $push: { statusHistory: historyEntry },
+    },
     { new: true }
   );
 

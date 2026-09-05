@@ -3,6 +3,7 @@ import TableSession from '../models/TableSession.js';
 import Bill from '../models/Bill.js';
 import * as billingService from '../services/billing.service.js';
 import * as paymentService from '../services/payment.service.js';
+import * as billViewService from '../services/billView.service.js';
 import { env } from '../config/env.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
@@ -41,7 +42,10 @@ export const getBill = asyncHandler(async (req, res) => {
   }
 
   const bill = await billingService.assembleBill(session._id);
-  sendSuccess(res, 200, 'Bill', { bill });
+  // The guest paying gets exactly what the waiter and the owner see — their table number,
+  // the restaurant's own tax/licence details, every round they ordered, and the same
+  // charge breakdown. See services/billView.service.js.
+  sendSuccess(res, 200, 'Bill', { bill: await billViewService.buildBillView(bill) });
 });
 
 // POST /api/restaurants/:id/tables/:tableId/bill/pay
@@ -78,7 +82,10 @@ export const payBill = asyncHandler(async (req, res) => {
   // scoped to just this bill's own batches).
   await TableSession.updateOne({ _id: session._id, status: 'open' }, { $set: { status: 'bill_requested' } });
 
-  sendSuccess(res, 200, 'Bill payment initiated', { bill, razorpayOrder });
+  sendSuccess(res, 200, 'Bill payment initiated', {
+    bill: await billViewService.buildBillView(bill),
+    razorpayOrder,
+  });
 });
 
 // POST /api/restaurants/:id/tables/:tableId/bill/pay/simulate — dev/local fallback for
@@ -99,7 +106,7 @@ export const simulateBillPayment = asyncHandler(async (req, res) => {
     paymentMethod: 'online',
   });
 
-  sendSuccess(res, 200, 'Payment simulated', { bill: updated });
+  sendSuccess(res, 200, 'Payment simulated', { bill: await billViewService.buildBillView(updated) });
 });
 
 // POST /api/restaurants/:id/tables/:tableId/bill/verify
@@ -128,7 +135,7 @@ export const verifyBillPaymentHandler = asyncHandler(async (req, res) => {
     paymentMethod: 'online',
   });
 
-  sendSuccess(res, 200, 'Payment verified', { bill: updated });
+  sendSuccess(res, 200, 'Payment verified', { bill: await billViewService.buildBillView(updated) });
 });
 
 // POST /api/restaurants/:id/tables/:tableId/bill/cancel — the guest backed out of the

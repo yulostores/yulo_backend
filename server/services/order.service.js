@@ -1,5 +1,6 @@
 import Order from '../models/Order.js';
 import TableSession from '../models/TableSession.js';
+import Table from '../models/Table.js';
 import MenuItem from '../models/MenuItem.js';
 import OptionGroup from '../models/OptionGroup.js';
 import Cart from '../models/Cart.js';
@@ -83,17 +84,35 @@ export const createOrder = async ({
 
     const batchNumber = updatedSession.batchCount;
 
+    // Snapshot the table onto the order itself. The session already knows its tableId,
+    // but every consumer of an order (kitchen ticket, owner's Manage Orders, the
+    // dashboard's live feed, the notify payload) would otherwise have to re-resolve
+    // TableSession -> Table just to name the table the food is going to — and until now
+    // none of them did, so `tableNumber` sat null on every dine-in order ever placed.
+    const table = await Table.findById(updatedSession.tableId).select('identifier').lean();
+
     const order = await Order.create({
       restaurantId,
       tableSessionId,
+      tableId: updatedSession.tableId,
+      tableNumber: table?.identifier ?? null,
       userId,
       staffId,
+      placedBy: staffId ? 'waiter' : userId ? 'customer' : 'guest',
       type: 'dine_in',
       batchNumber,
       items: snapshots,
       subtotal,
       specialInstructions,
       paymentMethod: paymentMethod || 'cash',
+      statusHistory: [
+        {
+          status: 'placed',
+          at: new Date(),
+          byStaffId: staffId ?? null,
+          byRole: staffId ? 'waiter' : userId ? 'customer' : 'guest',
+        },
+      ],
     });
 
     await TableSession.findByIdAndUpdate(tableSessionId, {
@@ -118,6 +137,7 @@ export const createOrder = async ({
     restaurantId,
     userId,
     staffId: null,
+    placedBy: 'customer',
     type,
     batchNumber: 1,
     items: snapshots,
@@ -125,6 +145,7 @@ export const createOrder = async ({
     specialInstructions,
     paymentMethod,
     deliveryAddress,
+    statusHistory: [{ status: 'placed', at: new Date(), byRole: 'customer' }],
   });
 
   if (idempotencyKey) {
@@ -291,6 +312,8 @@ export const createOrderFromCart = async ({
     restaurantId: cart.restaurantId,
     userId,
     staffId: null,
+    placedBy: 'customer',
+    statusHistory: [{ status: 'placed', at: new Date(), byRole: 'customer' }],
     type: 'delivery',
     batchNumber: 1,
     items: snapshots,

@@ -4,7 +4,32 @@ import logger from '../utils/logger.js';
 
 // eslint-disable-next-line no-unused-vars
 export const errorHandler = (err, req, res, next) => {
-  logger.error({ err, url: req.url, method: req.method });
+  // Expected, deliberate failures (a wrong OTP, an expired token, a validation miss) were
+  // logged at error level with a full stack, which buried the ones that actually need
+  // attention — an upstream provider failing, a 500 — in noise. Anything the app threw on
+  // purpose is logged as a single structured warn line; everything else keeps the stack.
+  if (err instanceof ApiError) {
+    const context = {
+      code: err.code,
+      status: err.statusCode,
+      url: req.url,
+      method: req.method,
+      ...(err.details && { details: err.details }),
+    };
+    // A deliberate 5xx is still a real incident (a third-party outage, say) — those keep
+    // error level so they stay visible in the platform's log filters.
+    if (err.statusCode >= 500) logger.error({ ...context, err }, err.message);
+    else logger.warn(context, err.message);
+  } else {
+    logger.error({ err, url: req.url, method: req.method });
+  }
+
+  // A streaming route (the document endpoints) can fail after its headers and part of its
+  // body are already on the wire. There is no status code left to send at that point:
+  // writing one throws ERR_HTTP_HEADERS_SENT, which is unhandled here and would take the
+  // process down. Hand it to Express's own final handler, which closes the connection so
+  // the client sees a truncated transfer rather than a response that never ends.
+  if (res.headersSent) return next(err);
 
   if (err instanceof ApiError) {
     return res.status(err.statusCode).json({

@@ -608,6 +608,47 @@ GET /api/restaurants/:id/reviews
 
 ---
 
+### Get the Table's Bill (guest)
+
+```
+GET /api/restaurants/:id/tables/:tableId/bill
+```
+
+Public — scoped by the table the guest scanned into, no auth. This is the bill the person
+paying reads, and it is the **same payload** the waiter settles against and the owner and
+platform admin later open ([see Owner — Bills](#the-bill-payload)): the table number they
+are sitting at, the restaurant's GSTIN/FSSAI, every round ordered, and the full tax,
+service-charge and discount breakdown.
+
+**Response** `200` — `data: { bill }`, or `data: { bill: null }` when the table's session
+has no orders yet.
+
+`404 NOT_FOUND` when no session is open on the table at all — i.e. nobody is seated. A
+client should render that as "nothing ordered yet", not as an error.
+
+---
+
+### Pay the Table's Bill (guest)
+
+```
+POST /api/restaurants/:id/tables/:tableId/bill/pay
+POST /api/restaurants/:id/tables/:tableId/bill/verify
+POST /api/restaurants/:id/tables/:tableId/bill/pay/simulate
+POST /api/restaurants/:id/tables/:tableId/bill/cancel
+```
+
+The guest-initiated counterpart to the waiter's mark-paid — not a replacement for it: a
+waiter can still settle the same bill in cash at any point up to payment.
+
+| Endpoint | Body | Notes |
+| --- | --- | --- |
+| `.../bill/pay` | — | Creates a Razorpay order for the bill's `grandTotal` and locks the session against new orders (`bill_requested`). Returns `data: { bill, razorpayOrder }`. |
+| `.../bill/verify` | `{ razorpay_payment_id, razorpay_order_id, razorpay_signature }` | Verifies the signature, then settles the bill and frees the table. Returns `data: { bill }`. A failed signature reopens the session. |
+| `.../bill/pay/simulate` | — | Local/dev only — `400 NOT_SIMULATED` when a real Razorpay key is configured. Settles the bill as a real verify would. |
+| `.../bill/cancel` | — | The guest closed the Razorpay checkout without paying. Reopens the session; a no-op if the payment already landed. |
+
+---
+
 ## Customer — Profile
 
 All routes require `Authorization: Bearer <accessToken>` with role `customer` or `restaurant_owner`.
@@ -1827,23 +1868,134 @@ GET /api/owner/:restaurantId/orders
 | --- | --- | --- | --- |
 | `status` | string | (all) | Filter by status |
 | `type` | `"dine_in"` | `"delivery"` | (all) |  |
+| `tableId` | string | (all) | Only orders for one table |
 | `page` | number | 1 |  |
 | `limit` | number | 20 |  |
 
 **Response** `200`
+
+Every order is returned enriched — the raw document plus the resolved table, the staff
+member who rang it in, the waiter assigned to the sitting, and the sitting itself:
 
 ```json
 {
   "status": "success",
   "message": "Orders",
   "data": {
-    "orders": [ { ... } ],
+    "orders": [
+      {
+        "_id": "664ord...",
+        "tableNumber": "T4",
+        "tableId": "664tbl...",
+        "batchNumber": 2,
+        "placedBy": "waiter",
+        "status": "served",
+        "servedAt": "2026-09-05T06:44:10.000Z",
+        "table":   { "_id": "664tbl...", "identifier": "T4", "capacity": 4 },
+        "staff":   { "_id": "664stf...", "name": "Ravi", "role": "waiter", "staffCode": "W01" },
+        "waiter":  { "_id": "664stf...", "name": "Ravi", "role": "waiter", "staffCode": "W01" },
+        "session": { "_id": "664sess...", "status": "open", "openedAt": "...", "guestCount": 3, "batchCount": 2 },
+        "statusHistory": [
+          { "status": "placed",  "at": "...", "byRole": "waiter", "staff": { "name": "Ravi", "role": "waiter" } },
+          { "status": "ready",   "at": "...", "byRole": "chef",   "staff": { "name": "Asha", "role": "chef" } },
+          { "status": "served",  "at": "...", "byRole": "waiter", "staff": { "name": "Ravi", "role": "waiter" } }
+        ]
+      }
+    ],
     "total": 200,
     "page": 1,
     "pages": 10
   }
 }
 ```
+
+`placedBy` is `"waiter"`, `"guest"` (table QR, no account) or `"customer"` (app) — it is
+what distinguishes the two cases where `staff` is `null`.
+
+For orders placed before `tableId`/`tableNumber`/`statusHistory` existed, the table is
+resolved through the order's table session on read, so `tableNumber` is still populated
+wherever it is recoverable. `scripts/backfillOrderTableInfo.js` writes those values onto
+the documents permanently.
+
+---
+
+### Orders By Table
+
+```
+GET /api/owner/:restaurantId/orders/by-table
+```
+
+Dine-in orders grouped table → sitting → rounds, which is how the floor reads them: the
+table is the unit, and under it sit that sitting's rounds in the order they were placed.
+
+**Query parameters**
+
+| Param | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `scope` | `"active"` \| `"today"` \| `"all"` | `"active"` | `active` = an order still in play or a sitting not yet paid |
+| `search` | string | — | Matches table number, order id, staff name or item name |
+
+**Response** `200`
+
+```json
+{
+  "status": "success",
+  "message": "Orders by table",
+  "data": {
+    "scope": "active",
+    "tables": [
+      {
+        "tableId": "664tbl...",
+        "tableNumber": "T4",
+        "capacity": 4,
+        "session": {
+          "_id": "664sess...",
+          "status": "open",
+          "openedAt": "2026-09-05T06:10:00.000Z",
+          "guestCount": 3,
+          "batchCount": 2,
+          "waiter": { "_id": "664stf...", "name": "Ravi", "role": "waiter" }
+        },
+        "orders": [ { "...enriched order...": "", "round": 1 } ],
+        "sittings": [
+          {
+            "sessionId": "664sess...",
+            "status": "open",
+            "isOpen": true,
+            "openedAt": "2026-09-05T06:10:00.000Z",
+            "closedAt": null,
+            "guestCount": 3,
+            "waiter": { "_id": "664stf...", "name": "Ravi", "role": "waiter" },
+            "orders": [ { "...enriched order...": "", "round": 1 } ],
+            "itemCount": 4,
+            "subtotal": 980,
+            "status": "preparing"
+          }
+        ],
+        "summary": {
+          "orderCount": 2,
+          "itemCount": 7,
+          "subtotal": 1720,
+          "status": "preparing",
+          "firstOrderAt": "...",
+          "lastOrderAt": "...",
+          "staff": [ { "_id": "664stf...", "name": "Ravi", "role": "waiter" } ]
+        }
+      }
+    ]
+  }
+}
+```
+
+`orders` is the table's rounds flat and chronological; `sittings` is the same rounds split
+by the party that ordered them, newest sitting first. The split matters because
+`batchNumber` (the round number) restarts with each party — a table reused three times in
+an evening otherwise shows "Round 1" three times under one heading, meaning three
+different things. Within a sitting, rounds run oldest first.
+
+`summary.status` and each sitting's `status` are headline statuses — the furthest-behind
+live ticket, since that is the one the floor still has to chase. An occupied table that
+hasn't ordered yet is included, with an empty `orders` array and one empty sitting.
 
 ---
 
@@ -1853,6 +2005,8 @@ GET /api/owner/:restaurantId/orders
 GET /api/owner/:restaurantId/orders/:orderId
 ```
 
+Returns one order in the same enriched shape as the list above.
+
 **Response** `200`
 
 ---
@@ -1860,6 +2014,122 @@ GET /api/owner/:restaurantId/orders/:orderId
 ## Owner — Bills
 
 Base path: `/api/owner/:restaurantId/bills`
+
+### The bill payload
+
+Every bill endpoint in this API — owner, waiter, guest and platform admin — answers with
+the **same** bill object, shaped by `services/billView.service.js`. A bill therefore reads
+identically in all four portals.
+
+A dine-in bill covers a whole table **sitting** and batches every round the table ordered;
+a delivery/takeaway bill wraps exactly one order and mirrors the figures frozen at
+checkout, so its total equals what the customer was actually charged.
+
+```json
+{
+  "_id": "664bill...",
+  "billNumber": "INV-000123",
+  "reference": "INV-000123",
+  "type": "dine_in",
+  "status": "paid",
+
+  "restaurant": {
+    "_id": "664abc...",
+    "name": "Ichimaru Ramen Shop",
+    "legalName": "Ichimaru Foods Pvt Ltd",
+    "logo": "https://res.cloudinary.com/...",
+    "phone": "+91...",
+    "email": "hello@ichimaru.in",
+    "gstNumber": "27AACR1234F1Z1",
+    "panNumber": "ABCDE1234F",
+    "fssaiNumber": "H-992-B",
+    "address": { "street": "...", "city": "...", "state": "...", "pincode": "..." },
+    "isSnapshot": true
+  },
+
+  "tableNumber": "21",
+  "table": { "_id": "664tbl...", "identifier": "21", "capacity": 4 },
+  "guestCount": 3,
+  "waiter": { "_id": "664stf...", "name": "Asha", "role": "waiter", "staffCode": "W02" },
+  "customer": { "_id": null, "name": null, "phone": "+9199..." },
+  "deliveryAddress": { "street": null, "city": null },
+
+  "tableSessionId": "664sess...",
+  "sessionCode": "4SESS1",
+  "session": {
+    "_id": "664sess...", "status": "paid",
+    "openedAt": "2026-06-17T12:10:00.000Z", "closedAt": "2026-06-17T14:00:00.000Z",
+    "guestCount": 3, "guestPhone": "+9199...", "batchCount": 3
+  },
+  "openedAt": "2026-06-17T12:10:00.000Z",
+  "closedAt": "2026-06-17T14:00:00.000Z",
+
+  "batches": [
+    {
+      "batchNumber": 1,
+      "round": 1,
+      "orderId": "664ord...",
+      "orderCode": "4ORD01",
+      "placedAt": "2026-06-17T12:14:00.000Z",
+      "status": "served",
+      "placedBy": "waiter",
+      "staff": { "_id": "664stf...", "name": "Asha", "role": "waiter" },
+      "staffName": "Asha",
+      "itemCount": 2,
+      "batchTotal": 700,
+      "items": [
+        { "menuItemId": "664itm...", "name": "Butter Chicken",
+          "quantity": 2, "price": 350, "lineTotal": 700, "note": "less spicy" }
+      ]
+    }
+  ],
+
+  "items": [
+    { "name": "Butter Chicken", "unitPrice": 350, "quantity": 2,
+      "lineTotal": 700, "notes": ["less spicy"] }
+  ],
+  "itemCount": 2,
+  "orderCount": 3,
+  "cancelledOrderCount": 0,
+
+  "charges": {
+    "subtotal": 1200,
+    "discountTotal": 0,
+    "gstPercent": 5, "gstAmount": 60,
+    "cgstPercent": 2.5, "cgstAmount": 30,
+    "sgstPercent": 2.5, "sgstAmount": 30,
+    "serviceChargePercent": 10, "serviceChargeAmount": 120,
+    "deliveryFee": 0, "platformFee": 0, "tip": 0,
+    "grandTotal": 1380
+  },
+  "discountsApplied": [],
+
+  "payment": {
+    "status": "paid",
+    "isPaid": true,
+    "method": "upi",
+    "paidAt": "2026-06-17T14:00:00.000Z",
+    "transactionId": "pay_...",
+    "intentId": "order_..."
+  },
+  "paymentMethod": "upi"
+}
+```
+
+Notes:
+
+| Field | Notes |
+| --- | --- |
+| `billNumber` | Human receipt number, unique per restaurant and running in issue order (`INV-000123`). Assigned once, at creation, and never recomputed. `null` on bills raised before numbering existed until `scripts/backfillBillDetails.js` is run. |
+| `reference` | `billNumber` when there is one, otherwise a short `#ABC123` derived from the bill's id. Always present, so a screen always has something to title the bill with. |
+| `restaurant` | The restaurant's details **as they stood when the bill was raised** (`isSnapshot: true`). Falls back to the live record for pre-snapshot bills. |
+| `tableNumber` | Snapshotted `Table.identifier`, so a renamed or deleted table doesn't erase it from the receipt. `null` for delivery/takeaway. |
+| `charges.cgst*` / `charges.sgst*` | The two intra-state halves of the single `gstPercent` the restaurant configures. Derived — there is no separate CGST/SGST setting. |
+| `batches` | Order history: one entry per round, oldest first, **including cancelled rounds** (which carry `status: "cancelled"` and are excluded from `subtotal`). |
+| `items` | The same items aggregated across rounds — one line per dish, for the receipt view. |
+| Money | All plain rupee numbers, rounded to the paisa. |
+
+---
 
 ### List Bills
 
@@ -1871,9 +2141,13 @@ GET /api/owner/:restaurantId/bills
 
 | Param | Type | Notes |
 | --- | --- | --- |
-| `status` | `"open"` | `"paid"` | Filter |
-| `page` | number |  |
-| `limit` | number |  |
+| `status` | `"open"` \| `"paid"` \| `"cancelled"` | Filter |
+| `type` | `"dine_in"` \| `"delivery"` \| `"takeaway"` | Filter |
+| `tableNumber` | string | Exact table identifier |
+| `from` / `to` | ISO date | Filters on `createdAt` |
+| `q` | string | Case-insensitive match on `billNumber` or `tableNumber` |
+| `page` | number | |
+| `limit` | number | |
 
 **Response** `200`
 
@@ -1881,22 +2155,7 @@ GET /api/owner/:restaurantId/bills
 {
   "status": "success",
   "message": "Bills",
-  "data": {
-    "bills": [
-      {
-        "_id": "664bill...",
-        "tableSessionId": "664sess...",
-        "restaurantId": "664abc...",
-        "subtotal": 750,
-        "taxAmount": 135,
-        "discountAmount": 50,
-        "grandTotal": 835,
-        "status": "paid",
-        "paymentMethod": "upi",
-        "paidAt": "2026-06-17T13:00:00.000Z"
-      }
-    ]
-  }
+  "data": { "bills": [ /* bill payload, above */ ], "total": 42, "page": 1, "pages": 3 }
 }
 ```
 
@@ -1908,7 +2167,24 @@ GET /api/owner/:restaurantId/bills
 GET /api/owner/:restaurantId/bills/:billId
 ```
 
-**Response** `200`
+**Response** `200` — `{ "data": { "bill": { /* bill payload */ } } }`
+
+---
+
+### Get the Bill for an Order
+
+```
+GET /api/owner/:restaurantId/orders/:orderId/bill
+```
+
+Resolves an order to the bill it landed on: a dine-in order to its table session's bill
+(which batches several rounds), a delivery/takeaway order to its own single-order bill.
+
+Answers `200` with `bill: null` — not an error — when the order has not been billed yet,
+which is the normal state for a sitting whose bill has never been opened or settled.
+`404` only when the order itself doesn't exist under this restaurant.
+
+**Response** `200` — `{ "data": { "bill": { /* bill payload */ } | null } }`
 
 ---
 
@@ -2580,6 +2856,8 @@ POST /api/admin/auth/logout
 | `GET` | `/api/admin/stores/:id/documents/:docId/file` | — | [View a document](#view-document) |
 | `PATCH` | `/api/admin/stores/:id/documents/:docId` | `{ status }` | [Verify/reject a document](#verify-document) |
 | `DELETE` | `/api/admin/stores/:id` | — | [Soft-remove store](#remove-store) |
+| `GET` | `/api/admin/bills?restaurantId=&status=&type=&tableNumber=&from=&to=&q=&page=&limit=` | — | [List bills platform-wide](#admin--bills) |
+| `GET` | `/api/admin/bills/:billId` | — | [Get one bill](#admin--bills) |
 | `GET` | `/api/admin/customers?search=&status=&page=&limit=` | — | [List customers](#list-customers) |
 | `GET` | `/api/admin/customers/:id` | — | [Get one customer](#get-customer) |
 | `PATCH` | `/api/admin/customers/:id/status` | `{ isActive }` | [Activate/deactivate customer](#set-customer-status) |
@@ -2799,6 +3077,48 @@ DELETE /api/admin/stores/:id
 Soft-delete only — sets `isActive: false`; `approvalStatus` is left unchanged. Order/bill history referencing this `restaurantId` is preserved. Logs `STORE_REMOVED`.
 
 **Response** `200` — `data: { store }`
+
+---
+
+### Admin — Bills
+
+Base path: `/api/admin/bills`
+
+Platform-wide bill oversight — the individual receipt behind the revenue figures the
+finance and dashboard endpoints report in aggregate. Responses use the same bill payload
+as the owner endpoints ([see above](#the-bill-payload)), so a bill escalated to the
+platform reads exactly as the restaurant, the waiter and the paying guest saw it.
+
+#### List Bills
+
+```
+GET /api/admin/bills
+```
+
+**Query parameters**
+
+| Param | Type | Notes |
+| --- | --- | --- |
+| `restaurantId` | ObjectId | Scope to one store |
+| `status` | `"open"` \| `"paid"` \| `"cancelled"` | Filter |
+| `type` | `"dine_in"` \| `"delivery"` \| `"takeaway"` | Filter |
+| `tableNumber` | string | Exact table identifier |
+| `from` / `to` | ISO date | Filters on `createdAt` |
+| `q` | string | Case-insensitive match on `billNumber`, `tableNumber` or the store name recorded on the bill |
+| `page` / `limit` | number | |
+
+Every row carries `restaurant` — from the bill's own snapshot, or resolved live for bills
+raised before snapshots existed — so a cross-restaurant listing always names the store.
+
+**Response** `200` — `data: { bills, total, page, pages }`
+
+#### Get Bill
+
+```
+GET /api/admin/bills/:billId
+```
+
+**Response** `200` — `data: { bill }`
 
 ---
 
@@ -3494,6 +3814,48 @@ POST /api/staff/:restaurantId/waiter/orders
 
 Order creation uses sequential operations to increment `batchCount` on the session and create the order (no MongoDB transactions — standalone MongoDB is supported). A `new_order` Socket.IO event is emitted to kitchen and restaurant rooms.
 
+The created order records `tableId`/`tableNumber` (from the session's table), `staffId`
+(the waiter placing it) and `placedBy: "waiter"`, so every downstream view can say which
+table it is for and who took it.
+
+---
+
+### Update Order Status (Waiter)
+
+```
+PATCH /api/staff/:restaurantId/waiter/orders/:orderId/status
+```
+
+The floor's half of the order lifecycle. The kitchen can say a dish is `ready`; only the
+person who carried it knows it reached the table, which is what `served` records.
+
+**Body**
+
+```json
+{ "newStatus": "served" }
+```
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `newStatus` | string | Yes | `confirmed` \| `preparing` \| `ready` \| `served` |
+
+`served` is dine-in only — `400 INVALID_TRANSITION` for delivery/takeaway. The other three
+are accepted so a restaurant that doesn't run the chef KDS can still walk a ticket forward
+from the floor; the same transition table as the KDS applies either way, so a step can
+never be skipped backwards. The transition is recorded on the order's `statusHistory`
+against the waiter's name, and emits `order_status_updated` to the restaurant, kitchen and
+waiter rooms.
+
+**Response** `200` — `{ "data": { "order": { ...enriched order... } } }`
+
+**Errors**
+
+| Status | Code | When |
+| --- | --- | --- |
+| 400 | `INVALID_TRANSITION` | Not a legal next status, or `served` on a non-dine-in order |
+| 404 | `NOT_FOUND` | Order isn't this restaurant's |
+| 409 | `CONCURRENT_UPDATE` | Someone else moved it first — refetch and retry |
+
 ---
 
 ### Get Active Sessions
@@ -3502,7 +3864,9 @@ Order creation uses sequential operations to increment `batchCount` on the sessi
 GET /api/staff/:restaurantId/waiter/sessions
 ```
 
-Returns all open table sessions with their orders and a running total.
+Returns all open table sessions with their orders and a running total. The session carries
+its resolved `tableNumber`, and each order is enriched (see *Owner — List Orders*) and
+numbered with its `round`, oldest first. `runningTotal` excludes cancelled orders.
 
 **Response** `200`
 
@@ -3515,9 +3879,14 @@ Returns all open table sessions with their orders and a running total.
       {
         "_id": "664sess...",
         "tableId": "664tbl...",
+        "tableNumber": "T4",
+        "table": { "_id": "664tbl...", "identifier": "T4", "capacity": 4 },
         "status": "open",
+        "guestCount": 3,
         "batchCount": 3,
-        "orders": [ { ... }, { ... } ],
+        "orders": [
+          { "_id": "664ord...", "round": 1, "status": "served", "staff": { "name": "Ravi", "role": "waiter" } }
+        ],
         "runningTotal": 1450
       }
     ]
@@ -3533,37 +3902,19 @@ Returns all open table sessions with their orders and a running total.
 GET /api/staff/:restaurantId/waiter/sessions/:sessionId/bill
 ```
 
-Assembles (or fetches cached) bill for the session. Idempotent — safe to call multiple times.
+Assembles (or fetches the cached) bill for the session. Idempotent — safe to call
+repeatedly, which the waiter's bill panel does on every open.
 
-**Response** `200`
+Once the bill is settled (`status: "paid"` or `"cancelled"`) it is **frozen**: further
+calls return it unchanged rather than re-pricing a paid receipt against a since-changed
+menu, table name or cancelled round.
 
-```json
-{
-  "status": "success",
-  "message": "Bill",
-  "data": {
-    "bill": {
-      "_id": "664bill...",
-      "tableSessionId": "664sess...",
-      "restaurantId": "664abc...",
-      "items": [
-        {
-          "name": "Butter Chicken",
-          "quantity": 2,
-          "unitPrice": 350,
-          "subtotal": 700
-        }
-      ],
-      "subtotal": 1200,
-      "taxRate": 0.18,
-      "taxAmount": 216,
-      "discountAmount": 0,
-      "grandTotal": 1416,
-      "status": "open"
-    }
-  }
-}
-```
+A round that was cancelled stays on the bill's `batches` (so the floor can see it was
+voided) but is excluded from `charges.subtotal` — it is never charged for.
+
+**Response** `200` — `data: { bill }`, using the shared bill payload
+([see Owner — Bills](#the-bill-payload)): table number, the restaurant's snapshotted
+tax/licence details, the round-by-round order history, and the full charge breakdown.
 
 A `bill_updated` Socket.IO event is emitted to the table room when the bill is assembled.
 
@@ -3589,23 +3940,8 @@ Closes the bill, closes the table session, and marks the table as available.
 | --- | --- |
 | Accepted values | `"cash"`, `"upi"`, `"card"`, `"online"` |
 
-**Response** `200`
-
-```json
-{
-  "status": "success",
-  "message": "Bill marked as paid",
-  "data": {
-    "bill": {
-      "_id": "664bill...",
-      "status": "paid",
-      "paymentMethod": "upi",
-      "paidAt": "2026-06-17T14:00:00.000Z",
-      "grandTotal": 1416
-    }
-  }
-}
-```
+**Response** `200` — `data: { bill }`, the same payload, now with
+`status: "paid"`, `payment.method`, `payment.paidAt` and `closedAt` set.
 
 A `table_status_changed` Socket.IO event is emitted to the restaurant room.
 
@@ -3709,10 +4045,20 @@ Uses optimistic concurrency control — you must send the status you currently s
 
 | From | To (allowed values) |
 | --- | --- |
-| `placed` | `confirmed`, `cancelled` |
+| `placed` | `confirmed`, `preparing`, `cancelled` |
 | `confirmed` | `preparing`, `cancelled` |
-| `preparing` | `ready`, `cancelled` |
-| `ready` | `out_for_delivery`, `delivered`, `cancelled` |
+| `preparing` | `ready`, `served`, `cancelled` |
+| `ready` | `served`, `out_for_delivery`, `delivered`, `cancelled` |
+| `served` | `delivered`, `cancelled` |
+| `out_for_delivery` | `delivered`, `cancelled` |
+
+`served` means the food reached the table and is **dine-in only** — sending it for a
+delivery or takeaway order returns `400 INVALID_TRANSITION`. It is normally set from the
+waiter portal (see *Update Order Status (Waiter)*); the KDS accepts it too, for the
+kitchen's own hand-off to the floor.
+
+Every accepted transition appends an entry to the order's `statusHistory` recording the
+status, the time, and the staff member who made it.
 
 **Response** `200`
 

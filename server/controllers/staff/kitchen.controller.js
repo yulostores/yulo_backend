@@ -6,7 +6,9 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import Order from '../../models/Order.js';
 
 const updateStatusSchema = z.object({
-  newStatus: z.enum(['confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered', 'cancelled']),
+  newStatus: z.enum([
+    'confirmed', 'preparing', 'ready', 'served', 'out_for_delivery', 'delivered', 'cancelled',
+  ]),
 });
 
 export const getQueue = asyncHandler(async (req, res) => {
@@ -29,14 +31,19 @@ export const updateStatus = asyncHandler(async (req, res) => {
   const existing = await Order.findOne({
     _id: req.params.orderId,
     restaurantId: req.staff.restaurantId,
-  }).select('status');
+  }).select('status type');
   if (!existing) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
+
+  if (result.data.newStatus === 'served' && existing.type !== 'dine_in') {
+    throw new ApiError(400, 'INVALID_TRANSITION', "Only dine-in orders can be marked 'served'");
+  }
 
   const order = await kitchenService.updateOrderStatus({
     orderId: req.params.orderId,
     currentStatus: existing.status,
     newStatus: result.data.newStatus,
     staffId: req.staff._id,
+    actor: { staffId: req.staff._id, staffName: req.staff.name, role: 'chef' },
   });
 
   sendSuccess(res, 200, 'Order status updated', { order });

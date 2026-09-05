@@ -49,7 +49,16 @@ const schema = z.object({
   MESSAGECENTRAL_KEY: z.string().optional(),
   MESSAGECENTRAL_EMAIL: z.string().email().optional(),
   MESSAGECENTRAL_BASE_URL: z.string().url().default('https://cpaas.messagecentral.com'),
-  SMS_PROVIDER: z.enum(['mock', 'messagecentral']).default('mock'),
+  // 'mock'          — generate the code locally and log/echo it (dev default).
+  // 'messagecentral'— generate and deliver via MessageCentral (real SMS, costs credits).
+  // 'bypass'        — TEMPORARY. No provider call at all: any 6-digit code verifies a
+  //                   number that has requested one. In place while the MessageCentral
+  //                   balance is exhausted; revert by setting 'messagecentral' again.
+  //                   Nothing else has to change — see services/otp.service.js.
+  SMS_PROVIDER: z.enum(['mock', 'messagecentral', 'bypass']).default('mock'),
+  // Per-phone OTP send budget inside a 10-minute window. Raise it while testing the
+  // login flow end to end; the default is the production-safe value.
+  OTP_MAX_REQUESTS_PER_WINDOW: z.coerce.number().int().min(1).default(3),
 });
 
 const result = schema.safeParse(process.env);

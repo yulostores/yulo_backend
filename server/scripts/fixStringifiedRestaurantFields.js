@@ -3,7 +3,9 @@
 // controllers/owner/settings.controller.js). Those saves stored `address` as a raw JSON
 // string and `cuisineTypes` as a one-element array holding a JSON string, which reads back
 // as an address with every subfield undefined — so the owner's store settings looked empty
-// no matter how many times they saved.
+// no matter how many times they saved. Worse, it also blocks every later save: Mongo
+// cannot write `address.city` through a string and answers "Cannot create field 'city' in
+// element {address: ...}".
 //
 // Re-geocoding is part of the repair, not a nicety: while `address` was a string,
 // formatAddress() produced "" and the location point silently stopped tracking the
@@ -33,6 +35,13 @@ console.log(`✓ Connected${apply ? '' : '  (dry run — pass --apply to write)'
 // .lean() so mongoose hands back what Mongo actually holds; hydrating would coerce the
 // corrupt values into the schema's shape and hide exactly what we're looking for.
 const all = await Restaurant.find({}).lean();
+
+const settingsDefaults = Object.fromEntries(
+  Object.entries(Restaurant.schema.paths)
+    .filter(([path, type]) => path.startsWith('settings.') && type.options.default !== undefined)
+    .map(([path, type]) => [path.slice('settings.'.length), type.options.default])
+);
+
 let repaired = 0;
 let skipped = 0;
 
@@ -56,6 +65,18 @@ for (const r of all) {
       set.address = { street: r.address, city: '', state: '', pincode: '' };
       notes.push(`address → { street: ${r.address} }  (not JSON; kept as street)`);
     }
+  }
+
+  // `settings` rode the same multipart path as `address`, so it can be stringified too —
+  // and while it is, every settings.* read (GST number, PAN, licence expiry) comes back
+  // undefined and the compliance section of the store-settings form shows empty.
+  if (typeof r.settings === 'string') {
+    const parsed = parse(r.settings);
+    const merged = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    // Schema defaults only apply on insert, so they have to be written explicitly here or
+    // the restaurant loses its GST and service-charge percentages.
+    set.settings = { ...settingsDefaults, ...merged };
+    notes.push(`settings → { ${Object.keys(set.settings).join(', ')} }`);
   }
 
   const badCuisines = (r.cuisineTypes ?? []).some((c) => typeof c === 'string' && c.trim().startsWith('['));

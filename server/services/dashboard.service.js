@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import Order from '../models/Order.js';
 import Restaurant from '../models/Restaurant.js';
 import { redis } from '../config/redis.js';
+import { enrichOrders } from './orderView.service.js';
 
 export const getKPIs = async (restaurantId) => {
   const today = new Date();
@@ -67,11 +68,16 @@ export const getTopItems = (restaurantId, limit = 5) => {
   ]);
 };
 
-export const getRecentOrders = (restaurantId, limit = 10) =>
-  Order.find({ restaurantId })
+// The dashboard's live activity feed. Enriched so each row can name the table it came
+// from and the staff member who took it — without that the feed lists orders the owner
+// has no way to place on the floor.
+export const getRecentOrders = async (restaurantId, limit = 10) => {
+  const orders = await Order.find({ restaurantId })
     .sort({ createdAt: -1 })
     .limit(limit)
     .lean();
+  return enrichOrders(orders);
+};
 
 export const getStatusBreakdown = (restaurantId) => {
   const rid = new mongoose.Types.ObjectId(restaurantId);

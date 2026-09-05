@@ -4,6 +4,7 @@ import { authorizeRole } from '../../middleware/authorizeRole.js';
 import { authorizeRestaurant } from '../../middleware/authorizeRestaurant.js';
 import { requireRestaurantApproved } from '../../middleware/requireRestaurantApproved.js';
 import { createRestaurant, listMyRestaurants } from '../../controllers/owner/restaurant.controller.js';
+import { getSettingsRequirements } from '../../controllers/owner/settings.controller.js';
 import ownerAuthRoutes from './auth.routes.js';
 import dashboardRoutes from './dashboard.routes.js';
 import restaurantRoutes from './restaurant.routes.js';
@@ -33,6 +34,11 @@ ownerRouter.use(authenticate, authorizeRole('restaurant_owner'));
 // then reviews (see Restaurant.approvalStatus / PATCH /api/admin/stores/:id/approve).
 ownerRouter.get('/restaurants', listMyRestaurants);
 ownerRouter.post('/restaurants', createRestaurant);
+
+// The store-settings field contract — which details are mandatory, what each has to look
+// like, what the dropdowns offer. Not restaurant-scoped: the portal needs it to render the
+// "Add Your Restaurant" step, which is what runs when the owner has no restaurant yet.
+ownerRouter.get('/settings-requirements', getSettingsRequirements);
 
 // Scoped per-restaurant sub-router — mergeParams exposes :restaurantId to children
 const restaurantScopedRouter = Router({ mergeParams: true });

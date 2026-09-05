@@ -1,13 +1,16 @@
 import multer from 'multer';
 import { ApiError } from '../utils/ApiError.js';
 
-const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+// Exported so the same list can be described to clients (config/storeSettings.config.js
+// serves it to the owner portal), rather than each of them keeping its own copy of what
+// this filter will accept.
+export const ALLOWED_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
 // Rejecting with an error rather than `cb(null, false)` is the whole point: a silent
 // `false` drops the file and lets the controller answer 200 as if nothing was uploaded,
 // which is indistinguishable from success on the client.
 const fileFilter = (_req, file, cb) => {
-  if (ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+  if (ALLOWED_IMAGE_MIME_TYPES.includes(file.mimetype)) {
     cb(null, true);
   } else {
     cb(new ApiError(400, 'INVALID_FILE_TYPE', 'Only JPEG, PNG and WebP are allowed'));

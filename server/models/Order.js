@@ -33,6 +33,29 @@ const deliveryAssignmentHistorySchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Every status the order has passed through, with who moved it and when. The kitchen
+// (chef KDS) and the waiter portal both drive transitions, so a single `status` field
+// alone can't answer "who marked this served, and at what time" — which is exactly what
+// the owner's per-order detail view needs. Appended to on every accepted transition in
+// services/kitchen.service.js's updateOrderStatus; seeded with the 'placed' entry at
+// creation time so the timeline is never missing its own first step.
+const orderStatusHistorySchema = new mongoose.Schema(
+  {
+    status: { type: String, required: true },
+    at: { type: Date, default: Date.now },
+    byStaffId: { type: mongoose.Schema.Types.ObjectId, ref: 'StaffMember', default: null },
+    // Snapshotted, not just referenced — a staff member can later be renamed or soft
+    // deleted (StaffMember.isActive:false), and the audit trail must still read correctly.
+    byStaffName: { type: String, default: null },
+    byRole: {
+      type: String,
+      enum: ['waiter', 'chef', 'owner', 'customer', 'guest', 'system'],
+      default: 'system',
+    },
+  },
+  { _id: false }
+);
+
 const orderSchema = new mongoose.Schema(
   {
     restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Restaurant', required: true },
@@ -40,7 +63,22 @@ const orderSchema = new mongoose.Schema(
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'StaffMember', default: null },
     type: { type: String, enum: ['dine_in', 'delivery', 'takeaway'], required: true },
+    // The table this order belongs to. tableNumber is the human-facing identifier
+    // (Table.identifier, e.g. "T4") snapshotted at placement so the order still reads
+    // correctly if the table is renamed or deleted; tableId is the stable reference used
+    // for grouping orders by table. Both are set from the order's TableSession in
+    // services/order.service.js — before that they were left null on every dine-in order,
+    // which is why the owner portal could not say which table an order came from.
     tableNumber: { type: String, default: null },
+    tableId: { type: mongoose.Schema.Types.ObjectId, ref: 'Table', default: null },
+    // Who put the order in: a waiter on the floor (staffId is set), a guest scanning the
+    // table QR with no account, or a signed-in customer. Distinct from staffId, which is
+    // null for both guest and customer orders and so can't distinguish them on its own.
+    placedBy: {
+      type: String,
+      enum: ['waiter', 'guest', 'customer', 'system'],
+      default: 'customer',
+    },
     batchNumber: { type: Number, default: 1 },
     items: { type: [orderItemSchema], required: true },
     subtotal: { type: Number, required: true },
@@ -95,11 +133,18 @@ const orderSchema = new mongoose.Schema(
     // for whenever a batching feature is eventually built.
     dedicatedBagRequired: { type: Boolean, default: false },
     specialInstructions: { type: String, default: '' },
+    // 'served' is the dine-in terminal state: the food actually reached the table. It sits
+    // between 'ready' (kitchen is done, food is on the pass) and the bill being settled,
+    // and is set by the waiter, not the kitchen — see the waiter status endpoint in
+    // controllers/staff/waiter.controller.js. Delivery/takeaway orders never enter it;
+    // they go 'ready' -> 'out_for_delivery' -> 'delivered' as before.
     status: {
       type: String,
-      enum: ['placed', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered', 'cancelled'],
+      enum: ['placed', 'confirmed', 'preparing', 'ready', 'served', 'out_for_delivery', 'delivered', 'cancelled'],
       default: 'placed',
     },
+    servedAt: { type: Date, default: null },
+    statusHistory: { type: [orderStatusHistorySchema], default: [] },
     paymentStatus: {
       type: String,
       // 'pending_cod' is distinct from 'pending' — set by checkout (Prompt 10/11) for
@@ -188,6 +233,7 @@ orderSchema.index({ 'deliveryAssignment.partnerId': 1, 'deliveryAssignment.statu
 
 orderSchema.index({ restaurantId: 1, createdAt: -1 });
 orderSchema.index({ tableSessionId: 1 });
+orderSchema.index({ restaurantId: 1, tableId: 1, createdAt: -1 });
 orderSchema.index({ userId: 1, createdAt: -1 });
 orderSchema.index({ status: 1, restaurantId: 1 });
 orderSchema.index({ paymentIntentId: 1 }, { sparse: true });

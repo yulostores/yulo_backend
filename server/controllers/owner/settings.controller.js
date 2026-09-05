@@ -5,6 +5,10 @@ import { geocodeAddress } from '../../services/geocode.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import {
+  buildStoreSettingsRequirements,
+  validateRequiredStoreSettings,
+} from '../../config/storeSettings.config.js';
 
 const invalidateRestaurantCache = (restaurantId) =>
   cacheService.invalidate(`cache:restaurant:${restaurantId}`);
@@ -30,8 +34,48 @@ const parseJsonField = (raw, field) => {
   }
 };
 
+// Restaurants saved before parseJsonField existed still hold `address` (and, in
+// principle, `settings`) as the raw JSON *string* multipart delivered. Mongo refuses to
+// write through one: a dot-notation $set answers "Cannot create field 'city' in element
+// {address: ...}", so every save on such a restaurant failed until the value became an
+// object again. scripts/fixStringifiedRestaurantFields.js
+// repairs them in bulk; updateSettings below heals the one being edited so an owner is
+// never blocked waiting for that script to be run.
+const asObject = (value, fallbackKey) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string') return {};
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  } catch {
+    // Not JSON — a bare street string. Keeping it beats discarding the only address
+    // the owner ever typed.
+  }
+  return fallbackKey ? { [fallbackKey]: value } : {};
+};
+
+// Schema defaults only apply on insert, so the whole-object $set that repairs a
+// stringified `settings` has to carry them itself or the restaurant would silently lose
+// its GST and service-charge percentages.
+const SETTINGS_DEFAULTS = Object.fromEntries(
+  Object.entries(Restaurant.schema.paths)
+    .filter(([path, type]) => path.startsWith('settings.') && type.options.default !== undefined)
+    .map(([path, type]) => [path.slice('settings.'.length), type.options.default])
+);
+
 export const getSettings = asyncHandler(async (req, res) => {
   sendSuccess(res, 200, 'Restaurant settings', { restaurant: req.restaurant });
+});
+
+// GET /api/owner/settings-requirements — the field contract behind the store-settings
+// screen: labels, which fields are mandatory, the pattern each value must match, the
+// dropdown options, and the brand-image limits. Restaurant-agnostic on purpose, so the
+// "Add Your Restaurant" step (which runs before any restaurant exists) is built from the
+// same source as the settings form it turns into.
+export const getSettingsRequirements = asyncHandler(async (_req, res) => {
+  sendSuccess(res, 200, 'Store settings requirements', {
+    requirements: buildStoreSettingsRequirements(),
+  });
 });
 
 export const updateSettings = asyncHandler(async (req, res) => {
@@ -49,6 +93,38 @@ export const updateSettings = asyncHandler(async (req, res) => {
     if (value !== undefined && (typeof value !== 'object' || value === null || Array.isArray(value))) {
       throw new ApiError(400, 'VALIDATION_ERROR', `${field} must be an object`);
     }
+  }
+
+  // Mandatory fields are checked against the restaurant as it *would* be after this patch,
+  // not against the patch alone — otherwise clearing a required field by omitting it from
+  // the request would sail straight through. Runs before the uploads below so a rejected
+  // save never leaves a freshly-uploaded logo stranded in Cloudinary.
+  const existing = req.restaurant.toObject();
+  // Normalise first: spreading a stringified address gives character-indexed keys, which
+  // would fail the required-field gate with an address the owner can plainly see on screen.
+  const existingAddress = asObject(existing.address, 'street');
+  const existingSettings = asObject(existing.settings);
+  const addressIsStringified = typeof existing.address === 'string';
+  const settingsIsStringified = typeof existing.settings === 'string';
+  const fieldErrors = validateRequiredStoreSettings({
+    ...existing,
+    ...(name !== undefined && { name }),
+    ...(email !== undefined && { email }),
+    ...(phone !== undefined && { phone }),
+    ...(website !== undefined && { website }),
+    ...(description !== undefined && { description }),
+    ...(establishedYear !== undefined && { establishedYear }),
+    ...(cuisineTypes !== undefined && { cuisineTypes }),
+    address: { ...existingAddress, ...address },
+    settings: { ...existingSettings, ...settings },
+  });
+  if (Object.keys(fieldErrors).length > 0) {
+    throw new ApiError(
+      400,
+      'VALIDATION_ERROR',
+      'Some required details are missing or invalid',
+      { fieldErrors }
+    );
   }
 
   // Held so the superseded Cloudinary assets can be reaped after a successful write, and
@@ -102,10 +178,21 @@ export const updateSettings = asyncHandler(async (req, res) => {
 
   // Dot-notation for the same reason as `settings.*` below: the settings form edits only
   // `street`, and a whole-object $set would drop the city/state/pincode captured at
-  // onboarding — taking the geocodable part of the address with them.
-  if (address) {
-    for (const key of ['street', 'city', 'state', 'pincode']) {
-      if (address[key] !== undefined) patch[`address.${key}`] = address[key];
+  // onboarding — taking the geocodable part of the address with them. The one exception
+  // is a legacy stringified address, handled below.
+  const mergedAddress = { ...existingAddress, ...address };
+  if (address || addressIsStringified) {
+    if (addressIsStringified) {
+      // A stringified address is the one case where the whole object has to be written:
+      // dot-notation cannot reach through a string, and the merge above already carries
+      // the subfields this form doesn't edit. Repairs the document on the way past.
+      patch.address = Object.fromEntries(
+        ['street', 'city', 'state', 'pincode'].map((key) => [key, mergedAddress[key] ?? ''])
+      );
+    } else {
+      for (const key of ['street', 'city', 'state', 'pincode']) {
+        if (address[key] !== undefined) patch[`address.${key}`] = address[key];
+      }
     }
 
     // Keep the map point in step with an edited address — same best-effort re-geocode as
@@ -113,17 +200,22 @@ export const updateSettings = asyncHandler(async (req, res) => {
     // miss leaves the existing coordinates alone rather than failing the whole save.
     // Geocode the merged address, not the patch: "12 Main Road" on its own rarely
     // resolves, "12 Main Road, Delhi, 110001" does.
-    const coords = await geocodeAddress({ ...req.restaurant.toObject().address, ...address });
+    const coords = await geocodeAddress(mergedAddress);
     if (coords) patch.location = { type: 'Point', coordinates: coords };
   }
-  if (settings?.legalEntityType    !== undefined) patch['settings.legalEntityType']    = settings.legalEntityType;
-  if (settings?.ownerName          !== undefined) patch['settings.ownerName']          = settings.ownerName;
-  if (settings?.panNumber          !== undefined) patch['settings.panNumber']          = settings.panNumber;
-  if (settings?.gstNumber          !== undefined) patch['settings.gstNumber']          = settings.gstNumber;
-  if (settings?.healthPermitId     !== undefined) patch['settings.healthPermitId']     = settings.healthPermitId;
-  if (settings?.licenseExpiry      !== undefined) patch['settings.licenseExpiry']      = settings.licenseExpiry || null;
-  if (settings?.registrationNo     !== undefined) patch['settings.registrationNo']     = settings.registrationNo;
-  if (settings?.tradeLicenseExpiry !== undefined) patch['settings.tradeLicenseExpiry'] = settings.tradeLicenseExpiry || null;
+  const settingsPatch = {};
+  for (const key of ['legalEntityType', 'ownerName', 'panNumber', 'gstNumber', 'healthPermitId', 'registrationNo']) {
+    if (settings?.[key] !== undefined) settingsPatch[key] = settings[key];
+  }
+  // A cleared date arrives as '' — store null rather than letting the Date cast reject it.
+  for (const key of ['licenseExpiry', 'tradeLicenseExpiry']) {
+    if (settings?.[key] !== undefined) settingsPatch[key] = settings[key] || null;
+  }
+  if (settingsIsStringified) {
+    patch.settings = { ...SETTINGS_DEFAULTS, ...existingSettings, ...settingsPatch };
+  } else {
+    for (const [key, value] of Object.entries(settingsPatch)) patch[`settings.${key}`] = value;
+  }
 
   let updated;
   try {
