@@ -47,6 +47,13 @@ const billSchema = new mongoose.Schema(
     status: { type: String, enum: ['open', 'paid', 'cancelled'], default: 'open' },
     paidAt: { type: Date },
     paidBy: { type: String, enum: ['cash', 'upi', 'card', 'online'] },
+    // Razorpay order id — set when a guest starts paying this bill online (see
+    // controllers/publicBill.controller.js), read back by the verify endpoint and the
+    // webhook to confirm a submitted payment actually belongs to this bill.
+    paymentIntentId: { type: String, default: null },
+    // The actual captured payment's own id, distinct from the order id above — set once
+    // payment succeeds, same split as Order.razorpayPaymentId/paymentIntentId.
+    razorpayPaymentId: { type: String, default: null },
   },
   { timestamps: true }
 );

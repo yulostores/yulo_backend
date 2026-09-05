@@ -78,10 +78,16 @@ export const updateOrderStatus = async ({ orderId, currentStatus, newStatus, sta
 
   if (newStatus === 'delivered' && order.type !== 'dine_in') {
     order.deliveredAt = new Date();
-    // 'pending_cod' (checkout-flow COD orders, Prompt 11) means the same thing 'pending'
-    // used to mean here — cash to be collected, now treated as settled on delivery. Still
-    // covers plain 'pending' too, for takeaway/the raw-items POST /api/orders path.
-    if (order.paymentStatus === 'pending' || order.paymentStatus === 'pending_cod') {
+    // 'pending_cod' (checkout-flow COD orders) and plain 'pending' from the cash-ish
+    // paths (dine-in, the raw-items POST /api/orders) both mean "cash to be collected" —
+    // settled on delivery. But 'pending' ALSO means "online order awaiting Razorpay
+    // verification/webhook" (services/order.service.js's createOrderFromCart) — an
+    // unpaid online order must never be silently treated as paid just because it was
+    // fulfilled. paymentMethod is what disambiguates the two 'pending' meanings.
+    if (
+      order.paymentStatus === 'pending_cod' ||
+      (order.paymentStatus === 'pending' && order.paymentMethod !== 'online')
+    ) {
       order.paymentStatus = 'paid';
     }
     if (order.type === 'delivery' && order.deliveryAssignment?.status !== 'failed') {

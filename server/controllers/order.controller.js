@@ -77,18 +77,20 @@ const checkoutSchema = z.object({
 // anything to confirm a submitted payment actually belongs to this order (this was
 // created and returned to the client, but never actually saved anywhere, before this step).
 const createRazorpayOrderIfNeeded = async (order) => {
-  if (!env.RAZORPAY_KEY_ID) return { clientSecret: null };
   try {
-    const Razorpay = (await import('razorpay')).default;
-    const rzp = new Razorpay({ key_id: env.RAZORPAY_KEY_ID, key_secret: env.RAZORPAY_KEY_SECRET });
-    const rzpOrder = await rzp.orders.create({
-      amount: Math.round((order.grandTotal ?? order.subtotal) * 100),
-      currency: 'INR',
-      receipt: order._id.toString(),
+    // razorpayOrder carries everything the client needs to open the hosted Checkout page
+    // (see public/checkout.html) without it having to recompute the amount itself —
+    // keyId is Razorpay's publishable key, safe to hand to the client. null when no
+    // gateway key is configured (paymentService.createRazorpayOrder's own signal).
+    const razorpayOrder = await paymentService.createRazorpayOrder({
+      amountRupees: order.grandTotal ?? order.subtotal,
+      receipt: order._id,
     });
-    order.paymentIntentId = rzpOrder.id;
+    if (!razorpayOrder) return { clientSecret: null };
+
+    order.paymentIntentId = razorpayOrder.id;
     await order.save();
-    return { clientSecret: rzpOrder.id };
+    return { clientSecret: razorpayOrder.id, razorpayOrder };
   } catch (err) {
     // Previously swallowed entirely — a broken key, a network blip, or a Razorpay
     // outage looked identical to "no gateway configured" (env.RAZORPAY_KEY_ID unset),

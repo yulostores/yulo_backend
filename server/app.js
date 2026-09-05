@@ -30,6 +30,30 @@ const app = express();
 app.set('trust proxy', 1);
 
 app.use(helmet());
+// helmet's default CSP (script-src 'self', etc.) would silently block
+// public/checkout.html from loading Razorpay's hosted checkout.js and talking to
+// Razorpay's own domains — this page is the one place in the app that needs to load a
+// third-party script, so those headers are rewritten here, scoped to just this path.
+// A second helmet({ contentSecurityPolicy: false }) instance does NOT work for this —
+// `false` just skips that middleware's own header write, it doesn't clear the value the
+// blanket helmet() above already set — so this sets res headers directly instead,
+// overwriting/removing them for requests matching this exact route only.
+app.use('/checkout.html', (req, res, next) => {
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'self'",
+      "script-src 'self' https://checkout.razorpay.com",
+      "connect-src 'self' https://api.razorpay.com https://lumberjack.razorpay.com https://lumberjackv2.razorpay.com",
+      "frame-src https://api.razorpay.com https://checkout.razorpay.com",
+      "img-src 'self' data: https://*.razorpay.com",
+      "style-src 'self' 'unsafe-inline'",
+    ].join('; ')
+  );
+  res.removeHeader('Cross-Origin-Opener-Policy');
+  res.removeHeader('Cross-Origin-Resource-Policy');
+  next();
+});
 // ALLOWED_ORIGINS=* was previously passed straight through as `origin: ['*']` — the `cors`
 // package does exact string matching against the array, so a real browser's Origin header
 // (always a real URL, never the literal string "*") could never match; combined with

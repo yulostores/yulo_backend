@@ -9,6 +9,13 @@ import {
 } from '../controllers/restaurant.controller.js';
 import { create as createRequest, listMine as listMyRequests } from '../controllers/request.controller.js';
 import { getTable, getSession, placeOrder } from '../controllers/publicTable.controller.js';
+import {
+  getBill,
+  payBill,
+  simulateBillPayment,
+  verifyBillPaymentHandler,
+  cancelBillPayment,
+} from '../controllers/publicBill.controller.js';
 import { optionalAuthenticate } from '../middleware/optionalAuthenticate.js';
 import { loadPublicRestaurant } from '../middleware/loadPublicRestaurant.js';
 import { guestOrderLimiter } from '../middleware/rateLimiter.js';
@@ -46,5 +53,14 @@ router.post(
   loadPublicRestaurant,
   placeOrder
 );
+
+// Guest-initiated "pay the bill online" (yulo_menu) — a counterpart to the staff-side
+// bill endpoints in routes/staff/waiter.routes.js, not a replacement for them; a waiter
+// can still open/settle the same bill in cash from their side at any point up to payment.
+router.get('/:id/tables/:tableId/bill', loadPublicRestaurant, getBill);
+router.post('/:id/tables/:tableId/bill/pay', guestOrderLimiter, loadPublicRestaurant, payBill);
+router.post('/:id/tables/:tableId/bill/pay/simulate', loadPublicRestaurant, simulateBillPayment);
+router.post('/:id/tables/:tableId/bill/verify', loadPublicRestaurant, verifyBillPaymentHandler);
+router.post('/:id/tables/:tableId/bill/cancel', loadPublicRestaurant, cancelBillPayment);
 
 export default router;
