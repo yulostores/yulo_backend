@@ -88,6 +88,14 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 `MESSAGECENTRAL_*`, `RATE_LIMIT_MAX`, and the pricing/delivery knobs
 (`PLATFORM_COMMISSION_PERCENT`, `CART_TAX_PERCENT`, …).
 
+> **`SMS_PROVIDER=bypass` is live right now.** The MessageCentral balance is
+> exhausted, so the API makes no provider call and accepts **any** 6-digit code
+> for a number that has requested one — meaning anyone who knows a phone number
+> can sign in as it. The app tells the customer no SMS is coming (`otpBypass` in
+> the send response) rather than leaving them waiting. Set
+> `SMS_PROVIDER=messagecentral` in the App Platform env vars the moment the
+> account is topped up; no code change or redeploy of the app is needed.
+
 > Razorpay keys are optional by design so local dev works without a gateway.
 > If they are missing while `NODE_ENV=production`, the server logs a warning and
 > **silently falls back to simulated payments** — check your logs after deploy.

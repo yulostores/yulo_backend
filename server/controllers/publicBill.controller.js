@@ -55,6 +55,12 @@ export const payBill = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Nothing to pay yet');
   }
 
+  // Same rule the floor's "Generate bill" enforces (billing.service.assertSessionFullyServed):
+  // the total isn't final while the kitchen still holds a round, so the guest must not be
+  // charged against it. Checked HERE, before any money moves — never in verify/webhook,
+  // where a throw would leave a paid guest with an unsettled bill.
+  await billingService.assertSessionFullyServed(session._id);
+
   const bill = await billingService.assembleBill(session._id);
   if (bill.grandTotal <= 0) {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Nothing to pay');

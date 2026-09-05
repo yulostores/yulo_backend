@@ -77,12 +77,32 @@ export const createOrder = asyncHandler(async (req, res) => {
   sendSuccess(res, statusCode, order.duplicate ? 'Duplicate — existing order returned' : 'Order placed', { order });
 });
 
+// The floor asks two different questions of its sittings: "what is on my tables right
+// now" and "what did I close today". They are different sets — a settled sitting is gone
+// from the floor — so `scope` selects between them rather than the second quietly
+// widening the first, which would put paid tables back into the live Active Orders list.
+// Closed sittings are bounded to the current service day: the waiter's "Completed" tab is
+// a shift record, not the restaurant's history (that lives in the owner portal).
+const startOfToday = () => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+};
+
 export const getSessions = asyncHandler(async (req, res) => {
-  const sessions = await TableSession.find({
-    restaurantId: req.staff.restaurantId,
-    status: 'open',
-  })
+  const scope = req.query.scope === 'completed' ? 'completed' : 'open';
+
+  const sessions = await TableSession.find(
+    scope === 'completed'
+      ? {
+          restaurantId: req.staff.restaurantId,
+          status: 'paid',
+          closedAt: { $gte: startOfToday() },
+        }
+      : { restaurantId: req.staff.restaurantId, status: 'open' }
+  )
     .populate('orders')
+    .sort(scope === 'completed' ? { closedAt: -1 } : { openedAt: 1 })
     .lean();
 
   // Resolve the table identifier and each order's staff attribution once for the whole
@@ -97,12 +117,25 @@ export const getSessions = asyncHandler(async (req, res) => {
   const enrichedOrders = await orderViewService.enrichOrders(sessions.flatMap((s) => s.orders));
   const orderById = new Map(enrichedOrders.map((o) => [String(o._id), o]));
 
+  // How a settled sitting was paid lives on its bill, not on the session, and it is the
+  // one thing a closed table is worth showing beyond its total — so it is resolved only
+  // for that scope.
+  const billBySession = new Map();
+  if (scope === 'completed' && sessions.length) {
+    const bills = await Bill.find({ tableSessionId: { $in: sessions.map((s) => s._id) } })
+      .select('tableSessionId grandTotal paidAt paidBy')
+      .lean();
+    bills.forEach((b) => billBySession.set(String(b.tableSessionId), b));
+  }
+
   const result = sessions.map((s) => {
     const table = tableById.get(String(s.tableId)) ?? null;
     const orders = s.orders
       .map((o) => orderById.get(String(o._id)) ?? o)
       .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
       .map((o, i) => ({ ...o, round: o.batchNumber ?? i + 1 }));
+
+    const bill = billBySession.get(String(s._id)) ?? null;
 
     return {
       ...s,
@@ -112,10 +145,15 @@ export const getSessions = asyncHandler(async (req, res) => {
       runningTotal: orders
         .filter((o) => o.status !== 'cancelled')
         .reduce((sum, o) => sum + (o.subtotal ?? 0), 0),
+      payment: bill
+        ? { total: bill.grandTotal, method: bill.paidBy ?? null, paidAt: bill.paidAt ?? s.closedAt }
+        : null,
     };
   });
 
-  sendSuccess(res, 200, 'Active sessions', { sessions: result });
+  sendSuccess(res, 200, scope === 'completed' ? 'Completed sittings' : 'Active sessions', {
+    sessions: result,
+  });
 });
 
 // A waiter marking a ticket served — the floor half of the order lifecycle, which until
@@ -163,6 +201,12 @@ export const updateOrderStatus = asyncHandler(async (req, res) => {
 });
 
 export const getBill = asyncHandler(async (req, res) => {
+  // Generating the bill is the last step of the sitting, not a mid-meal peek: a round the
+  // kitchen still holds can be voided or re-fired, so a receipt raised now would be a
+  // receipt for food nobody has. 409 ORDERS_PENDING until every round is served — the
+  // same rule the floor's "Generate bill" button reads off the session's own statuses.
+  await billingService.assertSessionFullyServed(req.params.sessionId);
+
   const bill = await billingService.assembleBill(req.params.sessionId);
   // Shaped by billView.service.js, the same shape the owner console, the guest's own bill
   // screen and the platform admin read — the floor and the guest must never be looking at
@@ -179,6 +223,10 @@ export const markPaid = asyncHandler(async (req, res) => {
   if (!session || session.restaurantId.toString() !== req.staff.restaurantId.toString()) {
     throw new ApiError(404, 'NOT_FOUND', 'Session not found');
   }
+
+  // Settling is the other half of the same rule — a table cannot be closed out and freed
+  // while the kitchen still owes it a round.
+  await billingService.assertSessionFullyServed(req.params.sessionId);
 
   const bill = await Bill.findOne({ tableSessionId: req.params.sessionId, status: 'open' }).lean();
   if (!bill) throw new ApiError(404, 'NOT_FOUND', 'No open bill for this session — call assemble first');

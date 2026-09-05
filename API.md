@@ -314,6 +314,10 @@ POST /api/auth/customer/otp/send
 
 Outside production (`NODE_ENV !== 'production'`), `data` also includes a `devOtp` field with the generated code, since no real SMS is sent in that mode. In production this field is always absent — the OTP is delivered via SMS through MessageCentral.
 
+When the server runs with `SMS_PROVIDER=bypass` (currently the case — the MessageCentral balance is exhausted), `data` includes `"otpBypass": true` instead. No SMS is sent and `POST /api/auth/customer/otp/verify` accepts **any** 6-digit code for a number that has requested one; everything else (the 5-minute expiry, the send rate limit) behaves normally. Clients should use the flag to tell the customer no code is coming rather than showing a resend timer for an SMS that will never arrive.
+
+Failures to reach the provider return `503` with `SMS_PROVIDER_UNAVAILABLE` (network/timeout — the call is capped at 10s), `SMS_QUOTA_EXHAUSTED` (the provider rejected it for balance/quota reasons) or `SMS_PROVIDER_ERROR` (anything else).
+
 ---
 
 ### Verify Customer OTP
@@ -642,7 +646,7 @@ waiter can still settle the same bill in cash at any point up to payment.
 
 | Endpoint | Body | Notes |
 | --- | --- | --- |
-| `.../bill/pay` | — | Creates a Razorpay order for the bill's `grandTotal` and locks the session against new orders (`bill_requested`). Returns `data: { bill, razorpayOrder }`. |
+| `.../bill/pay` | — | Creates a Razorpay order for the bill's `grandTotal` and locks the session against new orders (`bill_requested`). Returns `data: { bill, razorpayOrder }`. `409 ORDERS_PENDING` while any round is still unserved — the same rule the waiter's bill endpoints enforce, checked here (before any money moves) rather than at verify. |
 | `.../bill/verify` | `{ razorpay_payment_id, razorpay_order_id, razorpay_signature }` | Verifies the signature, then settles the bill and frees the table. Returns `data: { bill }`. A failed signature reopens the session. |
 | `.../bill/pay/simulate` | — | Local/dev only — `400 NOT_SIMULATED` when a real Razorpay key is configured. Settles the bill as a real verify would. |
 | `.../bill/cancel` | — | The guest closed the Razorpay checkout without paying. Reopens the session; a no-op if the payment already landed. |
@@ -3868,6 +3872,12 @@ Returns all open table sessions with their orders and a running total. The sessi
 its resolved `tableNumber`, and each order is enriched (see *Owner — List Orders*) and
 numbered with its `round`, oldest first. `runningTotal` excludes cancelled orders.
 
+**Query**
+
+| Param | Values | Default | Notes |
+|---|---|---|---|
+| `scope` | `open`, `completed` | `open` | `completed` returns the sittings settled since midnight (`status: 'paid'`), newest first, each with a `payment` object (`{ total, method, paidAt }`) resolved from its bill. `payment` is `null` on the `open` scope. |
+
 **Response** `200`
 
 ```json
@@ -3905,6 +3915,30 @@ GET /api/staff/:restaurantId/waiter/sessions/:sessionId/bill
 Assembles (or fetches the cached) bill for the session. Idempotent — safe to call
 repeatedly, which the waiter's bill panel does on every open.
 
+**Every round must have been served first.** Generating the bill is the last step of a
+sitting, not a mid-meal peek: while the kitchen still holds a round it can be voided or
+re-fired, so the total is not final. Any round that is not `served`/`delivered` and not
+`cancelled` blocks the call:
+
+```
+409 ORDERS_PENDING
+{
+  "status": "error",
+  "code": "ORDERS_PENDING",
+  "message": "2 rounds have not been served yet — the bill can be generated once they reach the table.",
+  "details": {
+    "pendingCount": 2,
+    "pendingOrders": [{ "orderId": "…", "batchNumber": 2, "status": "preparing" }]
+  }
+}
+```
+
+The waiter app reads the same rule off the session's own order statuses and keeps its
+"Generate bill" button inert until it is satisfied, so this answer should only be seen on
+a race (a round fired from another device). The guest's own read of the bill
+(`GET /api/restaurants/:id/tables/:tableId/bill`) is **not** gated — that is a running
+tab, not the final receipt.
+
 Once the bill is settled (`status: "paid"` or `"cancelled"`) it is **frozen**: further
 calls return it unchanged rather than re-pricing a paid receipt against a since-changed
 menu, table name or cancelled round.
@@ -3927,6 +3961,9 @@ POST /api/staff/:restaurantId/waiter/sessions/:sessionId/bill/mark-paid
 ```
 
 Closes the bill, closes the table session, and marks the table as available.
+
+Gated by the same rule as the GET above — `409 ORDERS_PENDING` while any round is still
+unserved. A table cannot be closed out and freed while the kitchen still owes it food.
 
 **Body**
 

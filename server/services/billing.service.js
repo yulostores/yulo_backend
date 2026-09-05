@@ -20,6 +20,54 @@ const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 // guest can see it was voided, but it must never be charged for.
 const isBilledOrder = (order) => order?.status !== 'cancelled';
 
+// A round the floor has finished with: carried to the table ('served'), or 'delivered' —
+// kept for dine-in rounds closed out before 'served' existed as a state.
+const SERVED_ROUND_STATUSES = new Set(['served', 'delivered']);
+
+/**
+ * The rounds on a session that have not reached the table yet.
+ *
+ * A cancelled round is already off the bill (isBilledOrder) and never holds it open; a
+ * round still in the kitchen does, because what the sitting owes is not final while the
+ * kitchen can still void it, re-fire it or have it sent back.
+ */
+export const pendingRoundsOf = (orders = []) =>
+  orders.filter((o) => o && o.status !== 'cancelled' && !SERVED_ROUND_STATUSES.has(o.status));
+
+/**
+ * Guard for the two moments a bill stops being a running tab and becomes the final
+ * receipt — raising it and settling it. Both go through here so the rule lives in one
+ * place rather than being restated (and drifting) per portal.
+ *
+ * Reading a running tab is deliberately NOT guarded: the guest's bill screen and the
+ * owner console show a sitting as it stands, pending rounds and all.
+ */
+export const assertSessionFullyServed = async (tableSessionId) => {
+  const session = await TableSession.findById(tableSessionId).populate('orders').lean();
+  if (!session) throw new ApiError(404, 'NOT_FOUND', 'Session not found');
+
+  const pending = pendingRoundsOf(session.orders);
+  if (pending.length) {
+    throw new ApiError(
+      409,
+      'ORDERS_PENDING',
+      pending.length === 1
+        ? 'One round has not been served yet — the bill can be generated once it reaches the table.'
+        : `${pending.length} rounds have not been served yet — the bill can be generated once they reach the table.`,
+      {
+        pendingCount: pending.length,
+        pendingOrders: pending.map((o) => ({
+          orderId: o._id,
+          batchNumber: o.batchNumber ?? null,
+          status: o.status,
+        })),
+      }
+    );
+  }
+
+  return session;
+};
+
 /**
  * The next receipt number for a restaurant: `INV-000001`, running in issue order and
  * unique per restaurant. Allocated only when a bill is actually created, never on a
