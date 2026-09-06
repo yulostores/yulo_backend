@@ -50,10 +50,22 @@ const createOrderSchema = z.object({
   restaurantId: z.string().min(1),
   items: z.array(orderItemSchema).min(1),
   type: z.enum(['delivery', 'takeaway']),
+  // Same shape the checkout path snapshots (services/order.service.js's
+  // createOrderFromCart) — this raw-items endpoint used to accept only street/city/
+  // coordinates, so an order placed through it reached the restaurant without a PIN.
+  // contactName/contactPhone are optional here too: order.service fills them from the
+  // ordering account when they're absent, and never trusts a client-supplied phone as
+  // the CUSTOMER's number (that stays the account's verified one) — this is only the
+  // "who to ring at the door" field.
   deliveryAddress: z.object({
+    label: z.string().max(40).optional(),
     street: z.string().optional(),
     city: z.string().optional(),
+    state: z.string().optional(),
+    pincode: z.string().optional(),
     coordinates: z.tuple([z.number(), z.number()]).optional(),
+    contactName: z.string().trim().min(1).max(60).optional(),
+    contactPhone: z.string().trim().min(6).max(20).optional(),
   }).optional(),
   paymentMethod: z.enum(['cash', 'online', 'card']).default('cash'),
   specialInstructions: z.string().optional(),

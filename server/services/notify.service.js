@@ -17,6 +17,11 @@ export const notifyService = {
       tableNumber: order.tableNumber,
       staffId: order.staffId,
       placedBy: order.placedBy,
+      // Who it's for, so a ticket landing live on the kitchen/owner screen reads the same
+      // as one fetched through orderView.service.js's enrichOrders — before this, a new
+      // order arrived anonymous over the socket and only gained a customer on refresh.
+      customerName: order.customerName ?? null,
+      customerPhone: order.customerPhone ?? null,
       batchNumber: order.batchNumber,
       items: order.items,
       specialInstructions: order.specialInstructions,

@@ -45,7 +45,7 @@ const loadContext = async (bills) => {
   const sessionIds = uniqueIds(bills.map((b) => b.tableSessionId));
   const sessions = sessionIds.length
     ? await TableSession.find({ _id: { $in: sessionIds } })
-        .select('tableId waiterId status openedAt closedAt guestCount guestPhone batchCount')
+        .select('tableId waiterId status openedAt closedAt guestCount guestName guestPhone batchCount')
         .lean()
     : [];
   const sessionById = new Map(sessions.map((s) => [idStr(s._id), s]));
@@ -232,6 +232,7 @@ const buildOne = (rawBill, ctx) => {
           openedAt: session.openedAt,
           closedAt: session.closedAt,
           guestCount: session.guestCount,
+          guestName: session.guestName ?? null,
           guestPhone: session.guestPhone ?? null,
           batchCount: session.batchCount,
         }
@@ -245,15 +246,17 @@ const buildOne = (rawBill, ctx) => {
       : bill.waiterName
         ? { _id: bill.waiterId ?? null, name: bill.waiterName, role: 'waiter', staffCode: null }
         : null,
-    // Whoever the bill is made out to. A walk-in guest who never signed in has only a
-    // phone number (captured at QR ordering), which is still the only way to reach them
-    // about this receipt.
+    // Whoever the bill is made out to. Same shape orderView.service.js's enrichOrders
+    // returns for an order's `customer`, deliberately — a receipt and the orders it was
+    // assembled from must not describe the same person in two different ways. `type`
+    // distinguishes a signed-in account from a walk-in who only gave details at the table.
     customer:
-      bill.customerName || bill.customerPhone || bill.guestPhone
+      bill.customerName || bill.customerPhone || bill.guestName || bill.guestPhone
         ? {
             _id: bill.customerId ?? null,
-            name: bill.customerName ?? null,
+            name: bill.customerName ?? session?.guestName ?? null,
             phone: bill.customerPhone ?? bill.guestPhone ?? null,
+            type: bill.customerId ? 'customer' : 'guest',
           }
         : null,
     guestCount: bill.guestCount ?? session?.guestCount ?? null,

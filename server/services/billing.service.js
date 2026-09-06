@@ -168,6 +168,11 @@ export const assembleBill = async (tableSessionId) => {
     ...(session.waiterId ? [String(session.waiterId)] : []),
   ];
   const customerUserId = orders.find((o) => o.userId)?.userId ?? null;
+  // The first order of the sitting that named anyone. Orders now snapshot the customer at
+  // placement (Order.customerName/customerPhone), so the receipt takes the same answer the
+  // kitchen ticket and the owner's order list already show, instead of independently
+  // re-deriving one and risking a bill that disagrees with the order it came from.
+  const namedOrder = orders.find((o) => o.customerName || o.customerPhone) ?? null;
 
   const [restaurant, table, staffMembers, customer] = await Promise.all([
     Restaurant.findById(session.restaurantId).lean(),
@@ -203,8 +208,9 @@ export const assembleBill = async (tableSessionId) => {
     guestCount: session.guestCount ?? null,
     guestPhone: session.guestPhone ?? null,
     customerId: customer?._id ?? null,
-    customerName: customer?.name ?? null,
-    customerPhone: customer?.phone ?? session.guestPhone ?? null,
+    customerName: namedOrder?.customerName ?? customer?.name ?? session.guestName ?? null,
+    customerPhone:
+      namedOrder?.customerPhone ?? customer?.phone ?? session.guestPhone ?? null,
     waiterId: session.waiterId ?? null,
     waiterName: waiter?.name ?? null,
     openedAt: session.openedAt ?? null,
@@ -250,9 +256,12 @@ export const createOrderBill = async (order) => {
   const existing = await Bill.findOne({ orderId: order._id });
   if (existing) return existing;
 
+  // Only for orders placed before the customer snapshot existed — see the same fallback
+  // in services/deliveryAssignment.service.js's buildOfferPayload.
+  const needsUserLookup = order.userId && !order.customerName && !order.customerPhone;
   const [restaurant, customer] = await Promise.all([
     Restaurant.findById(order.restaurantId).lean(),
-    order.userId ? User.findById(order.userId).select('name phone').lean() : null,
+    needsUserLookup ? User.findById(order.userId).select('name phone').lean() : null,
   ]);
 
   const subtotal = round2(order.subtotal);
@@ -274,9 +283,9 @@ export const createOrderBill = async (order) => {
     type: order.type,
     tableId: order.tableId ?? null,
     tableNumber: order.tableNumber ?? null,
-    customerId: customer?._id ?? null,
-    customerName: customer?.name ?? null,
-    customerPhone: customer?.phone ?? null,
+    customerId: order.userId ?? customer?._id ?? null,
+    customerName: order.customerName ?? customer?.name ?? null,
+    customerPhone: order.customerPhone ?? customer?.phone ?? null,
     deliveryAddress: {
       street: order.deliveryAddress?.street ?? null,
       city: order.deliveryAddress?.city ?? null,

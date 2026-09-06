@@ -612,6 +612,51 @@ GET /api/restaurants/:id/reviews
 
 ---
 
+### Place an Order from the Table QR
+
+```
+POST /api/restaurants/:id/tables/:tableId/orders
+```
+
+Public, table-scoped self-ordering. Optionally authenticated: the same QR link serves a
+walk-in guest with no account and a signed-in customer who happens to be at the table.
+
+**Headers**
+
+| Header | Required | Notes |
+| --- | --- | --- |
+| `Authorization` | No | `Bearer <accessToken>`. Present ⇒ the order is attributed to that account |
+| `Idempotency-Key` | Recommended | UUID v4 — prevents duplicate rounds on network retry |
+
+**Body**
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `items` | array | Yes | Min 1 — `{ menuItemId, quantity, note? }` |
+| `specialInstructions` | string | No | Kitchen-facing |
+| `guestName` | string | No | Who is at the table. **Ignored when authenticated** |
+| `guestPhone` | string | No | Contact for the receipt. **Ignored when authenticated** |
+
+Which identity applies is decided once, server-side, and never guessed downstream:
+
+- **Signed in** → the order gets `userId`, and `customerName`/`customerPhone` are
+  snapshotted from the verified account. The body's `guestName`/`guestPhone` are discarded,
+  so a client can't attach an unverified name and number to an order the restaurant will
+  act on. The order also appears in that customer's own order history.
+- **Anonymous** → `guestName`/`guestPhone` are stored on the table sitting and snapshotted
+  onto the order. Both are optional; a guest who declines simply orders without a name.
+
+Guest details are written onto a sitting that is still missing them — a guest who gives
+their number on their second round has it applied to the sitting and every later order —
+but never **overwrite** details already there, so a second person ordering from the same
+table QR can't replace the name the sitting is under.
+
+Either way the order carries the same `customerName`/`customerPhone` fields, which is what
+lets every staff screen ask "who ordered" once. See
+[Owner — List Orders](#who-the-order-is-for).
+
+---
+
 ### Get the Table's Bill (guest)
 
 ```
@@ -759,16 +804,43 @@ POST /api/users/me/addresses
 
 ```json
 {
-  "label": "Office",
+  "label": "other",
+  "customLabel": "Parents' place",
   "street": "100 Business Park",
   "city": "Bangalore",
   "state": "Karnataka",
   "pincode": "560001",
-  "location": { "coordinates": [77.5946, 12.9716] }
+  "location": { "type": "Point", "coordinates": [77.5946, 12.9716] },
+  "contactName": "Anita Sharma",
+  "contactPhone": "9876543210"
 }
 ```
 
-`label` accepts any string (e.g. `"Home"`, `"Office"`, `"Parents' Place"`). Defaults to `"home"` if omitted.
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `label` | `"home"` \| `"work"` \| `"other"` | No | Defaults to `"home"` |
+| `customLabel` | string | Only when `label` is `"other"` | 1–40 chars. Cleared server-side whenever `label` goes back to `home`/`work` |
+| `street`, `city`, `state`, `pincode` | string | No | The postal address |
+| `location.coordinates` | `[lng, lat]` | No | GeoJSON order. See geocoding below |
+| `contactName` | string | No | Who receives orders **here**, when that isn't the account holder |
+| `contactPhone` | string | No | Contact at this address |
+| `isDefault` | boolean | No | The first address saved becomes the default automatically |
+
+#### Coordinates are resolved server-side
+
+An address's coordinates are what the delivery fee, the partner's distance pay, the ETA and
+partner eligibility are all computed from — so they are never inferred from a placeholder.
+
+- Send `location.coordinates` when the client has a real device fix; it is used as-is (a GPS
+  reading beats anything a geocoder can infer from a text line).
+- Omit it and the server geocodes `street, city, state, pincode` with the same provider that
+  resolves restaurant addresses (`services/geocode.service.js` — Google when
+  `GOOGLE_MAPS_API_KEY` is set, otherwise Nominatim).
+- If the lookup fails, the address saves **without** coordinates rather than being rejected
+  or stamped with a fallback point. Distance-based features degrade for it, which is honest.
+
+Editing any of `street`/`city`/`state`/`pincode` without sending new coordinates re-runs the
+lookup, so an edited address doesn't keep the previous street's point.
 
 **Response** `201`
 
@@ -777,10 +849,34 @@ POST /api/users/me/addresses
   "status": "success",
   "message": "Address added",
   "data": {
-    "user": { ... }
+    "savedAddresses": [ { "_id": "664adr...", "label": "other", "isDefault": true, "...": "..." } ]
   }
 }
 ```
+
+Every address endpoint returns the whole `savedAddresses` array, so a client updates its
+copy in place rather than re-fetching the profile.
+
+---
+
+### Update Saved Address
+
+```
+PATCH /api/users/me/addresses/:addrId
+```
+
+Same fields as *Add*, all optional, at least one required. Returns `{ savedAddresses }`.
+
+---
+
+### Set Default Address
+
+```
+PATCH /api/users/me/addresses/:addrId/default
+```
+
+Exactly one address is ever `isDefault` — every sibling is unset in the same write. Checkout
+uses the default when `addressId` is omitted. Returns `{ savedAddresses }`.
 
 ---
 
@@ -789,6 +885,9 @@ POST /api/users/me/addresses
 ```
 DELETE /api/users/me/addresses/:addrId
 ```
+
+Deleting the default promotes another address to default, so a customer with any address
+always has one selected.
 
 **Response** `200`
 
@@ -847,8 +946,15 @@ POST /api/orders
 | `items` | array | Yes | Min 1 item |
 | `items[].menuItemId` | string | Yes |  |
 | `items[].quantity` | number | Yes | Min 1 |
-| `deliveryAddress` | object | Yes |  |
+| `deliveryAddress` | object | Yes | `street`, `city`, `state`, `pincode`, `coordinates` |
+| `deliveryAddress.contactName` | string | No | Who receives it at the door. Defaults to the ordering account's name |
+| `deliveryAddress.contactPhone` | string | No | Defaults to the ordering account's verified phone |
 | `specialInstructions` | string | No |  |
+
+The order's own `customerName`/`customerPhone` are always taken from the **authenticated
+account**, never from the body — a client cannot claim a different customer on an order the
+restaurant will act on. `contactName`/`contactPhone` are the separate "who to ring at the
+door" fields, for an order sent to someone else.
 
 **Response** `201` (or `200` if idempotency key matched)
 
@@ -1878,8 +1984,9 @@ GET /api/owner/:restaurantId/orders
 
 **Response** `200`
 
-Every order is returned enriched — the raw document plus the resolved table, the staff
-member who rang it in, the waiter assigned to the sitting, and the sitting itself:
+Every order is returned enriched — the raw document plus the resolved table, the customer
+it is for, the staff member who rang it in, the waiter assigned to the sitting, and the
+sitting itself:
 
 ```json
 {
@@ -1895,6 +2002,9 @@ member who rang it in, the waiter assigned to the sitting, and the sitting itsel
         "placedBy": "waiter",
         "status": "served",
         "servedAt": "2026-09-05T06:44:10.000Z",
+        "customerName": "Priya Sharma",
+        "customerPhone": "9876543210",
+        "customer": { "_id": "664usr...", "name": "Priya Sharma", "phone": "9876543210", "type": "customer" },
         "table":   { "_id": "664tbl...", "identifier": "T4", "capacity": 4 },
         "staff":   { "_id": "664stf...", "name": "Ravi", "role": "waiter", "staffCode": "W01" },
         "waiter":  { "_id": "664stf...", "name": "Ravi", "role": "waiter", "staffCode": "W01" },
@@ -1916,10 +2026,30 @@ member who rang it in, the waiter assigned to the sitting, and the sitting itsel
 `placedBy` is `"waiter"`, `"guest"` (table QR, no account) or `"customer"` (app) — it is
 what distinguishes the two cases where `staff` is `null`.
 
-For orders placed before `tableId`/`tableNumber`/`statusHistory` existed, the table is
-resolved through the order's table session on read, so `tableNumber` is still populated
-wherever it is recoverable. `scripts/backfillOrderTableInfo.js` writes those values onto
-the documents permanently.
+#### Who the order is for
+
+`placedBy`/`staff` answer which door the order came through and who rang it in. `customer`
+answers a different question — who it is *for* — and is populated the same way regardless
+of that door, so no client has to branch on order type to name a customer:
+
+| Door | `userId` | `customerName` / `customerPhone` | `customer.type` |
+|---|---|---|---|
+| App customer (delivery, takeaway, or signed in at a table QR) | set | snapshotted from the account at placement | `"customer"` |
+| QR guest with no account | `null` | snapshotted from the sitting's `guestName`/`guestPhone` | `"guest"` |
+| Waiter-placed walk-in who gave no details | `null` | `null` | `customer` is `null` |
+
+`customerName`/`customerPhone` are **snapshots taken at placement**, the same convention as
+`items[].price` and `tableNumber` — an order reads the way it was taken even if the account
+is renamed afterwards. `customer` is the resolved object built from them on read.
+
+These are the same field names `Bill` uses (see *Owner — Bills*), deliberately: a receipt
+and the orders it was assembled from describe the customer identically.
+
+For orders placed before `tableId`/`tableNumber`/`statusHistory` or
+`customerName`/`customerPhone` existed, both are resolved on read — the table through the
+order's table session, the customer through its account or its sitting — so neither is
+empty wherever it is recoverable. `scripts/backfillOrderTableInfo.js` and
+`scripts/backfillOrderCustomer.js` write those values onto the documents permanently.
 
 ---
 

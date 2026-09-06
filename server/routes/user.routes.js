@@ -50,6 +50,10 @@ const addressCreateSchema = z
     state: z.string().optional(),
     pincode: z.string().optional(),
     location: locationSchema.optional(),
+    // Who receives the order here, when that isn't the account holder. Optional — checkout
+    // falls back to the account's own name and verified phone.
+    contactName: z.string().trim().min(1).max(60).optional(),
+    contactPhone: z.string().trim().min(6).max(20).optional(),
     isDefault: z.boolean().optional(),
   })
   .superRefine((data, ctx) => {
@@ -71,6 +75,8 @@ const addressUpdateSchema = z
     state: z.string().optional(),
     pincode: z.string().optional(),
     location: locationSchema.optional(),
+    contactName: z.string().trim().min(1).max(60).optional(),
+    contactPhone: z.string().trim().min(6).max(20).optional(),
     isDefault: z.boolean().optional(),
   })
   .refine((data) => Object.keys(data).length > 0, { message: 'At least one field is required' })

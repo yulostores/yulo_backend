@@ -14,6 +14,40 @@ const MAX_VERIFY_ATTEMPTS = 5;
 const otpKey = (phone) => `otp:${phone}`;
 const otpRequestCountKey = (phone) => `otp:reqcount:${phone}`;
 
+// Redis is the only place a pending OTP lives, so without it this flow cannot work at all
+// — and it fails on the very first statement of requestOtp(). config/redis.js exports
+// `null` when REDIS_URL is unset, which made that a bare TypeError: no usable status, no
+// log line naming Redis, and a response the app could only render as "something went
+// wrong". Name the real cause instead, so it shows up in both the logs and the app.
+const requireRedis = () => {
+  if (!redis) {
+    logger.error('OTP requested but REDIS_URL is not configured — OTP cannot work without it');
+    throw new ApiError(
+      503,
+      'OTP_STORE_UNAVAILABLE',
+      'Login is temporarily unavailable. Please try again in a few minutes.'
+    );
+  }
+};
+
+// Same reasoning for a Redis that is configured but unreachable (wrong URL, firewall, the
+// instance asleep): the command rejects with a driver error that means nothing to a
+// customer and, unlogged, nothing to us either.
+const withRedis = async (operation, action) => {
+  requireRedis();
+  try {
+    return await operation();
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    logger.error({ action, err: { name: err?.name, message: err?.message } }, 'Redis command failed during OTP flow');
+    throw new ApiError(
+      503,
+      'OTP_STORE_UNAVAILABLE',
+      'Login is temporarily unavailable. Please try again in a few minutes.'
+    );
+  }
+};
+
 const generateSixDigitCode = () => String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
 
 // TEMPORARY — see config/env.js. The MessageCentral balance is exhausted, so rather than
@@ -36,9 +70,15 @@ if (isBypass) {
 // delivery to MessageCentral and stores its verificationId instead of a local hash.
 // SMS_PROVIDER=bypass stores neither and accepts anything — see the note above.
 export const requestOtp = async (phone) => {
-  const requestCount = await redis.incr(otpRequestCountKey(phone));
+  const requestCount = await withRedis(
+    () => redis.incr(otpRequestCountKey(phone)),
+    'incr-request-count'
+  );
   if (requestCount === 1) {
-    await redis.expire(otpRequestCountKey(phone), REQUEST_WINDOW_SECONDS);
+    await withRedis(
+      () => redis.expire(otpRequestCountKey(phone), REQUEST_WINDOW_SECONDS),
+      'expire-request-count'
+    );
   }
   if (requestCount > env.OTP_MAX_REQUESTS_PER_WINDOW) {
     logger.info(
@@ -93,7 +133,7 @@ export const requestOtp = async (phone) => {
 };
 
 export const verifyOtp = async (phone, code) => {
-  const raw = await redis.get(otpKey(phone));
+  const raw = await withRedis(() => redis.get(otpKey(phone)), 'get-otp');
   if (!raw) {
     throw new ApiError(
       400,

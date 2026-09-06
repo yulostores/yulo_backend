@@ -16,6 +16,30 @@ import { ApiError } from '../utils/ApiError.js';
 import { isPubliclyVisible } from '../utils/publicRestaurant.js';
 import { notifyService } from './notify.service.js';
 
+// The one place "who is this order for" is answered, for every door an order can come
+// through. Returns the pair that gets snapshotted onto the order (see the comment on
+// Order.customerName) — a signed-in account's current name/phone, or the guest details
+// the table sitting captured, or nulls when neither exists (a waiter ringing in for a
+// walk-in who gave nothing; `placedBy`/`staffId` still say who took it).
+//
+// Both are read fresh here rather than trusted from the caller: the phone in particular
+// is the account's verified number, and a client must never be able to claim a different
+// one on an order the restaurant will then use to call someone.
+const resolveOrderCustomer = async ({ userId, session }) => {
+  if (userId) {
+    const user = await User.findById(userId).select('name phone').lean();
+    return {
+      customerName: user?.name?.trim() || null,
+      customerPhone: user?.phone || null,
+    };
+  }
+
+  return {
+    customerName: session?.guestName?.trim() || null,
+    customerPhone: session?.guestPhone || null,
+  };
+};
+
 export const createOrder = async ({
   restaurantId,
   tableSessionId,
@@ -91,6 +115,11 @@ export const createOrder = async ({
     // none of them did, so `tableNumber` sat null on every dine-in order ever placed.
     const table = await Table.findById(updatedSession.tableId).select('identifier').lean();
 
+    // The sitting is the guest's identity when there is no account — a QR guest and a
+    // walk-in a waiter rang in are both "no userId", and the session is the only place
+    // their name/number was ever collected.
+    const customer = await resolveOrderCustomer({ userId, session: updatedSession });
+
     const order = await Order.create({
       restaurantId,
       tableSessionId,
@@ -98,6 +127,7 @@ export const createOrder = async ({
       tableNumber: table?.identifier ?? null,
       userId,
       staffId,
+      ...customer,
       placedBy: staffId ? 'waiter' : userId ? 'customer' : 'guest',
       type: 'dine_in',
       batchNumber,
@@ -133,18 +163,30 @@ export const createOrder = async ({
   }
 
   // Step 4 — Delivery / takeaway path
+  const customer = await resolveOrderCustomer({ userId, session: null });
+
   const order = await Order.create({
     restaurantId,
     userId,
     staffId: null,
     placedBy: 'customer',
+    ...customer,
     type,
     batchNumber: 1,
     items: snapshots,
     subtotal,
     specialInstructions,
     paymentMethod,
-    deliveryAddress,
+    // The address the caller passed, with the account's own name/number filled in as the
+    // door contact when it carries none — an order the restaurant can't get a person at
+    // is the failure this whole field exists to prevent.
+    deliveryAddress: deliveryAddress
+      ? {
+          ...deliveryAddress,
+          contactName: deliveryAddress.contactName || customer.customerName,
+          contactPhone: deliveryAddress.contactPhone || customer.customerPhone,
+        }
+      : deliveryAddress,
     statusHistory: [{ status: 'placed', at: new Date(), byRole: 'customer' }],
   });
 
@@ -197,7 +239,9 @@ export const createOrderFromCart = async ({
     throw new ApiError(404, 'NOT_FOUND', 'Restaurant not found');
   }
 
-  const user = await User.findById(userId).select('savedAddresses').lean();
+  // name/phone as well as the addresses: the order snapshots WHO ordered, not just where
+  // it goes (see the comment on Order.customerName).
+  const user = await User.findById(userId).select('name phone savedAddresses').lean();
   const address = addressId
     ? user.savedAddresses.find((a) => String(a._id) === String(addressId))
     : user.savedAddresses.find((a) => a.isDefault) || user.savedAddresses[0];
@@ -334,10 +378,21 @@ export const createOrderFromCart = async ({
     // "awaiting Razorpay verification/webhook" (see controllers/order.controller.js's
     // payment/verify endpoint and the /api/webhooks/razorpay handler).
     paymentStatus: paymentMethod === 'online' ? 'pending' : 'pending_cod',
+    customerName: user.name?.trim() || null,
+    customerPhone: user.phone || null,
+    // The whole address, not the two fields it used to keep: state and pincode were
+    // dropped here, which left the restaurant and the delivery partner with a street line
+    // and a city and no PIN to navigate by. contactName/contactPhone fall back to the
+    // account holder — an address saved for someone else carries its own.
     deliveryAddress: {
+      label: address.customLabel?.trim() || address.label || null,
       street: address.street,
       city: address.city,
+      state: address.state,
+      pincode: address.pincode,
       coordinates: address.location?.coordinates ?? null,
+      contactName: address.contactName?.trim() || user.name?.trim() || null,
+      contactPhone: address.contactPhone || user.phone || null,
     },
     vegFleetOptIn: effectiveVegFleetOptIn,
     dedicatedBagRequired: effectiveVegFleetOptIn,

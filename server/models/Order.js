@@ -71,6 +71,22 @@ const orderSchema = new mongoose.Schema(
     // which is why the owner portal could not say which table an order came from.
     tableNumber: { type: String, default: null },
     tableId: { type: mongoose.Schema.Types.ObjectId, ref: 'Table', default: null },
+    // WHO ordered, snapshotted at placement — the same three fields regardless of which
+    // door the order came through, and deliberately the same names Bill.js already uses
+    // (customerName/customerPhone) so a receipt and the order it was assembled from can
+    // never disagree about the customer.
+    //
+    //   app customer  -> User.name / User.phone at the moment of ordering
+    //   QR guest      -> TableSession.guestName / guestPhone (no account exists)
+    //   waiter-placed -> whatever the session captured, else null (staffId says who rang it)
+    //
+    // Snapshotted rather than joined through userId on every read for the same reason
+    // items[].name and tableNumber are: a customer can rename themselves or change their
+    // number later, and last month's order must still read the way it was taken. `userId`
+    // above stays the live reference for account-scoped queries; these two are the record.
+    // placedBy is what distinguishes a null-name guest from a null-name anything else.
+    customerName: { type: String, default: null },
+    customerPhone: { type: String, default: null },
     // Who put the order in: a waiter on the floor (staffId is set), a guest scanning the
     // table QR with no account, or a signed-in customer. Distinct from staffId, which is
     // null for both guest and customer orders and so can't distinguish them on its own.
@@ -167,10 +183,22 @@ const orderSchema = new mongoose.Schema(
     // separate rather than overwriting paymentIntentId, since a real refund flow would
     // need this payment-level id, not the order-level one.
     razorpayPaymentId: { type: String, default: null },
+    // The full postal drop, snapshotted from the customer's chosen saved address. Was
+    // {street, city, coordinates} only, which dropped state/pincode on the floor — the
+    // restaurant portal's confirmation screen was already trying to render both, and the
+    // delivery partner's offer payload had no house number or PIN to navigate to.
+    // contactName/contactPhone are per-address on purpose: an order placed for someone
+    // else (a gift, a parent's house) reaches a different person at the door than the one
+    // the account belongs to. They default to the account's own name/phone at checkout.
     deliveryAddress: {
+      label: { type: String, default: null },
       street: { type: String },
       city: { type: String },
+      state: { type: String },
+      pincode: { type: String },
       coordinates: { type: [Number], default: null },
+      contactName: { type: String, default: null },
+      contactPhone: { type: String, default: null },
     },
     estimatedDeliveryTime: { type: Date },
     deliveredAt: { type: Date, default: null },

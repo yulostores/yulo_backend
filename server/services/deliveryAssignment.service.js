@@ -8,6 +8,7 @@ import { getIO } from '../socket.js';
 import { notifyService } from './notify.service.js';
 import logger from '../utils/logger.js';
 import { computeDropKm, computePickupKm, isLocationFresh, LOCATION_FRESHNESS_SECONDS } from './geo.service.js';
+import { formatAddress as formatPostalAddress } from './geocode.service.js';
 
 // How long a strict veg-fleet-only search runs before the customer is asked to decide
 // (screen 23) — matches that screen's ~3-minute countdown example. Set at order
@@ -27,7 +28,12 @@ export const countActiveAssignments = (partnerId) =>
     'deliveryAssignment.status': { $in: ['assigned', 'picked_up'] },
   });
 
-const formatAddress = (addr) => [addr?.street, addr?.city].filter(Boolean).join(', ') || null;
+// Reuses the geocoder's single-line formatter rather than a second, narrower one of its
+// own — the local version joined only street and city, so the PIN and state the partner
+// actually navigates by were dropped from the drop address even once the order carried
+// them. Both a Restaurant.address and an Order.deliveryAddress have the same four fields,
+// so one formatter covers both.
+const formatAddress = (addr) => formatPostalAddress(addr ?? {}) || null;
 
 // Distance-based ranking now that partner location tracking exists (see services/geo.service.js).
 // Partners with a fresh (< LOCATION_FRESHNESS_SECONDS old) location ping within the restaurant's
@@ -75,9 +81,14 @@ const rankCandidates = async (restaurant, { requireFleetType } = {}) => {
 // GET /api/partner/orders/current (controllers/partner/order.controller.js) can return the exact
 // same shape for an app that was backgrounded mid-offer, not just the live socket push.
 export const buildOfferPayload = async (order, candidate) => {
+  // The account lookup is only a fallback for orders placed before Order.customerName/
+  // customerPhone were snapshotted — a current order carries its own, and the address
+  // carries the door contact, which is who the partner actually needs to reach and is not
+  // necessarily the account holder (an order sent to a parent's house).
+  const needsUserLookup = order.userId && !order.customerName && !order.customerPhone;
   const [restaurant, customer] = await Promise.all([
     Restaurant.findById(order.restaurantId).select('name address location').lean(),
-    order.userId ? User.findById(order.userId).select('name').lean() : null,
+    needsUserLookup ? User.findById(order.userId).select('name phone').lean() : null,
   ]);
 
   const dropKm = computeDropKm(restaurant, order);
@@ -113,7 +124,13 @@ export const buildOfferPayload = async (order, candidate) => {
     payment: order.paymentMethod === 'cash' ? 'cod' : 'prepaid',
     codAmount: order.paymentMethod === 'cash' ? order.subtotal : undefined,
     items: order.items.map((i) => ({ name: i.name, qty: i.quantity })),
-    customerName: customer?.name ?? null,
+    // Who is at the door, and how to reach them. The partner had a name (which was always
+    // null, since nothing ever set User.name) and no number whatsoever — so the one thing
+    // a partner does when they can't find a flat, call the customer, was impossible.
+    customerName:
+      order.deliveryAddress?.contactName || order.customerName || customer?.name || null,
+    customerPhone:
+      order.deliveryAddress?.contactPhone || order.customerPhone || customer?.phone || null,
     customerAddress: formatAddress(order.deliveryAddress),
     // Still no real routing/ETA engine (straight-line distance ≠ travel time) — see the
     // geo.service.js file comment on why that's a separate, larger capability than this step adds.

@@ -3,25 +3,30 @@ import Order from '../models/Order.js';
 import Table from '../models/Table.js';
 import TableSession from '../models/TableSession.js';
 import StaffMember from '../models/StaffMember.js';
+import User from '../models/User.js';
 
 // Read-side shaping for orders. An Order row on its own answers "what was ordered" but
-// not the two questions every order screen actually asks first — WHICH TABLE is this for,
-// and WHO took it. Both are resolvable (tableId/tableNumber/staffId are on the order, the
-// session knows its assigned waiter), but every screen was left to do that join itself and
-// none of them did. This module does it once, for all of them.
+// not the three questions every order screen actually asks first — WHICH TABLE is this
+// for, WHO took it, and WHO IS IT FOR. All three are resolvable (tableId/tableNumber/
+// staffId/userId are on the order, the session knows its assigned waiter and its guest),
+// but every screen was left to do those joins itself and none of them did. This module
+// does it once, for all of them.
 //
 // It also repairs history: orders placed before Order.tableId/tableNumber were populated
 // have neither field set, so the table is resolved through tableSessionId -> TableSession
 // -> Table as a fallback. That keeps existing orders readable without requiring the
-// backfill script (scripts/backfillOrderTableInfo.js) to have been run first.
+// backfill script (scripts/backfillOrderTableInfo.js) to have been run first. The same
+// applies to Order.customerName/customerPhone, added later than the orders that need
+// them — see resolveCustomer below.
 
 const idStr = (v) => (v == null ? null : String(v));
 
 const uniqueIds = (values) => [...new Set(values.filter(Boolean).map(String))];
 
 /**
- * Attaches `table`, `staff`, `waiter` and `session` to a list of lean order documents.
- * Runs three batched lookups regardless of how many orders come in — never per-order.
+ * Attaches `table`, `customer`, `staff`, `waiter` and `session` to a list of lean order
+ * documents. Runs a fixed number of batched lookups regardless of how many orders come
+ * in — never per-order.
  */
 export const enrichOrders = async (orders = []) => {
   if (orders.length === 0) return [];
@@ -29,7 +34,7 @@ export const enrichOrders = async (orders = []) => {
   const sessionIds = uniqueIds(orders.map((o) => o.tableSessionId));
   const sessions = sessionIds.length
     ? await TableSession.find({ _id: { $in: sessionIds } })
-        .select('tableId waiterId status openedAt closedAt guestCount batchCount')
+        .select('tableId waiterId status openedAt closedAt guestCount batchCount guestName guestPhone')
         .lean()
     : [];
   const sessionById = new Map(sessions.map((s) => [idStr(s._id), s]));
@@ -53,16 +58,55 @@ export const enrichOrders = async (orders = []) => {
     : [];
   const staffById = new Map(staffMembers.map((m) => [idStr(m._id), m]));
 
+  // Only queried for orders that predate the customerName/customerPhone snapshot (or
+  // whose account was created before it had a name) — a fully snapshotted list of orders
+  // does no user lookup at all. Batched like every other lookup here, never per-order.
+  const staleUserIds = uniqueIds(
+    orders.filter((o) => o.userId && !o.customerName && !o.customerPhone).map((o) => o.userId)
+  );
+  const users = staleUserIds.length
+    ? await User.find({ _id: { $in: staleUserIds } }).select('name phone').lean()
+    : [];
+  const userById = new Map(users.map((u) => [idStr(u._id), u]));
+
   const toStaff = (id) => {
     const m = staffById.get(idStr(id));
     if (!m) return null;
     return { _id: m._id, name: m.name, role: m.role, staffCode: m.staffCode };
   };
 
+  // WHO the order is for, in one shape for every door it came through. The order's own
+  // snapshot is the truth whenever it has one (that's the whole point of snapshotting —
+  // it reads the way it was taken even if the account was renamed since). The two
+  // fallbacks below exist only to keep pre-snapshot orders readable, exactly as the table
+  // fallback above does, so no screen has to know which era an order is from:
+  //
+  //   userId with no snapshot  -> the account's current name/phone
+  //   no userId at all         -> the sitting's guest details
+  //
+  // `type` names which of the two an order is without a screen having to infer it from a
+  // null userId — 'guest' and 'customer' are genuinely different people to the floor,
+  // and a nameless guest and a nameless customer must not read as the same thing.
+  const resolveCustomer = (order, session) => {
+    const user = userById.get(idStr(order.userId)) ?? null;
+
+    const name = order.customerName ?? user?.name?.trim() ?? session?.guestName?.trim() ?? null;
+    const phone = order.customerPhone ?? user?.phone ?? session?.guestPhone ?? null;
+    const type = order.userId ? 'customer' : 'guest';
+
+    // Nothing known at all — a walk-in who gave no details, rung in by a waiter. Return
+    // null rather than an object of nulls so a screen can render "Guest" plainly instead
+    // of an empty name field.
+    if (!name && !phone && !order.userId) return null;
+
+    return { _id: order.userId ?? null, name: name || null, phone: phone || null, type };
+  };
+
   return orders.map((order) => {
     const session = sessionById.get(idStr(order.tableSessionId)) ?? null;
     // order.tableId first (set at placement), session.tableId as the legacy fallback.
     const table = tableById.get(idStr(order.tableId ?? session?.tableId)) ?? null;
+    const customer = resolveCustomer(order, session);
 
     return {
       ...order,
@@ -71,6 +115,12 @@ export const enrichOrders = async (orders = []) => {
       table: table
         ? { _id: table._id, identifier: table.identifier, capacity: table.capacity }
         : null,
+      // Snapshots repaired in place as well as exposed under `customer` below, so a
+      // screen reading order.customerName directly (the same way it reads
+      // order.tableNumber) gets the resolved value on a legacy order too.
+      customerName: order.customerName ?? customer?.name ?? null,
+      customerPhone: order.customerPhone ?? customer?.phone ?? null,
+      customer,
       // Who actually rang the order in (null for guest QR and customer app orders —
       // `placedBy` is what tells those two apart).
       staff: toStaff(order.staffId),
@@ -137,10 +187,17 @@ const buildSittings = (orders, openSession) => {
         closedAt: order.session?.closedAt ?? null,
         guestCount: order.session?.guestCount ?? null,
         waiter: order.waiter ?? null,
+        // Who the party is, taken from the first order of the sitting that names anyone.
+        // A sitting is one party, so this is a property of the sitting rather than of
+        // each round — the floor asks "whose table is this", not "who ordered round 3".
+        customer: order.customer ?? null,
         orders: [],
       });
     }
-    bySession.get(key).orders.push(order);
+    const sitting = bySession.get(key);
+    // A guest who only gave their number on a later round still names the whole sitting.
+    if (!sitting.customer && order.customer) sitting.customer = order.customer;
+    sitting.orders.push(order);
   }
 
   // A table that's occupied but hasn't ordered yet still has a sitting to show.
@@ -152,6 +209,7 @@ const buildSittings = (orders, openSession) => {
       closedAt: null,
       guestCount: openSession.guestCount ?? null,
       waiter: openSession.waiter ?? null,
+      customer: openSession.customer ?? null,
       orders: [],
     });
   }
@@ -214,7 +272,7 @@ export const getOrdersByTable = async ({ restaurantId, scope = 'active', search 
   const [tables, openSessions] = await Promise.all([
     Table.find({ restaurantId: rid, isActive: true }).select('identifier capacity').lean(),
     TableSession.find({ restaurantId: rid, status: { $in: ['open', 'bill_requested'] } })
-      .select('tableId waiterId status openedAt guestCount batchCount')
+      .select('tableId waiterId status openedAt guestCount batchCount guestName guestPhone')
       .lean(),
   ]);
   const sessionByTableId = new Map(openSessions.map((s) => [idStr(s.tableId), s]));
@@ -249,6 +307,19 @@ export const getOrdersByTable = async ({ restaurantId, scope = 'active', search 
             guestCount: session.guestCount,
             batchCount: session.batchCount,
             waiter: waiterById.get(idStr(session.waiterId)) ?? null,
+            // An occupied table that hasn't ordered yet has no order to carry the guest's
+            // details, so they come straight off the sitting here — otherwise a table
+            // whose guest gave their name on arrival would show as anonymous until the
+            // first round landed.
+            customer:
+              session.guestName || session.guestPhone
+                ? {
+                    _id: null,
+                    name: session.guestName?.trim() || null,
+                    phone: session.guestPhone || null,
+                    type: 'guest',
+                  }
+                : null,
           }
         : null,
     });
@@ -275,10 +346,17 @@ export const getOrdersByTable = async ({ restaurantId, scope = 'active', search 
       if (!term) return true;
       return (
         String(g.tableNumber ?? '').toLowerCase().includes(term) ||
+        // "Which table is Priya on?" and "who left this number?" are the two things the
+        // floor searches for that a table number can't answer — now that an order names
+        // its customer, the search that reads those orders should match on it.
+        (g.session?.customer?.name ?? '').toLowerCase().includes(term) ||
+        (g.session?.customer?.phone ?? '').includes(term) ||
         g.orders.some(
           (o) =>
             String(o._id).toLowerCase().includes(term) ||
             (o.staff?.name ?? '').toLowerCase().includes(term) ||
+            (o.customer?.name ?? '').toLowerCase().includes(term) ||
+            (o.customer?.phone ?? '').includes(term) ||
             (o.items ?? []).some((i) => (i.name ?? '').toLowerCase().includes(term))
         )
       );

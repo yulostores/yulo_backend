@@ -15,6 +15,15 @@ const addressSchema = new mongoose.Schema(
       type: { type: String, default: 'Point' },
       coordinates: [Number],
     },
+    // Who receives the order at THIS address, when that isn't the account holder — a
+    // parent's house, an office reception, a gift. Optional: checkout falls back to the
+    // account's own name/phone (services/order.service.js's createOrderFromCart), so an
+    // ordinary address needs neither. Snapshotted onto
+    // Order.deliveryAddress.contactName/contactPhone at placement, which is what the
+    // restaurant and the delivery partner actually read — before this, the only contact
+    // anywhere near a delivery order was a User.name that nothing ever set.
+    contactName: { type: String, default: null },
+    contactPhone: { type: String, default: null },
     isDefault: { type: Boolean, default: false },
   },
   {}
