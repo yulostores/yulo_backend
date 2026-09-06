@@ -1,30 +1,39 @@
 import MenuItem from '../models/MenuItem.js';
 import Discount from '../models/Discount.js';
+import QuickFilterChip from '../models/QuickFilterChip.js';
 import * as restaurantService from './restaurant.service.js';
 import * as menuService from './menu.service.js';
+import * as cacheService from './cache.service.js';
 
 const NEARBY_LIMIT = 20;
 const RECOMMENDED_ITEMS_LIMIT = 10;
 
-// No CMS — a hardcoded config array the owner/admin can't edit yet (a possible future
-// admin-editable list, not built now). The "Butter Chicken" -> "Paneer" swap mirrors the
-// same swap search.service.js's popular-searches seed lists make for veg mode.
-const QUICK_FILTER_CHIPS_STANDARD = [
-  { label: 'Biryani', iconUrl: null, queryParam: 'Biryani' },
-  { label: 'Butter Chicken', iconUrl: null, queryParam: 'Butter Chicken' },
-  { label: 'Pizza', iconUrl: null, queryParam: 'Pizza' },
-  { label: 'Sandwich', iconUrl: null, queryParam: 'Sandwich' },
-  { label: 'Dosa', iconUrl: null, queryParam: 'Dosa' },
-];
-const QUICK_FILTER_CHIPS_VEG = [
-  { label: 'Biryani', iconUrl: null, queryParam: 'Biryani' },
-  { label: 'Paneer', iconUrl: null, queryParam: 'Paneer' },
-  { label: 'Pizza', iconUrl: null, queryParam: 'Pizza' },
-  { label: 'Sandwich', iconUrl: null, queryParam: 'Sandwich' },
-  { label: 'Dosa', iconUrl: null, queryParam: 'Dosa' },
-];
-
 const VEG_BANNER_TEXT = 'Pure veg mode is on — showing only vegetarian food';
+
+// The "What's on your mind?" row. Its labels/queries/icons live in the
+// QuickFilterChip collection (seeded via scripts/seedQuickFilterChips.js, icons on
+// Cloudinary) — nothing here is hardcoded. Rarely changes, so the raw docs are
+// cached; the cache no-ops when Redis is absent. The "Butter Chicken" -> "Paneer"
+// swap for veg mode rides on each chip's optional `veg` overrides.
+const QUICK_FILTER_CHIPS_CACHE_KEY = 'home:quickFilterChips';
+const QUICK_FILTER_CHIPS_CACHE_TTL = 3600;
+
+const getQuickFilterChips = async (vegMode) => {
+  let chips = await cacheService.get(QUICK_FILTER_CHIPS_CACHE_KEY);
+  if (!chips) {
+    chips = await QuickFilterChip.find({ isActive: true }).sort({ displayOrder: 1 }).lean();
+    await cacheService.set(QUICK_FILTER_CHIPS_CACHE_KEY, chips, QUICK_FILTER_CHIPS_CACHE_TTL);
+  }
+
+  return chips.map((chip) => {
+    const veg = vegMode && chip.veg ? chip.veg : {};
+    return {
+      label: veg.label ?? chip.label,
+      iconUrl: veg.iconUrl ?? chip.iconUrl ?? null,
+      queryParam: veg.queryParam ?? chip.queryParam,
+    };
+  });
+};
 
 // Sourced from the SAME nearby restaurant set the caller already fetched for
 // nearbyRestaurants (by id), never a second restaurant query — same principle the prompt
@@ -140,16 +149,17 @@ export const getHomeFeed = async ({
     (a, b) => (b.avgRating ?? 0) - (a.avgRating ?? 0)
   );
 
-  const [recommendedItems, banner] = await Promise.all([
+  const [recommendedItems, banner, quickFilterChips] = await Promise.all([
     getRecommendedItems(restaurantIds, vegMode),
     getFeaturedBanner(restaurantIds),
+    getQuickFilterChips(vegMode),
   ]);
 
   return {
     nearbyRestaurants,
     recommendedRestaurants,
     recommendedItems,
-    quickFilterChips: vegMode ? QUICK_FILTER_CHIPS_VEG : QUICK_FILTER_CHIPS_STANDARD,
+    quickFilterChips,
     banner,
     vegBannerText: vegMode ? VEG_BANNER_TEXT : null,
   };
