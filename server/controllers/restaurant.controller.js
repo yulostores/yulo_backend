@@ -1,5 +1,6 @@
 import Restaurant from '../models/Restaurant.js';
 import Review from '../models/Review.js';
+import MenuItem from '../models/MenuItem.js';
 import * as menuService from '../services/menu.service.js';
 import * as cacheService from '../services/cache.service.js';
 import * as favoriteService from '../services/favorite.service.js';
@@ -124,6 +125,52 @@ export const getMenu = asyncHandler(async (req, res) => {
   favoriteService.annotateMenuFavorites(menu, favoritedIds);
 
   sendSuccess(res, 200, 'Menu', { menu });
+});
+
+// Paginated, lazy-load feed for the storefront menu (customer app screen 14).
+// getMenu() above returns the WHOLE menu tree in one 5-min-cached payload — fine for the
+// owner portal, too much for a phone opening a restaurant. This serves one category (or the
+// whole menu) a page at a time so the app fetches item detail only for sections the customer
+// actually expands or scrolls to. Indexed by { restaurantId, categoryId } / { restaurantId,
+// isAvailable } on MenuItem — deliberately not Redis-cached, since the page/category/foodType
+// combinations aren't repeatable enough to key (same call as getReviews below).
+const MENU_ITEMS_PAGE_SIZE = 10;
+const MENU_ITEMS_MAX_PAGE_SIZE = 30;
+const FOOD_TYPES = ['veg', 'non_veg', 'egg'];
+
+export const listMenuItems = asyncHandler(async (req, res) => {
+  const { categoryId, subCategoryId, foodType, page = 1, limit } = req.query;
+  const parsedPage = Math.max(1, parseInt(page, 10) || 1);
+  const parsedLimit = Math.min(
+    MENU_ITEMS_MAX_PAGE_SIZE,
+    Math.max(1, parseInt(limit, 10) || MENU_ITEMS_PAGE_SIZE)
+  );
+
+  const filter = { restaurantId: req.params.id, isAvailable: true };
+  if (categoryId) filter.categoryId = categoryId;
+  if (subCategoryId) filter.subCategoryId = subCategoryId;
+  if (FOOD_TYPES.includes(foodType)) filter.foodType = foodType;
+
+  const [items, total] = await Promise.all([
+    MenuItem.find(filter)
+      .sort({ createdAt: 1 })
+      .skip((parsedPage - 1) * parsedLimit)
+      .limit(parsedLimit)
+      .lean({ virtuals: true }),
+    MenuItem.countDocuments(filter),
+  ]);
+
+  const favoritedIds = req.user
+    ? await favoriteService.getFavoritedIdSet(req.user._id, 'menu_item')
+    : null;
+  favoriteService.annotateEntity(items, favoritedIds);
+
+  sendSuccess(res, 200, 'Menu items', {
+    items,
+    total,
+    page: parsedPage,
+    pages: Math.max(1, Math.ceil(total / parsedLimit)),
+  });
 });
 
 export const searchRestaurantMenu = asyncHandler(async (req, res) => {

@@ -3,6 +3,7 @@ import {
   listRestaurants,
   getRestaurant,
   getMenu,
+  listMenuItems,
   searchRestaurantMenu,
   getMenuCategories,
   getReviews,
@@ -31,6 +32,7 @@ const router = Router();
 router.get('/', optionalAuthenticate, listRestaurants);
 router.get('/:id', optionalAuthenticate, loadPublicRestaurant, getRestaurant);
 router.get('/:id/menu', optionalAuthenticate, loadPublicRestaurant, getMenu);
+router.get('/:id/menu-items', optionalAuthenticate, loadPublicRestaurant, listMenuItems);
 router.get('/:id/menu/search', optionalAuthenticate, loadPublicRestaurant, searchRestaurantMenu);
 router.get('/:id/menu/categories', loadPublicRestaurant, getMenuCategories);
 router.get('/:id/reviews', loadPublicRestaurant, getReviews);

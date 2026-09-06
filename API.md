@@ -13,27 +13,28 @@ Frontend integration guide for all REST endpoints and WebSocket events.
  5. [Rate Limiting](#rate-limiting)
  6. [Public — Auth](#public--auth)
  7. [Public — Restaurants](#public--restaurants)
- 8. [Customer — Profile](#customer--profile)
- 9. [Customer — Orders](#customer--orders)
-10. [Customer — Reviews](#customer--reviews)
-11. [Owner — Authentication](#owner--authentication)
-12. [Owner — Restaurant Management](#owner--restaurant-management)
-13. [Owner — Staff Management](#owner--staff-management)
-14. [Owner — Categories & Subcategories](#owner--categories--subcategories)
-15. [Owner — Menu Items](#owner--menu-items)
-16. [Owner — Tables & QR](#owner--tables--qr)
-17. [Owner — Orders (view only)](#owner--orders-view-only)
-18. [Owner — Bills](#owner--bills)
-19. [Owner — Discounts](#owner--discounts)
-20. [Owner — Loyalty Program](#owner--loyalty-program)
-21. [Owner — Dashboard](#owner--dashboard)
-22. [Owner — Live Monitor](#owner--live-monitor)
-23. [Admin](#admin)
-24. [Staff — Authentication](#staff--authentication)
-25. [Waiter — Tables & Orders](#waiter--tables--orders)
-26. [Kitchen — KDS](#kitchen--kds)
-27. [Partner — Authentication](#partner--authentication)
-28. [WebSocket Events](#websocket-events)
+ 8. [Public — Search](#public--search)
+ 9. [Customer — Profile](#customer--profile)
+10. [Customer — Orders](#customer--orders)
+11. [Customer — Reviews](#customer--reviews)
+12. [Owner — Authentication](#owner--authentication)
+13. [Owner — Restaurant Management](#owner--restaurant-management)
+14. [Owner — Staff Management](#owner--staff-management)
+15. [Owner — Categories & Subcategories](#owner--categories--subcategories)
+16. [Owner — Menu Items](#owner--menu-items)
+17. [Owner — Tables & QR](#owner--tables--qr)
+18. [Owner — Orders (view only)](#owner--orders-view-only)
+19. [Owner — Bills](#owner--bills)
+20. [Owner — Discounts](#owner--discounts)
+21. [Owner — Loyalty Program](#owner--loyalty-program)
+22. [Owner — Dashboard](#owner--dashboard)
+23. [Owner — Live Monitor](#owner--live-monitor)
+24. [Admin](#admin)
+25. [Staff — Authentication](#staff--authentication)
+26. [Waiter — Tables & Orders](#waiter--tables--orders)
+27. [Kitchen — KDS](#kitchen--kds)
+28. [Partner — Authentication](#partner--authentication)
+29. [WebSocket Events](#websocket-events)
 
 ---
 
@@ -567,7 +568,68 @@ GET /api/restaurants/:id/menu
 }
 ```
 
-Menu is served from a 5-minute Redis cache. `effectivePrice` = `discountedPrice` if set, else `sellingPrice`.
+Menu is served from a 5-minute Redis cache. `effectivePrice` = `discountedPrice` if set, else `sellingPrice`. This returns the **entire** menu tree in one response — use it for the owner portal / QR menu. Phone clients that only need to page through a storefront menu should use *Get Restaurant Menu Items* below.
+
+---
+
+### Get Restaurant Menu Items (lazy-load)
+
+```
+GET /api/restaurants/:id/menu-items
+```
+
+**No auth required.** Optional-auth: a valid customer token adds `isFavorited` per item.
+
+A flat, paginated slice of the available menu — one category (or the whole menu) a page at a
+time. Backs the customer app's restaurant screen, which fetches item detail only for the
+categories a customer actually expands or scrolls to. Not cached (unlike `/menu`).
+
+**Query parameters**
+
+| Param | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `categoryId` | string | — | Restrict to one category. Omit for the whole menu. |
+| `subCategoryId` | string | — | Restrict to one subcategory. |
+| `foodType` | string | — | One of `veg` \| `non_veg` \| `egg`. Anything else is ignored. |
+| `page` | number | `1` | 1-indexed. |
+| `limit` | number | `10` | Clamped to 1–30. |
+
+Only `isAvailable: true` items are returned, oldest first (stable paging). Pair with
+*Get Menu Categories* (`GET /api/restaurants/:id/menu/categories`) for the collapsed section
+list and per-category counts.
+
+**Response** `200`
+
+```json
+{
+  "status": "success",
+  "message": "Menu items",
+  "data": {
+    "items": [
+      {
+        "_id": "664item...",
+        "name": "Tomato Soup",
+        "description": "Fresh tomatoes blended smooth",
+        "foodType": "veg",
+        "sellingPrice": 150,
+        "discountedPrice": 120,
+        "effectivePrice": 120,
+        "prepTime": 10,
+        "ingredients": ["tomato", "cream", "herbs"],
+        "badges": ["bestseller"],
+        "image": "https://...",
+        "isAvailable": true
+      }
+    ],
+    "total": 8,
+    "page": 1,
+    "pages": 1
+  }
+}
+```
+
+An unknown or unapproved `:id` returns `404 NOT_FOUND`, same as every other
+`/api/restaurants/:id/*` route.
 
 ---
 
@@ -695,6 +757,76 @@ waiter can still settle the same bill in cash at any point up to payment.
 | `.../bill/verify` | `{ razorpay_payment_id, razorpay_order_id, razorpay_signature }` | Verifies the signature, then settles the bill and frees the table. Returns `data: { bill }`. A failed signature reopens the session. |
 | `.../bill/pay/simulate` | — | Local/dev only — `400 NOT_SIMULATED` when a real Razorpay key is configured. Settles the bill as a real verify would. |
 | `.../bill/cancel` | — | The guest closed the Razorpay checkout without paying. Reopens the session; a no-op if the payment already landed. |
+
+---
+
+## Public — Search
+
+Backs the customer app's Search tab. `typeahead` and `popular` are public; the `recent`
+routes are the caller's own history and require a `customer` token.
+
+### Search Typeahead
+
+```
+GET /api/search/typeahead?q=<text>
+```
+
+**No auth required.** `q` is required (`400 VALIDATION_ERROR` when empty). Matches
+restaurant names and dish names across every restaurant's menu, capped at 6 per source.
+
+**Response** `200`
+
+```json
+{
+  "status": "success",
+  "message": "Typeahead results",
+  "data": {
+    "results": [
+      { "id": "664abc...", "name": "Spice Garden", "type": "restaurant", "thumbnailUrl": "https://res.cloudinary.com/...", "foodType": null },
+      { "id": "664def...", "name": "Paneer Tikka", "type": "dish", "thumbnailUrl": "https://res.cloudinary.com/...", "foodType": "veg" }
+    ]
+  }
+}
+```
+
+### Popular Searches
+
+```
+GET /api/search/popular?vegOnly=true
+```
+
+**No auth required.** Top free-text queries over the last 7 days; falls back to a curated
+seed list until there is enough history. `vegOnly=true` swaps the seed list for its veg
+variant. Each entry carries a representative `imageUrl` resolved server-side (a curated
+quick-filter icon, else a matching dish photo, else a restaurant image for that cuisine),
+or `null` when nothing matches — the app renders a placeholder tile for `null`. The
+enriched list is cached for 10 minutes.
+
+**Response** `200`
+
+```json
+{
+  "status": "success",
+  "message": "Popular searches",
+  "data": {
+    "popular": [
+      { "query": "Biryani", "imageUrl": "https://res.cloudinary.com/..." },
+      { "query": "Sandwich", "imageUrl": null }
+    ]
+  }
+}
+```
+
+### Recent Searches
+
+```
+GET    /api/search/recent          → { "recent": [ { "_id", "query", "createdAt" } ] }  (newest first, max 20)
+POST   /api/search/recent          → body { "query": "Biryani" }  records a search (201)
+DELETE /api/search/recent/:id      → removes one entry (200)
+```
+
+**Auth required** (`customer`). Re-recording an existing query moves it to the top rather
+than duplicating it.
 
 ---
 

@@ -3,6 +3,9 @@ import { PUBLIC_RESTAURANT_FILTER } from '../utils/publicRestaurant.js';
 import MenuItem from '../models/MenuItem.js';
 import Discount from '../models/Discount.js';
 import SearchHistory from '../models/SearchHistory.js';
+import QuickFilterChip from '../models/QuickFilterChip.js';
+import * as cacheService from './cache.service.js';
+import logger from '../utils/logger.js';
 import { escapeRegExp } from '../utils/regex.js';
 
 const TYPEAHEAD_LIMIT_PER_SOURCE = 6;
@@ -84,12 +87,75 @@ export const listRecentSearches = (userId) =>
 
 export const removeRecentSearch = (userId, id) => SearchHistory.deleteOne({ _id: id, userId });
 
+// How long the enriched "Popular right now" list is cached. The image lookups below are
+// the expensive part; the list of terms itself barely moves inside a 10-minute window.
+const POPULAR_CACHE_TTL_SECONDS = 10 * 60;
+
+const anchoredRegex = (term) => new RegExp(`^${escapeRegExp(term.trim())}$`, 'i');
+const containsRegex = (term) => new RegExp(escapeRegExp(term.trim()), 'i');
+
+// Resolve one representative image URL for a popular term so the customer app's "Popular
+// right now" grid can render like the design without the app shipping any artwork of its
+// own. Preference order: a curated quick-filter icon (purpose-built for exactly this row)
+// → a real dish photo whose name matches → a restaurant image for that cuisine → null,
+// which the app draws as a placeholder tile.
+//
+// Best-effort by design: any lookup that throws (or a term that matches nothing) yields
+// null for that one tile and is logged, never bubbled — one broken row must not blank the
+// whole grid or 500 the endpoint.
+const resolvePopularImage = async (term, vegOnly) => {
+  try {
+    const exact = anchoredRegex(term);
+    const chip = await QuickFilterChip.findOne({
+      isActive: true,
+      $or: [{ queryParam: exact }, { label: exact }],
+    })
+      .select('iconUrl veg')
+      .lean();
+    if (chip) {
+      const icon = (vegOnly && chip.veg?.iconUrl) || chip.iconUrl;
+      if (icon) return icon;
+    }
+
+    const partial = containsRegex(term);
+    const dish = await MenuItem.findOne({
+      name: partial,
+      isAvailable: true,
+      image: { $type: 'string', $ne: '' },
+    })
+      .select('image')
+      .sort({ updatedAt: -1 })
+      .lean();
+    if (dish?.image) return dish.image;
+
+    const restaurant = await Restaurant.findOne({
+      cuisineTypes: partial,
+      ...PUBLIC_RESTAURANT_FILTER,
+    })
+      .select('bannerImage logo coverImage')
+      .lean();
+    const restaurantImage =
+      restaurant?.bannerImage || restaurant?.logo || restaurant?.coverImage;
+    if (restaurantImage) return restaurantImage;
+
+    return null;
+  } catch (err) {
+    logger.warn({ err, term }, 'Popular search image resolution failed');
+    return null;
+  }
+};
+
 // Real aggregation once there's data; falls back to the curated seed lists otherwise.
 // The frequency-based branch is intentionally NOT veg-filtered — these are arbitrary past
 // free-text queries ("biryani near me"), and there's no reliable way to classify one as
 // veg/non-veg without NLP this codebase doesn't have; only the hardcoded fallback differs
-// by `vegOnly`.
+// by `vegOnly`. Every returned term carries an `imageUrl` (possibly null) — see
+// {@link resolvePopularImage}.
 export const getPopularSearches = async (vegOnly) => {
+  const cacheKey = `cache:search:popular:${vegOnly ? 'veg' : 'std'}`;
+  const cached = await cacheService.get(cacheKey);
+  if (cached) return cached;
+
   const since = new Date(Date.now() - POPULAR_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const results = await SearchHistory.aggregate([
     { $match: { createdAt: { $gte: since } } },
@@ -98,10 +164,22 @@ export const getPopularSearches = async (vegOnly) => {
     { $limit: POPULAR_LIMIT },
   ]);
 
-  if (results.length === 0) {
-    return (vegOnly ? POPULAR_SEED_VEG : POPULAR_SEED_STANDARD).map((query) => ({ query }));
-  }
-  return results.map((r) => ({ query: r._id }));
+  const terms =
+    results.length === 0
+      ? vegOnly
+        ? POPULAR_SEED_VEG
+        : POPULAR_SEED_STANDARD
+      : results.map((r) => r._id);
+
+  const popular = await Promise.all(
+    terms.map(async (query) => ({
+      query,
+      imageUrl: await resolvePopularImage(query, vegOnly),
+    })),
+  );
+
+  await cacheService.set(cacheKey, popular, POPULAR_CACHE_TTL_SECONDS);
+  return popular;
 };
 
 // Backs the `hasOffers` restaurant-search filter — "active" also means within the
