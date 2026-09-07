@@ -75,6 +75,7 @@ export const acceptOrder = asyncHandler(async (req, res) => {
   }
   await order.save();
   if (wasSearchingVegFleet) notifyService.vegFleetStatusUpdated(order);
+  notifyService.deliveryAssignmentUpdated(order, req.partner);
 
   // Mirrors the old synchronous autoAssign's behavior: mark the partner busy once this
   // acceptance pushes them to their concurrency limit, so they're skipped for further offers.
@@ -212,6 +213,7 @@ export const verifyPickup = asyncHandler(async (req, res) => {
   order.deliveryAssignment.status = 'picked_up';
   order.deliveryAssignment.pickupOtpVerifiedAt = new Date();
   await order.save();
+  notifyService.deliveryAssignmentUpdated(order, req.partner);
 
   sendSuccess(res, 200, 'Pickup confirmed', { order });
 });
@@ -290,11 +292,25 @@ export const deliverOrder = asyncHandler(async (req, res) => {
   // already independently marked this delivered first, this doesn't re-run/double-bill.
   if (order.status !== 'delivered') {
     order.status = 'delivered';
+    // kitchen.service.js's updateOrderStatus pushes this same entry for a kitchen-driven
+    // delivered transition — mirrored here so the audit trail (and the owner's per-order
+    // timeline) reads correctly regardless of which side actually closed the order out.
+    order.statusHistory.push({
+      status: 'delivered',
+      at: new Date(),
+      byStaffName: req.partner.fullName ?? null,
+      byRole: 'delivery_partner',
+    });
     await order.save();
     await createOrderBill(order);
+    notifyService.orderStatusUpdated(order);
   } else {
     await order.save();
   }
+  // deliveryAssignment.status just moved to 'delivered' in both branches above — the
+  // customer's tracking screen and the restaurant's live views need this even when
+  // kitchen already independently marked the order delivered first.
+  notifyService.deliveryAssignmentUpdated(order, req.partner);
 
   // Mirror acceptOrder's busy-marking in reverse: nothing else ever releases a partner back to
   // 'active' once accepting an order pushed them to their concurrency limit. Without this, a

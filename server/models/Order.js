@@ -49,7 +49,7 @@ const orderStatusHistorySchema = new mongoose.Schema(
     byStaffName: { type: String, default: null },
     byRole: {
       type: String,
-      enum: ['waiter', 'chef', 'owner', 'customer', 'guest', 'system'],
+      enum: ['waiter', 'chef', 'owner', 'customer', 'guest', 'system', 'delivery_partner'],
       default: 'system',
     },
   },

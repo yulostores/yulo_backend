@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import Order from '../../models/Order.js';
+import DeliveryPartner from '../../models/DeliveryPartner.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { logActivity } from '../../services/activityLog.service.js';
+import { notifyService } from '../../services/notify.service.js';
 
 const reassignSchema = z.object({
   partnerId: z.string().min(1),
@@ -39,6 +41,9 @@ export const reassignDeliveryPartner = asyncHandler(async (req, res) => {
   order.deliveryAssignment.assignedBy = 'admin';
 
   await order.save();
+
+  const newPartner = await DeliveryPartner.findById(partnerId).lean();
+  notifyService.deliveryAssignmentUpdated(order, newPartner);
 
   await logActivity({
     adminId: req.user._id,

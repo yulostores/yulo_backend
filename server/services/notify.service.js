@@ -1,4 +1,5 @@
 import { getIO } from '../socket.js';
+import { maskPhone } from './tracking.service.js';
 
 // Partner presence (like restaurant presence before it) is tracked directly in socket.js's
 // join_partner/disconnect handlers via a Redis set (live:active_partners), not delegated through
@@ -74,6 +75,34 @@ export const notifyService = {
     if (order.staffId) {
       io.to(`waiter:${order.restaurantId}:${order.staffId}`).emit('order_status_updated', payload);
     }
+  },
+
+  // Fired on every deliveryAssignment.status change driven by the delivery-partner app
+  // (accept/verify-pickup/deliver) or an admin reassignment — the top-level Order.status
+  // stays put across all of these except the final 'delivered' write (which also goes
+  // through orderStatusUpdated above), so this is the only live signal a listening client
+  // gets for "partner accepted"/"partner picked up" without it. Mirrors orderStatusUpdated's
+  // room fan-out (order/restaurant/kitchen) so the customer's tracking screen, the owner's
+  // Manage Orders view, and the Kitchen Display all stay in sync without a refetch.
+  deliveryAssignmentUpdated(order, partner = null) {
+    const io = getIO();
+    const payload = {
+      orderId: order._id,
+      assignmentStatus: order.deliveryAssignment?.status ?? 'unassigned',
+      partner: partner
+        ? {
+            id: String(partner._id),
+            name: partner.fullName ?? null,
+            maskedPhone: maskPhone(partner.phone),
+            vehicleType: partner.vehicle?.type ?? null,
+            vehicleNumber: partner.vehicle?.number ?? null,
+          }
+        : null,
+      updatedAt: order.updatedAt,
+    };
+    io.to(`order:${order._id}`).emit('delivery_assignment_updated', payload);
+    io.to(`restaurant:${order.restaurantId}`).emit('delivery_assignment_updated', payload);
+    io.to(`kitchen:${order.restaurantId}`).emit('delivery_assignment_updated', payload);
   },
 
   billUpdated({ _id, tableId, grandTotal, discountsApplied, batches }) {

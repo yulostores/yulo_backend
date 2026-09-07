@@ -48,7 +48,7 @@ const buildTimeline = (order) => {
 // A real masked-calling integration (e.g. Exotel, Knowlarity) would replace
 // this with a dynamically-allocated proxy number; for now the UI gets a
 // displayable masked string to show and open the native dialler with.
-const maskPhone = (phone) => {
+export const maskPhone = (phone) => {
   if (!phone || phone.length < 4) return null;
   const last4 = phone.slice(-4);
   const prefix = phone.startsWith('+') ? phone.slice(0, 3) : '+91';
