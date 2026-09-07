@@ -4593,6 +4593,22 @@ socket.emit('track_visitor', {
 
 ---
 
+#### join_order
+
+Subscribe to live tracking events for a delivery order (customer app).
+The server verifies that the token belongs to the order's owner before
+adding the socket to the `order:<orderId>` room.
+
+```js
+socket.emit('join_order', { orderId: '664ord...', token: '<customerAccessToken>' });
+```
+
+Events received after joining:
+- `order_status_updated` — status changes, ETA
+- `partner_location_updated` — partner GPS coordinates (while `out_for_delivery`)
+
+---
+
 ### Server → Client Events
 
 #### new_order
@@ -4620,15 +4636,39 @@ Triggered when a new order is placed.
 
 Emitted to: `restaurant:<restaurantId>`, `kitchen:<restaurantId>`, `waiter:<restaurantId>:<staffId>`, `order:<orderId>`
 
-Triggered on every kitchen status change.
+Triggered on every kitchen/delivery status change.
+The `etaMinutes` field is only non-null when `status === 'out_for_delivery'` and the partner has a fresh location ping.
 
 ```json
 {
   "orderId": "664ord...",
-  "status": "confirmed",
-  "updatedAt": "2026-06-17T13:17:00.000Z"
+  "status": "out_for_delivery",
+  "etaMinutes": 12,
+  "updatedAt": "2026-06-17T13:17:00.000Z",
+  "changedBy": { "staffId": null, "name": null, "role": "system" }
 }
 ```
+
+---
+
+#### partner_location_updated
+
+Emitted to: `order:<orderId>`
+
+Triggered whenever the delivery partner's app sends a location ping
+(`POST /api/partner/location`) and the partner has an active `picked_up` assignment.
+Only emitted while the order is `out_for_delivery`.
+
+```json
+{
+  "orderId": "664ord...",
+  "lat": 12.9716,
+  "lng": 77.5946
+}
+```
+
+The customer tracking screen uses this to animate the bike icon on the map.
+Coordinates are `[lat, lng]` (decimal degrees, WGS 84).
 
 ---
 

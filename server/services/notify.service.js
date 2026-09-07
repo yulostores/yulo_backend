@@ -49,14 +49,18 @@ export const notifyService = {
     });
   },
 
-  orderStatusUpdated(order) {
+  orderStatusUpdated(order, { etaMinutes = null } = {}) {
     const io = getIO();
     // tableNumber and the last history entry ride along so a listening client can update
     // its row in place — naming the table and who moved it — without a refetch.
+    // etaMinutes is only meaningful for out_for_delivery, and only when the partner has
+    // a fresh location ping; null otherwise — the tracking screen treats null as "no ETA"
+    // and hides the "Arriving in X mins" row rather than guessing.
     const lastChange = order.statusHistory?.at?.(-1) ?? null;
     const payload = {
       orderId: order._id,
       status: order.status,
+      etaMinutes,
       tableId: order.tableId,
       tableNumber: order.tableNumber,
       updatedAt: order.updatedAt,

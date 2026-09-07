@@ -12,6 +12,11 @@ const cartItemSchema = new mongoose.Schema({
   name: { type: String, required: true },
   unitPrice: { type: Number, required: true },
   qty: { type: Number, required: true, min: 1 },
+  // Snapshot of MenuItem.foodType at add-time — the cart screen shows a veg/non-veg
+  // mark per line and colours its checkout CTA green only when every line is 'veg',
+  // without a MenuItem round-trip. Optional so lines added before this field existed
+  // still load; buildCartResponse backfills those from MenuItem on read.
+  foodType: { type: String, enum: ['veg', 'non_veg', 'egg'] },
   selectedOptions: [selectedOptionSchema],
 });
 

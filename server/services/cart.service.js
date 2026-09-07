@@ -93,15 +93,19 @@ const resolveSelectedOptions = async (items) => {
   }
 };
 
-export const computeBill = async (cart) => {
+// `restaurant` is passed in by buildCartResponse (which already loads it for the
+// cart's storefront summary) so the bill doesn't re-query the same document; it
+// falls back to its own lookup for any other caller.
+export const computeBill = async (cart, restaurant) => {
   if (cart.items.length === 0) {
     return { itemTotal: 0, deliveryFee: 0, platformFee: 0, tax: 0, discountAmount: 0, grandTotal: 0 };
   }
 
   const itemTotal = cart.items.reduce((sum, item) => sum + item.unitPrice * item.qty, 0);
 
-  const restaurant = await Restaurant.findById(cart.restaurantId).select('delivery').lean();
-  const deliveryFee = computeDeliveryFee(itemTotal, restaurant?.delivery);
+  const restaurantDoc =
+    restaurant ?? (await Restaurant.findById(cart.restaurantId).select('delivery').lean());
+  const deliveryFee = computeDeliveryFee(itemTotal, restaurantDoc?.delivery);
   const platformFee = cartPlatformFee;
   const tax = itemTotal * (cartTaxPercent / 100);
 
@@ -125,13 +129,54 @@ export const computeBill = async (cart) => {
   return { itemTotal, deliveryFee, platformFee, tax, discountAmount, grandTotal };
 };
 
+// Fills in `foodType` on any line that predates the Cart schema snapshotting it
+// (see Cart.js). One batch MenuItem query for the whole cart, mirroring how
+// resolveSelectedOptions handles OptionGroups.
+const backfillFoodTypes = async (items) => {
+  const missing = items.filter((i) => !i.foodType);
+  if (missing.length === 0) return;
+
+  const ids = [...new Set(missing.map((i) => String(i.menuItemId)))];
+  const menuItems = await MenuItem.find({ _id: { $in: ids } }).select('foodType').lean();
+  const foodTypeById = new Map(menuItems.map((m) => [String(m._id), m.foodType]));
+
+  for (const item of missing) {
+    item.foodType = foodTypeById.get(String(item.menuItemId)) ?? null;
+  }
+};
+
+// Storefront summary the cart screen renders above the line items — its name, a
+// thumbnail, and whether it's fully vegetarian. `null` for an empty cart, whose
+// restaurantId has been reset (see resetIfEmpty).
+const loadRestaurantSummary = async (restaurantId) => {
+  if (!restaurantId) return null;
+  const r = await Restaurant.findById(restaurantId)
+    .select('name logo coverImage bannerImage isPureVeg delivery')
+    .lean();
+  if (!r) return null;
+  return {
+    _id: r._id,
+    name: r.name,
+    image: r.logo || r.coverImage || r.bannerImage || null,
+    isPureVeg: Boolean(r.isPureVeg),
+    // kept on the object only so computeBill can reuse it; stripped before response
+    delivery: r.delivery,
+  };
+};
+
 // Single place every mutating/read function below funnels through before returning —
 // converts to a plain object FIRST, so resolveSelectedOptions' ad-hoc `resolvedOptions`
 // property actually survives JSON serialization (see that function's comment).
 const buildCartResponse = async (cart) => {
   const plainCart = cart.toObject();
-  await resolveSelectedOptions(plainCart.items);
-  const bill = await computeBill(plainCart);
+  const restaurant = await loadRestaurantSummary(plainCart.restaurantId);
+  await Promise.all([
+    resolveSelectedOptions(plainCart.items),
+    backfillFoodTypes(plainCart.items),
+  ]);
+  const bill = await computeBill(plainCart, restaurant ? { delivery: restaurant.delivery } : undefined);
+  if (restaurant) delete restaurant.delivery;
+  plainCart.restaurant = restaurant;
   return { cart: plainCart, bill };
 };
 
@@ -170,6 +215,7 @@ export const addItem = async (userId, { menuItemId, qty, selectedOptions = [] })
     name: menuItem.name,
     unitPrice: pricing.totalPriceMinor,
     qty,
+    foodType: menuItem.foodType,
     selectedOptions,
   });
   cart.restaurantId = menuItem.restaurantId;
