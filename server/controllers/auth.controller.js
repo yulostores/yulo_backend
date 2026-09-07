@@ -94,9 +94,14 @@ export const verifyCustomerOtp = asyncHandler(async (req, res) => {
   const { accessToken, refreshToken } = authService.generateTokens(user._id, user.role);
   setRefreshCookie(res, user.role, refreshToken);
 
+  // refreshToken is also returned in the body for the customer mobile app, which
+  // has no cookie jar to hold `yulo_rt_customer` across launches — it stores this
+  // in expo-secure-store. Mirrors controllers/partner/auth.controller.js's
+  // verifyOtpHandler. Web portals ignore it and keep using the cookie.
   sendSuccess(res, isNewUser ? 201 : 200, isNewUser ? 'Account created' : 'Login successful', {
     user,
     accessToken,
+    refreshToken,
     isNewUser,
   });
 });
@@ -111,7 +116,10 @@ export const refresh = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Unknown portal');
   }
 
-  const token = readRefreshToken(req, portal);
+  // Cookie first (web portals); fall back to a body token for the customer mobile
+  // app, which stores its refresh token in expo-secure-store rather than a cookie
+  // (same reason the partner app sends it in the body — see auth.service.js).
+  const token = readRefreshToken(req, portal) || req.body?.refreshToken;
   if (!token) throw new ApiError(401, 'INVALID_TOKEN', 'No refresh token');
 
   const decoded = jwt.verify(token, env.JWT_REFRESH_SECRET);

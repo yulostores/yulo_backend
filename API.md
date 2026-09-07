@@ -66,7 +66,7 @@ Each of the three login endpoints above issues the same shape of token pair:
 | Token | Where sent | Lifetime |
 | --- | --- | --- |
 | `accessToken` | `Authorization: Bearer <token>` header | 15 min |
-| `refreshToken` | `Set-Cookie: refreshToken=...; HttpOnly; SameSite=Strict` | 7 days |
+| `refreshToken` | `Set-Cookie: refreshToken=...; HttpOnly; SameSite=Strict` (web); also in the `otp/verify` response body for the customer mobile app | 7 days |
 
 Include the access token on every protected request:
 
@@ -358,12 +358,13 @@ POST /api/auth/customer/otp/verify
       "role": "customer"
     },
     "accessToken": "eyJ...",
+    "refreshToken": "eyJ...",
     "isNewUser": false
   }
 }
 ```
 
-`201` + `"Account created"` + `isNewUser: true` on first verification for a phone number that has no existing account; `200` + `"Login successful"` + `isNewUser: false` otherwise. A `refreshToken`HttpOnly cookie is also set.
+`201` + `"Account created"` + `isNewUser: true` on first verification for a phone number that has no existing account; `200` + `"Login successful"` + `isNewUser: false` otherwise. A `refreshToken` HttpOnly cookie is also set; `refreshToken` is **additionally** returned in the body for the customer mobile app, which has no cookie jar and stores it in secure device storage (web clients ignore the body field and use the cookie).
 
 ---
 
@@ -377,7 +378,15 @@ POST /api/auth/refresh?portal=owner
 
 **Query** — `portal`: `customer` | `owner` | `admin`. Optional, but always send it: without it the endpoint falls back to the legacy shared `refreshToken` cookie and cannot tell one portal's session from another's. A cookie whose role does not match the requested portal is rejected with `401 INVALID_TOKEN`.
 
-**Body** — none
+**Body** — none for web clients (the cookie carries the token). The customer mobile app, which has no cookie jar, instead sends the refresh token it received from `otp/verify`:
+
+```json
+{
+  "refreshToken": "eyJ..."
+}
+```
+
+The cookie takes precedence when both are present; the body token is a fallback. A token whose role does not match `?portal=` is rejected with `401 INVALID_TOKEN`.
 
 **Response** `200`
 
@@ -618,7 +627,8 @@ list and per-category counts.
         "ingredients": ["tomato", "cream", "herbs"],
         "badges": ["bestseller"],
         "image": "https://...",
-        "isAvailable": true
+        "isAvailable": true,
+        "optionGroupCount": 2
       }
     ],
     "total": 8,
@@ -627,6 +637,13 @@ list and per-category counts.
   }
 }
 ```
+
+`optionGroupCount` is the number of customization groups (`OptionGroup` docs) on
+the dish. `> 0` means the item needs the customization screen
+(`GET /api/items/:id`) before it can be added — a bare `POST /api/cart/items` with
+no `selectedOptions` is rejected `400 VALIDATION_ERROR` when any of those groups is
+required. The same field is attached to *in-menu search* results
+(`GET /api/restaurants/:id/menu/search`).
 
 An unknown or unapproved `:id` returns `404 NOT_FOUND`, same as every other
 `/api/restaurants/:id/*` route.
@@ -1143,13 +1160,31 @@ GET /api/orders
   "status": "success",
   "message": "Orders",
   "data": {
-    "orders": [ { ... } ],
+    "orders": [
+      {
+        "_id": "664ord...",
+        "restaurantId": "664abc...",
+        "restaurant": { "name": "Green Leaf Kitchen", "logo": "https://..." },
+        "type": "delivery",
+        "status": "delivered",
+        "items": [ { "name": "Paneer Tikka", "quantity": 2, "price": 260 } ],
+        "subtotal": 520,
+        "grandTotal": 859,
+        "vegFleetOptIn": true,
+        "vegFleetAssignmentStatus": "assigned",
+        "rating": { "value": 5, "comment": "...", "createdAt": "..." },
+        "createdAt": "2026-06-17T20:12:00.000Z"
+      }
+    ],
     "total": 15,
     "page": 1,
     "pages": 1
   }
 }
 ```
+
+`restaurant` is joined in per page (`{ name, logo }`), or `null` when the
+restaurant has since been removed. `rating` is `null` until the order is reviewed.
 
 ---
 

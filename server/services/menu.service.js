@@ -86,6 +86,34 @@ export const getMenuCategories = async (restaurantId) => {
   }));
 };
 
+// Per-item count of customization groups, for the lazy menu feed and the in-menu
+// search. One query for the whole page (not one per item), mirroring how
+// getMenu() attaches the full optionGroups array in a single batch. The customer
+// app's ADD button reads this to decide whether a tap adds the dish straight to
+// the cart or hands off to the customization screen first.
+//
+// Model.find() (unlike .aggregate()) casts the ids per the schema, so a string
+// id coming off a JSON-cached menu entry (searchMenu) works the same as a live
+// ObjectId (listMenuItems).
+export const attachOptionGroupCounts = async (items) => {
+  if (items.length === 0) return items;
+
+  const groups = await OptionGroup.find({ menuItemId: { $in: items.map((i) => i._id) } })
+    .select('menuItemId')
+    .lean();
+
+  const countByItemId = new Map();
+  for (const g of groups) {
+    const key = String(g.menuItemId);
+    countByItemId.set(key, (countByItemId.get(key) ?? 0) + 1);
+  }
+
+  for (const item of items) {
+    item.optionGroupCount = countByItemId.get(String(item._id)) ?? 0;
+  }
+  return items;
+};
+
 // Backs the `startingPrice` field on restaurant list/search cards — one aggregation for
 // N restaurants, not N queries. Field name (not `startingPriceMinor`) matches how every
 // other price on MenuItem/Order/Bill in this codebase is actually stored: plain rupee

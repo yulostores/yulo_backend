@@ -164,6 +164,7 @@ export const listMenuItems = asyncHandler(async (req, res) => {
     ? await favoriteService.getFavoritedIdSet(req.user._id, 'menu_item')
     : null;
   favoriteService.annotateEntity(items, favoritedIds);
+  await menuService.attachOptionGroupCounts(items);
 
   sendSuccess(res, 200, 'Menu items', {
     items,
@@ -183,6 +184,7 @@ export const searchRestaurantMenu = asyncHandler(async (req, res) => {
     ? await favoriteService.getFavoritedIdSet(req.user._id, 'menu_item')
     : null;
   favoriteService.annotateEntity(items, favoritedIds);
+  await menuService.attachOptionGroupCounts(items);
 
   sendSuccess(res, 200, 'Menu search results', { items });
 });

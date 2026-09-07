@@ -34,6 +34,30 @@ const attachRatings = async (orders) => {
   return orders;
 };
 
+// The list query is lean with no populate, so an order row carries only a bare
+// restaurantId — nothing the Orders-tab card can show as a storefront name. One
+// batched lookup keyed by the page's distinct restaurantIds attaches
+// { name, logo } to every order (the same `.select('name logo')` the checkout
+// handler already does per order, done once for the whole page here). A row whose
+// restaurant was since deleted gets `restaurant: null` rather than an error.
+const attachRestaurants = async (orders) => {
+  const ids = [...new Set(orders.map((o) => String(o.restaurantId)).filter(Boolean))];
+  if (ids.length === 0) return orders;
+
+  const restaurants = await Restaurant.find({ _id: { $in: ids } })
+    .select('name logo')
+    .lean();
+  const byId = new Map(restaurants.map((r) => [String(r._id), r]));
+
+  for (const order of orders) {
+    const restaurant = byId.get(String(order.restaurantId));
+    order.restaurant = restaurant
+      ? { name: restaurant.name, logo: restaurant.logo ?? null }
+      : null;
+  }
+  return orders;
+};
+
 const verifyPaymentSchema = z.object({
   razorpay_payment_id: z.string().min(1),
   razorpay_order_id: z.string().min(1),
@@ -310,9 +334,10 @@ export const listOrders = asyncHandler(async (req, res) => {
   ]);
   // vegFleetOptIn/vegFleetAssignmentStatus/dedicatedBagRequired (Prompt 10) are already
   // plain top-level Order fields with no .select() narrowing them out — they're already
-  // present on every order returned above. `rating` is the one field that genuinely
-  // isn't there yet.
-  await attachRatings(orders);
+  // present on every order returned above. `rating` and `restaurant` are the two the row
+  // still has to be joined in — both mutate `orders` in place and touch different fields,
+  // so they run together.
+  await Promise.all([attachRatings(orders), attachRestaurants(orders)]);
 
   sendSuccess(res, 200, 'Orders', { orders, total, page: parsedPage });
 });
