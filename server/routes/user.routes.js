@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authenticate } from '../middleware/authenticate.js';
 import { upload } from '../middleware/upload.js';
 import { validate } from '../middleware/validate.js';
+import { isSupportedLanguage } from '../config/appConfig.config.js';
 import {
   getMe,
   updateMe,
@@ -95,7 +96,15 @@ const preferencesUpdateSchema = z
     vegModeEnabled: z.boolean().optional(),
     vegModeScope: z.enum(['all_restaurants', 'pure_veg_only']).optional(),
     vegFleetPreferenceEnabled: z.boolean().optional(),
-    preferredLanguage: z.string().min(2).max(10).optional(),
+    // Only a language the app actually ships strings for (config/appConfig.config.js →
+    // SUPPORTED_LANGUAGES with `available: true`). This keeps the stored code from ever
+    // getting ahead of a shipped translation — the picker in the app disables the rest.
+    preferredLanguage: z
+      .string()
+      .min(2)
+      .max(10)
+      .refine(isSupportedLanguage, { message: 'Unsupported language' })
+      .optional(),
     notifications: z
       .object({
         pushEnabled: z.boolean().optional(),

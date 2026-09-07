@@ -175,10 +175,10 @@ export const listMenuItems = asyncHandler(async (req, res) => {
 });
 
 export const searchRestaurantMenu = asyncHandler(async (req, res) => {
-  const { q } = req.query;
+  const { q, foodType } = req.query;
   if (!q || !q.trim()) throw new ApiError(400, 'VALIDATION_ERROR', 'q is required');
 
-  const items = await menuService.searchMenu(req.params.id, q);
+  const items = await menuService.searchMenu(req.params.id, q, foodType);
 
   const favoritedIds = req.user
     ? await favoriteService.getFavoritedIdSet(req.user._id, 'menu_item')

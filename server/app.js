@@ -9,6 +9,7 @@ import { apiLimiter } from './middleware/rateLimiter.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import authRoutes from './routes/auth.routes.js';
 import userRoutes from './routes/user.routes.js';
+import appRoutes from './routes/app.routes.js';
 import restaurantRoutes from './routes/restaurant.routes.js';
 import cuisineRoutes from './routes/cuisine.routes.js';
 import itemRoutes from './routes/item.routes.js';
@@ -90,6 +91,7 @@ app.use('/api', (req, res, next) =>
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/app', appRoutes);
 app.use('/api/restaurants', restaurantRoutes);
 app.use('/api/cuisines', cuisineRoutes);
 app.use('/api/items', itemRoutes);

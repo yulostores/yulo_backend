@@ -62,12 +62,18 @@ const flattenMenuItems = (menu) => {
 };
 
 // Menu-scoped search (screen 15's "search in menu" bar) — reuses getMenu()'s 5-min cache
-// instead of hitting Mongo again on every keystroke.
-export const searchMenu = async (restaurantId, query) => {
+// instead of hitting Mongo again on every keystroke. `foodType`, when one of the
+// known values, narrows the results the same way `/menu-items?foodType=` does, so
+// the customer app's Veg Mode filters this bar server-side too rather than in the client.
+export const searchMenu = async (restaurantId, query, foodType) => {
   const menu = await getMenu(restaurantId);
   const regex = new RegExp(escapeRegExp(query.trim()), 'i');
+  const FOOD_TYPES = ['veg', 'non_veg', 'egg'];
+  const wantType = FOOD_TYPES.includes(foodType) ? foodType : null;
   return flattenMenuItems(menu).filter(
-    (item) => regex.test(item.name) || regex.test(item.description ?? '')
+    (item) =>
+      (!wantType || item.foodType === wantType) &&
+      (regex.test(item.name) || regex.test(item.description ?? ''))
   );
 };
 

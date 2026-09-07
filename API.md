@@ -14,27 +14,29 @@ Frontend integration guide for all REST endpoints and WebSocket events.
  6. [Public — Auth](#public--auth)
  7. [Public — Restaurants](#public--restaurants)
  8. [Public — Search](#public--search)
- 9. [Customer — Profile](#customer--profile)
-10. [Customer — Orders](#customer--orders)
-11. [Customer — Reviews](#customer--reviews)
-12. [Owner — Authentication](#owner--authentication)
-13. [Owner — Restaurant Management](#owner--restaurant-management)
-14. [Owner — Staff Management](#owner--staff-management)
-15. [Owner — Categories & Subcategories](#owner--categories--subcategories)
-16. [Owner — Menu Items](#owner--menu-items)
-17. [Owner — Tables & QR](#owner--tables--qr)
-18. [Owner — Orders (view only)](#owner--orders-view-only)
-19. [Owner — Bills](#owner--bills)
-20. [Owner — Discounts](#owner--discounts)
-21. [Owner — Loyalty Program](#owner--loyalty-program)
-22. [Owner — Dashboard](#owner--dashboard)
-23. [Owner — Live Monitor](#owner--live-monitor)
-24. [Admin](#admin)
-25. [Staff — Authentication](#staff--authentication)
-26. [Waiter — Tables & Orders](#waiter--tables--orders)
-27. [Kitchen — KDS](#kitchen--kds)
-28. [Partner — Authentication](#partner--authentication)
-29. [WebSocket Events](#websocket-events)
+ 9. [Public — App Config](#public--app-config)
+10. [Customer — Profile](#customer--profile)
+11. [Customer — Preferences](#customer--preferences)
+12. [Customer — Orders](#customer--orders)
+13. [Customer — Reviews](#customer--reviews)
+14. [Owner — Authentication](#owner--authentication)
+15. [Owner — Restaurant Management](#owner--restaurant-management)
+16. [Owner — Staff Management](#owner--staff-management)
+17. [Owner — Categories & Subcategories](#owner--categories--subcategories)
+18. [Owner — Menu Items](#owner--menu-items)
+19. [Owner — Tables & QR](#owner--tables--qr)
+20. [Owner — Orders (view only)](#owner--orders-view-only)
+21. [Owner — Bills](#owner--bills)
+22. [Owner — Discounts](#owner--discounts)
+23. [Owner — Loyalty Program](#owner--loyalty-program)
+24. [Owner — Dashboard](#owner--dashboard)
+25. [Owner — Live Monitor](#owner--live-monitor)
+26. [Admin](#admin)
+27. [Staff — Authentication](#staff--authentication)
+28. [Waiter — Tables & Orders](#waiter--tables--orders)
+29. [Kitchen — KDS](#kitchen--kds)
+30. [Partner — Authentication](#partner--authentication)
+31. [WebSocket Events](#websocket-events)
 
 ---
 
@@ -847,6 +849,111 @@ than duplicating it.
 
 ---
 
+## Public — App Config
+
+Backs the customer app's **Settings** screen. Everything the screen renders — the
+languages it can be switched to, the payment-method catalogue, the "About Yulo Stores"
+block and the legal documents — comes from here, so the app hard-codes none of it. The
+per-user piece (the customer's chosen language) is on
+[Customer — Preferences](#customer--preferences).
+
+Source of truth: `server/config/appConfig.config.js`.
+
+### Get App Config
+
+```
+GET /api/app/config
+```
+
+**No auth required.** Legal documents appear here as summaries only — fetch a document's
+text with *Get Legal Document* below.
+
+**Response** `200`
+
+```json
+{
+  "status": "success",
+  "message": "App config",
+  "data": {
+    "config": {
+      "languages": [
+        { "code": "en", "label": "English", "endonym": "English", "available": true },
+        { "code": "hi", "label": "Hindi", "endonym": "हिन्दी", "available": false }
+      ],
+      "defaultLanguage": "en",
+      "payments": {
+        "groups": [
+          { "id": "upi", "title": "UPI", "subtitle": "Pay by any UPI app", "defaultOpen": true }
+        ],
+        "methods": [
+          { "id": "phonepe", "group": "upi", "label": "PhonePe UPI", "hint": "UPI", "icon": "phone-portrait", "tint": "#5F259F", "wire": "online", "gatewayMethod": "upi" },
+          { "id": "cod", "group": "cod", "label": "Pay on Delivery", "hint": "Cash / UPI on delivery", "icon": "cash", "tint": "#0D8A16", "wire": "cod" }
+        ]
+      },
+      "about": {
+        "appName": "Yulo Stores",
+        "legalName": "Yulo Stores Technologies Pvt. Ltd.",
+        "tagline": "Stores and restaurants near you, delivered.",
+        "websiteUrl": "https://yulostores.in",
+        "helpCentreUrl": "https://yulostores.in/help",
+        "supportEmail": "support@yulostores.in",
+        "supportPhone": "+91 1800 200 1234",
+        "addressLines": ["Yulo Stores Technologies Pvt. Ltd.", "Bengaluru 560001", "Karnataka, India"],
+        "socialLinks": [
+          { "id": "instagram", "label": "Instagram", "url": "https://instagram.com/yulostores" }
+        ],
+        "copyrightHolder": "Yulo Stores Technologies Pvt. Ltd.",
+        "copyright": "© 2026 Yulo Stores Technologies Pvt. Ltd."
+      },
+      "legal": [
+        { "id": "terms", "title": "Terms of Service", "updatedAt": "2026-01-01", "canonicalUrl": null },
+        { "id": "privacy", "title": "Privacy & data", "updatedAt": "2026-01-01", "canonicalUrl": null }
+      ]
+    }
+  }
+}
+```
+
+`payments.methods[].wire` (`"online"` \| `"cod"`) is the only value the order API accepts;
+everything else on a method is display. `copyright` is stamped with the current year at
+request time. A language with `"available": false` is shown in the picker but not
+selectable — see the preferred-language rule below.
+
+### Get Legal Document
+
+```
+GET /api/app/legal/:docId
+```
+
+**No auth required.** `:docId` is one of the `legal[].id` values from *Get App Config*
+(`terms`, `privacy`).
+
+**Response** `200`
+
+```json
+{
+  "status": "success",
+  "message": "Legal document",
+  "data": {
+    "document": {
+      "id": "terms",
+      "title": "Terms of Service",
+      "updatedAt": "2026-01-01",
+      "canonicalUrl": null,
+      "sections": [
+        { "heading": "Acceptance of these terms", "body": "By creating an account or placing an order …" }
+      ]
+    }
+  }
+}
+```
+
+| Status | Code | When |
+|---|---|---|
+| 404 | `NOT_FOUND` | `:docId` is not a known document |
+
+---
+
 ## Customer — Profile
 
 All routes require `Authorization: Bearer <accessToken>` with role `customer` or `restaurant_owner`.
@@ -1045,6 +1152,71 @@ always has one selected.
   "status": "success",
   "message": "Address removed",
   "data": null
+}
+```
+
+---
+
+## Customer — Preferences
+
+The signed-in customer's saved app preferences. Requires `Authorization: Bearer
+<accessToken>` (`customer` or `restaurant_owner`). The list of languages a
+`preferredLanguage` may be set to comes from [Get App Config](#get-app-config).
+
+### Get Preferences
+
+```
+GET /api/users/me/preferences
+```
+
+**Response** `200`
+
+```json
+{
+  "status": "success",
+  "message": "Preferences",
+  "data": {
+    "preferences": {
+      "vegModeEnabled": false,
+      "vegModeScope": "all_restaurants",
+      "vegFleetPreferenceEnabled": false,
+      "preferredLanguage": "en",
+      "notifications": {
+        "pushEnabled": false,
+        "categories": [{ "key": "orders_and_purchases", "enabled": true }]
+      }
+    }
+  }
+}
+```
+
+### Update Preferences
+
+```
+PATCH /api/users/me/preferences
+```
+
+Merge-update — send only the fields you are changing; the server never wipes a field you
+did not send, and echoes the whole document back.
+
+| Field | Type | Notes |
+|---|---|---|
+| `vegModeEnabled` | boolean | Filter menu content to vegetarian app-wide |
+| `vegModeScope` | `"all_restaurants"` \| `"pure_veg_only"` | Only meaningful when `vegModeEnabled` |
+| `vegFleetPreferenceEnabled` | boolean | Default answer to the per-order "veg-only delivery fleet?" choice |
+| `preferredLanguage` | string | A language `code` from *Get App Config* whose `available` is `true`. An unavailable / unknown code is `400 VALIDATION_ERROR` |
+| `notifications.pushEnabled` | boolean | |
+| `notifications.categories` | `[{ key, enabled }]` | Replaces the array |
+
+At least one field is required (`400 VALIDATION_ERROR` otherwise).
+
+**Response** `200`
+
+```json
+{
+  "status": "success",
+  "message": "Preferences updated",
+  "data": { "preferences": { "...": "the full merged document" } }
 }
 ```
 
