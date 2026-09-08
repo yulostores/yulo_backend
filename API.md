@@ -444,8 +444,9 @@ GET /api/restaurants
 
 | Param | Type | Example | Notes |
 | --- | --- | --- | --- |
-| `lat` | number | `28.6139` | Required for geo-sort |
-| `lng` | number | `77.2090` | Required for geo-sort |
+| `q` | string | `"biryani"` | Text search — matches restaurant name, cuisine, or the name of an available dish the restaurant serves. When given, `lat`/`lng` are not required and results are not geo-sorted. |
+| `lat` | number | `28.6139` | Required for geo-sort (omit when `q` is used) |
+| `lng` | number | `77.2090` | Required for geo-sort (omit when `q` is used) |
 | `radius` | number | `5000` | Meters, default 5000 |
 | `cuisine` | string | `"Indian"` | Filter by cuisine type |
 | `page` | number | `1` | Default 1 |

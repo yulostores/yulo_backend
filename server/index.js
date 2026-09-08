@@ -1,4 +1,7 @@
 import 'dotenv/config';
+// Must load before ./app.js (and before http below) so Sentry can instrument them.
+// A complete no-op unless SENTRY_DSN is set — see instrument.js.
+import './instrument.js';
 import http from 'http';
 import net from 'node:net';
 import { app } from './app.js';
@@ -16,9 +19,9 @@ import logger from './utils/logger.js';
 // `https` module resolves in OS order and lands on IPv4, which is why *uploads* to
 // Cloudinary have always worked; `fetch` is undici, which takes the first address DNS
 // returns, which is why *reading a document back* stalled until the gateway gave up at 60s
-// and answered 504. Node only defaults this on from v20, and nothing pins the runtime
-// version here (no `engines` in package.json), so it is set explicitly: try both families
-// in parallel and keep whichever connects.
+// and answered 504. Node only defaults this on from v20; package.json now pins `engines`
+// to >=20, but this stays set explicitly as defence in depth: try both families in
+// parallel and keep whichever connects.
 if (typeof net.setDefaultAutoSelectFamily === 'function') net.setDefaultAutoSelectFamily(true);
 
 const server = http.createServer(app);

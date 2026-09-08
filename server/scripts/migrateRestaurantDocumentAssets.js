@@ -22,6 +22,7 @@ import 'dotenv/config';
 import mongoose from 'mongoose';
 import Restaurant from '../models/Restaurant.js';
 import * as uploadService from '../services/upload.service.js';
+import { recordMigrationRun } from './_migrationLog.js';
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const FETCH_TIMEOUT_MS = 30_000;
@@ -151,5 +152,13 @@ console.log(
   `\n${DRY_RUN ? 'Would move' : 'Moved'} ${moved} asset(s) to raw, ${DRY_RUN ? 'backfill' : 'backfilled'} ${backfilled} record(s), skipped ${skipped}, failed ${failed}`
 );
 if (failed) console.log('Re-run to retry the failures — this script is idempotent.');
+
+if (!DRY_RUN && (moved > 0 || backfilled > 0)) {
+  await recordMigrationRun('migrateRestaurantDocumentAssets', {
+    assetsMovedToRaw: moved,
+    recordsBackfilled: backfilled,
+    failed,
+  });
+}
 
 await mongoose.disconnect();

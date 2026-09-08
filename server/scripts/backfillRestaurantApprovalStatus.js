@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import mongoose from 'mongoose';
 import Restaurant from '../models/Restaurant.js';
+import { recordMigrationRun } from './_migrationLog.js';
 
 await mongoose.connect(process.env.MONGODB_URI);
 console.log('✓ Connected');
@@ -23,5 +24,9 @@ for (const restaurant of restaurants) {
 }
 
 console.log(`\n✓ Updated ${updated} restaurant(s)`);
+
+if (updated > 0) {
+  await recordMigrationRun('backfillRestaurantApprovalStatus', { restaurantsUpdated: updated });
+}
 
 await mongoose.disconnect();

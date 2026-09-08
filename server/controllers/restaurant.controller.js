@@ -76,10 +76,27 @@ export const listRestaurants = asyncHandler(async (req, res) => {
     data = { restaurants, page: parsedPage };
   } else {
     const regex = new RegExp(escapeRegExp(q.trim()), 'i');
+
+    // A customer typing into the Search tab expects dish names to count, not just
+    // restaurant names and cuisines — the field itself prompts "restaurants and
+    // dishes". Resolve the restaurants that currently serve a matching, available
+    // item and fold them into the $or as a third branch. Same unanchored,
+    // case-insensitive name regex the typeahead's global dish lookup uses
+    // (search.service.js#typeahead); PUBLIC_RESTAURANT_FILTER above still gates
+    // the result, so an item on a suspended/unapproved store surfaces nothing.
+    const menuMatchIds = await MenuItem.distinct('restaurantId', {
+      name: regex,
+      isAvailable: true,
+    });
+
     const filter = {
       ...PUBLIC_RESTAURANT_FILTER,
       ...extraFilter,
-      $or: [{ name: regex }, { cuisineTypes: regex }],
+      $or: [
+        { name: regex },
+        { cuisineTypes: regex },
+        ...(menuMatchIds.length > 0 ? [{ _id: { $in: menuMatchIds } }] : []),
+      ],
     };
 
     const [restaurants, total] = await Promise.all([

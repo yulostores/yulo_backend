@@ -25,6 +25,7 @@ import TableSession from '../models/TableSession.js';
 import Restaurant from '../models/Restaurant.js';
 import StaffMember from '../models/StaffMember.js';
 import Counter from '../models/Counter.js';
+import { recordMigrationRun } from './_migrationLog.js';
 
 const apply = process.argv.includes('--apply');
 
@@ -204,6 +205,11 @@ const run = async () => {
       );
     }
     console.log(`bill-number counters advanced for ${seqByRestaurant.size} restaurant(s)`);
+
+    await recordMigrationRun('backfillBillDetails', {
+      billsModified: res.modifiedCount,
+      countersAdvanced: seqByRestaurant.size,
+    });
   }
 };
 

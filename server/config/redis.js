@@ -1,5 +1,6 @@
 import Redis from 'ioredis';
 import { env } from './env.js';
+import logger from '../utils/logger.js';
 
 // Redis is optional — if REDIS_URL is not set, skip and use a no-op client.
 export const redis = env.REDIS_URL
@@ -10,19 +11,19 @@ export const redis = env.REDIS_URL
   : null;
 
 if (redis) {
-  redis.on('connect', () => console.log('Redis connected'));
-  redis.on('error', (err) => console.error('Redis error:', err.message));
+  redis.on('connect', () => logger.info('Redis connected'));
+  redis.on('error', (err) => logger.error({ err }, 'Redis error'));
 }
 
 export async function connectRedis() {
   if (!redis) {
-    console.warn('REDIS_URL not set — running without cache');
+    logger.warn('REDIS_URL not set — running without cache');
     return;
   }
   if (redis.status === 'ready') return;
   try {
     await redis.connect();
   } catch (err) {
-    console.warn('Redis unavailable, continuing without cache:', err.message);
+    logger.warn({ err }, 'Redis unavailable, continuing without cache');
   }
 }

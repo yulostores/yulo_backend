@@ -16,6 +16,7 @@ import mongoose from 'mongoose';
 import Order from '../models/Order.js';
 import Table from '../models/Table.js';
 import TableSession from '../models/TableSession.js';
+import { recordMigrationRun } from './_migrationLog.js';
 
 const apply = process.argv.includes('--apply');
 
@@ -79,6 +80,11 @@ const run = async () => {
   if (apply && writes.length > 0) {
     const res = await Order.bulkWrite(writes, { ordered: false });
     console.log(`modified ${res.modifiedCount}`);
+
+    await recordMigrationRun('backfillOrderTableInfo', {
+      ordersModified: res.modifiedCount,
+      stillUnresolvable: unresolvable,
+    });
   }
 };
 

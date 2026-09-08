@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { env } from './env.js';
+import logger from '../utils/logger.js';
 
 const MAX_RETRIES = 5;
 
@@ -7,24 +8,27 @@ export async function connectDB() {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       await mongoose.connect(env.MONGODB_URI);
-      console.log('MongoDB connected');
+      logger.info('MongoDB connected');
       break;
     } catch (err) {
       if (attempt === MAX_RETRIES) {
-        console.error('MongoDB connection failed after max retries:', err.message);
+        logger.error({ err }, 'MongoDB connection failed after max retries');
         process.exit(1);
       }
       const delay = 1000 * Math.pow(2, attempt);
-      console.warn(`MongoDB connection failed. Retrying in ${delay / 1000}s... (attempt ${attempt + 1}/${MAX_RETRIES})`);
+      logger.warn(
+        { err, attempt: attempt + 1, maxRetries: MAX_RETRIES },
+        `MongoDB connection failed. Retrying in ${delay / 1000}s...`
+      );
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 
   mongoose.connection.on('error', (err) => {
-    console.error('MongoDB error:', err.message);
+    logger.error({ err }, 'MongoDB error');
   });
 
   mongoose.connection.on('disconnected', () => {
-    console.warn('MongoDB disconnected');
+    logger.warn('MongoDB disconnected');
   });
 }

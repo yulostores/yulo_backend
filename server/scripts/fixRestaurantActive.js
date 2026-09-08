@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import mongoose from 'mongoose';
 import Restaurant from '../models/Restaurant.js';
+import { recordMigrationRun } from './_migrationLog.js';
 
 await mongoose.connect(process.env.MONGODB_URI);
 console.log('✓ Connected');
@@ -17,6 +18,7 @@ const fixed = await Restaurant.updateMany(
 );
 if (fixed.modifiedCount > 0) {
   console.log(`\n✓ Fixed ${fixed.modifiedCount} restaurant(s) — set isActive: true`);
+  await recordMigrationRun('fixRestaurantActive', { restaurantsModified: fixed.modifiedCount });
 } else {
   console.log('\nNo restaurants needed fixing.');
 }

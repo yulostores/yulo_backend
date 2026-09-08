@@ -18,6 +18,7 @@ import 'dotenv/config';
 import mongoose from 'mongoose';
 import Restaurant from '../models/Restaurant.js';
 import { geocodeAddress } from '../services/geocode.service.js';
+import { recordMigrationRun } from './_migrationLog.js';
 
 const apply = process.argv.includes('--apply');
 
@@ -121,5 +122,9 @@ for (const r of all) {
 console.log(
   `\n${apply ? '✓ Repaired' : 'Would repair'} ${repaired} restaurant(s); ${skipped} already clean.`
 );
+
+if (apply && repaired > 0) {
+  await recordMigrationRun('fixStringifiedRestaurantFields', { restaurantsRepaired: repaired });
+}
 
 await mongoose.disconnect();

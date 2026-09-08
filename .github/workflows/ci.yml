@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      # Optional: check the sibling repos out too so the cross-repo contract tests
+      # (server/test/*.contract.test.js) run here instead of skipping. Point each
+      # `repository` at your org's path.
+      # - uses: actions/checkout@v4
+      #   with:
+      #     repository: your-org/yulostores_customer_app
+      #     path: customer-app
+      # - uses: actions/checkout@v4
+      #   with:
+      #     repository: your-org/yulo_restaurant
+      #     path: restaurant
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: server/.nvmrc
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - run: npm ci
+
+      - run: npm test
+        # Uncomment alongside the checkout steps above.
+        # env:
+        #   CUSTOMER_APP_PAYMENTS: ${{ github.workspace }}/customer-app/src/services/payments.ts
+        #   RESTAURANT_FIELD_RULES: ${{ github.workspace }}/restaurant/src/lib/fieldRules.js

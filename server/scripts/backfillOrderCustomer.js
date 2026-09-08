@@ -22,6 +22,7 @@ import mongoose from 'mongoose';
 import Order from '../models/Order.js';
 import TableSession from '../models/TableSession.js';
 import User from '../models/User.js';
+import { recordMigrationRun } from './_migrationLog.js';
 
 const apply = process.argv.includes('--apply');
 
@@ -88,6 +89,11 @@ const run = async () => {
   if (apply && writes.length > 0) {
     const res = await Order.bulkWrite(writes, { ordered: false });
     console.log(`modified ${res.modifiedCount}`);
+
+    await recordMigrationRun('backfillOrderCustomer', {
+      ordersModified: res.modifiedCount,
+      leftAnonymous: anonymous,
+    });
   }
 };
 

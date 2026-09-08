@@ -1,4 +1,5 @@
 import express from 'express';
+import * as Sentry from '@sentry/node';
 import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
@@ -116,6 +117,12 @@ app.use((req, res) => res.status(404).json({
   code: 'NOT_FOUND',
   message: `Route ${req.method} ${req.originalUrl} not found`,
 }));
+
+// After every route, before our own handler: forwards uncaught / 5xx errors to Sentry,
+// then falls through to errorHandler, which still shapes the client response. Only wired
+// when SENTRY_DSN is set — see instrument.js — so the default path is byte-for-byte
+// unchanged.
+if (env.SENTRY_DSN) Sentry.setupExpressErrorHandler(app);
 
 app.use(errorHandler);
 

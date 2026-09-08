@@ -10,6 +10,7 @@
 import 'dotenv/config';
 import mongoose from 'mongoose';
 import User from '../models/User.js';
+import { recordMigrationRun } from './_migrationLog.js';
 
 await mongoose.connect(process.env.MONGODB_URI);
 console.log('✓ Connected');
@@ -25,6 +26,9 @@ if (!emailIndex) {
   await User.collection.dropIndex('email_1');
   await User.collection.createIndex({ email: 1 }, { unique: true, sparse: true });
   console.log('✓ Dropped the non-sparse email_1 index and recreated it as unique + sparse.');
+  await recordMigrationRun('fixUserEmailIndex', {
+    action: 'recreated email_1 as unique + sparse',
+  });
 }
 
 await mongoose.disconnect();

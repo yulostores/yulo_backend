@@ -15,6 +15,12 @@ const schema = z.object({
   JWT_STAFF_EXPIRES: z.string().default('8h'),
   JWT_PARTNER_ACCESS_EXPIRES: z.string().default('15m'),
   JWT_PARTNER_REFRESH_EXPIRES: z.string().default('30d'),
+  // Server-side error monitoring. Unset → Sentry is a complete no-op (see instrument.js).
+  // instrument.js reads these from process.env directly because it has to run before this
+  // schema is parsed; they are declared here so the shape is documented and validated.
+  SENTRY_DSN: z.string().url().optional(),
+  SENTRY_RELEASE: z.string().optional(),
+  SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0),
   CLOUDINARY_URL: z.string().optional(),
   CLOUDINARY_CLOUD_NAME: z.string().optional(),
   CLOUDINARY_API_KEY: z.string().optional(),
@@ -71,6 +77,32 @@ if (!result.success) {
   process.exit(1);
 }
 
+// A signing secret that still carries its committed dev placeholder is worse than a missing
+// one: the .min(32) checks above pass, nothing warns, and anyone who has seen this repo can
+// then forge a valid access/staff/partner token for any account — jsonwebtoken accepts any
+// string as an HMAC key. So in production, refuse to boot when a secret looks like a
+// placeholder rather than a generated value. Generate real ones with:
+//   node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+// and set them in the DigitalOcean App Platform dashboard, never in a file.
+const PLACEHOLDER_SECRET = /replace_in_production|^dev[-_].*secret|changeme|^your[-_]/i;
+
+if (result.data.NODE_ENV === 'production') {
+  const placeholders = [
+    'JWT_ACCESS_SECRET',
+    'JWT_REFRESH_SECRET',
+    'JWT_STAFF_SECRET',
+    'JWT_PARTNER_SECRET',
+  ].filter((key) => PLACEHOLDER_SECRET.test(result.data[key]));
+
+  if (placeholders.length) {
+    console.error(
+      'Refusing to start in production — these secrets still hold a development placeholder value:'
+    );
+    for (const key of placeholders) console.error(`  ${key}`);
+    process.exit(1);
+  }
+}
+
 // The production deploy is cross-site by construction — the portals are served from
 // Vercel and this API from DigitalOcean, which are unrelated registrable domains — so a
 // refresh cookie written with the 'lax' dev default is stored by the browser and then
@@ -79,6 +111,8 @@ if (!result.success) {
 // reload ends the session. Defaulting to 'none' in production removes that footgun;
 // 'none' is also correct for a same-registrable-domain deploy, just less tight, and an
 // explicit REFRESH_COOKIE_SAMESITE still wins if you have one.
+
+
 export const env = {
   ...result.data,
   REFRESH_COOKIE_SAMESITE:
