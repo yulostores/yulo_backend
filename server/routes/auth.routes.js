@@ -5,11 +5,12 @@ import {
   login,
   refresh,
   logout,
+  guestLogin,
   sendCustomerOtp,
   verifyCustomerOtp,
 } from '../controllers/auth.controller.js';
 import { authenticate } from '../middleware/authenticate.js';
-import { authLimiter, refreshLimiter } from '../middleware/rateLimiter.js';
+import { authLimiter, guestLoginLimiter, refreshLimiter } from '../middleware/rateLimiter.js';
 import { validate } from '../middleware/validate.js';
 
 const router = Router();
@@ -35,10 +36,17 @@ const customerOtpVerifySchema = z.object({
   tosAccepted: z
     .boolean()
     .refine((v) => v === true, 'You must accept the Terms & Privacy Policy'),
+  // Present when a guest session (see /customer/guest below) is completing a real
+  // sign-in, so its cart/favorites/addresses can be carried over — see
+  // verifyCustomerOtp / services/guestAccount.service.js. Invalid/expired is fine,
+  // it's just ignored there. Capped well above any real JWT's size purely so a
+  // malformed/oversized value 400s here instead of reaching jwt.verify.
+  guestToken: z.string().max(2000).optional(),
 });
 
 router.post('/signup', authLimiter, validate(signupSchema), signup);
 router.post('/login', authLimiter, validate(loginSchema), login);
+router.post('/customer/guest', guestLoginLimiter, guestLogin);
 router.post('/customer/otp/send', authLimiter, validate(customerOtpSendSchema), sendCustomerOtp);
 router.post(
   '/customer/otp/verify',

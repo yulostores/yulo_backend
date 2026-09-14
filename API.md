@@ -337,7 +337,8 @@ POST /api/auth/customer/otp/verify
 {
   "phone": "9876543210",
   "code": "123456",
-  "tosAccepted": true
+  "tosAccepted": true,
+  "guestToken": "eyJ..."
 }
 ```
 
@@ -346,6 +347,7 @@ POST /api/auth/customer/otp/verify
 | `phone` | string | Yes | 10-digit phone number |
 | `code` | string | Yes | 6-digit OTP |
 | `tosAccepted` | boolean | Yes | Must be `true` |
+| `guestToken` | string | No | The **refresh** token (not the access token — that only lives 15 minutes) of a guest session (`POST /api/auth/customer/guest`) that's completing a real sign-in. If it's a valid, unexpired guest token: a brand-new phone number upgrades that same account in place (no data to migrate); a phone that already belongs to a customer instead merges the guest's cart/favorites/addresses into that account and deletes the guest record. Invalid/expired/absent → behaves exactly like an ordinary sign-in. Max 2000 characters. |
 
 **Response** `200` **/** `201`
 
@@ -367,6 +369,39 @@ POST /api/auth/customer/otp/verify
 ```
 
 `201` + `"Account created"` + `isNewUser: true` on first verification for a phone number that has no existing account; `200` + `"Login successful"` + `isNewUser: false` otherwise. A `refreshToken` HttpOnly cookie is also set; `refreshToken` is **additionally** returned in the body for the customer mobile app, which has no cookie jar and stores it in secure device storage (web clients ignore the body field and use the cookie).
+
+---
+
+### Start a Guest Session
+
+```
+POST /api/auth/customer/guest
+```
+
+**No auth required.**
+
+**Body** — none.
+
+**Response** `201`
+
+```json
+{
+  "status": "success",
+  "message": "Guest session started",
+  "data": {
+    "user": {
+      "_id": "664abc...",
+      "role": "guest"
+    },
+    "accessToken": "eyJ...",
+    "refreshToken": "eyJ..."
+  }
+}
+```
+
+Creates an anonymous `role: 'guest'` account and returns real tokens for it — same shape as `otp/verify`, including the refresh cookie. A guest can browse and use every endpoint a `customer` can **except** checkout, order placement/history, reviews and support tickets, which reject it with `401 GUEST_ACCOUNT_REQUIRED` (the app treats this exactly like an expired session — "sign in to continue"). Cart, favorites, saved addresses and preferences all work normally and are carried over automatically if the guest later signs in for real — see `guestToken` on `otp/verify` above.
+
+Guest accounts that are never upgraded are reaped by `server/scripts/cleanupStaleGuests.js` (see `server/scripts/README.md`), not by this endpoint.
 
 ---
 

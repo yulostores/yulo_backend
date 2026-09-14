@@ -14,7 +14,10 @@ import {
 
 const router = Router();
 
-router.use(authenticate, authorizeRole('customer'));
+// Guests can use the cart too — browsing and building an order is fine anonymously;
+// checkout is where an account becomes required (see requireCustomerAccount on
+// checkout/order/review/support routes).
+router.use(authenticate, authorizeRole('customer', 'guest'));
 
 const selectedOptionSchema = z.object({
   optionId: z.string().min(1),

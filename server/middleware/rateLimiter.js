@@ -14,6 +14,20 @@ export const authLimiter = rateLimit({
   skip: skipPreflight,
 });
 
+// Guest creation needs no input at all — no OTP, no password, nothing to get wrong —
+// which makes it the cheapest thing on the whole API to automate. It used to share
+// authLimiter with signup/login/OTP; a script hammering it would burn that 10/min
+// budget and lock real users on the same IP out of logging in too. Its own, tighter
+// budget keeps guest spam from ever touching real auth attempts.
+export const guestLoginLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  message: { status: 'error', code: 'RATE_LIMITED', message: 'Too many guest sessions started — please wait a moment' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipPreflight,
+});
+
 // A single owner-dashboard load fans out to ~15-25 endpoints (and React's
 // StrictMode doubles that in development), so the old 100/min budget was spent
 // by the fourth page refresh — every screen then 429'd, POST /auth/refresh with

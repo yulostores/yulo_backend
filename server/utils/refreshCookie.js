@@ -27,6 +27,10 @@ const ROLE_PORTALS = {
   restaurant_owner: 'owner',
   customer: 'customer',
   admin: 'admin',
+  // A guest session lives entirely inside the customer app — see
+  // controllers/auth.controller.js's guestLogin — so it shares that portal's
+  // refresh cookie/`?portal=customer` scoping rather than getting its own.
+  guest: 'customer',
 };
 
 export function portalForRole(role) {

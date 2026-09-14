@@ -3,10 +3,12 @@ import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
 import User from '../models/User.js';
 import * as authService from '../services/auth.service.js';
+import { mergeGuestIntoCustomer } from '../services/guestAccount.service.js';
 import * as otpService from '../services/otp.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import logger from '../utils/logger.js';
 import {
   setRefreshCookie,
   clearRefreshCookie,
@@ -51,6 +53,20 @@ export const login = asyncHandler(async (req, res) => {
   sendSuccess(res, 200, 'Login successful', { user, accessToken });
 });
 
+// Starts an anonymous browsing session: a bare `role: 'guest'` User with no
+// phone/email, real access+refresh tokens (same shape as a customer login), so the
+// existing cart/favorites/preferences/address endpoints work for it unchanged — see
+// middleware/requireCustomerAccount.js for the endpoints (checkout, orders, reviews,
+// support) that still refuse it. The app's "Continue as guest" button calls this.
+export const guestLogin = asyncHandler(async (req, res) => {
+  const user = await User.create({ role: 'guest' });
+
+  const { accessToken, refreshToken } = authService.generateTokens(user._id, user.role);
+  setRefreshCookie(res, user.role, refreshToken);
+
+  sendSuccess(res, 201, 'Guest session started', { user, accessToken, refreshToken });
+});
+
 export const sendCustomerOtp = asyncHandler(async (req, res) => {
   const { phone } = req.body;
   const result = await otpService.requestOtp(phone);
@@ -58,22 +74,53 @@ export const sendCustomerOtp = asyncHandler(async (req, res) => {
 });
 
 export const verifyCustomerOtp = asyncHandler(async (req, res) => {
-  const { phone, code, tosAccepted } = req.body;
+  const { phone, code, tosAccepted, guestToken } = req.body;
   await otpService.verifyOtp(phone, code);
+
+  // A guest completing a real sign-in (see app/verify-otp.tsx's checkout-gate redirect)
+  // sends its guest session's REFRESH token along, so its cart/favorites/addresses
+  // survive instead of starting over on a brand-new record. Deliberately the refresh
+  // token, not the access token: the access token is only good for 15 minutes
+  // (JWT_ACCESS_EXPIRES), and a guest can easily spend longer than that browsing before
+  // deciding to sign in — the refresh token's 7-day life (JWT_REFRESH_EXPIRES) covers
+  // that realistically. Best-effort either way: an expired/invalid/already-upgraded
+  // guestToken just falls back to a normal login below.
+  let guestUser = null;
+  if (guestToken) {
+    try {
+      const decoded = jwt.verify(guestToken, env.JWT_REFRESH_SECRET);
+      const candidate = await User.findById(decoded.userId);
+      if (candidate?.role === 'guest') guestUser = candidate;
+    } catch {
+      // Not a valid guest session — proceed exactly as if none was sent.
+    }
+  }
 
   let user = await User.findOne({ phone });
   let isNewUser = false;
 
   if (!user) {
-    // First touchpoint for a brand-new customer — just phone + verification state, same
-    // as controllers/partner/auth.controller.js's verifyOtpHandler. Name/email/profile are
-    // completed later via PATCH /api/users/me.
-    user = await User.create({
-      phone,
-      role: 'customer',
-      phoneVerifiedAt: new Date(),
-      tosAcceptedAt: tosAccepted ? new Date() : null,
-    });
+    if (guestUser) {
+      // Brand-new phone + an active guest session → upgrade that same document in
+      // place rather than creating a separate customer and orphaning its cart/
+      // favorites/addresses. Same `_id`, so nothing else needs migrating.
+      guestUser.phone = phone;
+      guestUser.role = 'customer';
+      guestUser.phoneVerifiedAt = new Date();
+      if (tosAccepted && !guestUser.tosAcceptedAt) guestUser.tosAcceptedAt = new Date();
+      await guestUser.save();
+      user = guestUser;
+    } else {
+      // First touchpoint for a brand-new customer — just phone + verification state,
+      // same as controllers/partner/auth.controller.js's verifyOtpHandler. Name/email/
+      // profile are completed later via PATCH /api/users/me.
+      user = await User.create({
+        phone,
+        role: 'customer',
+        phoneVerifiedAt: new Date(),
+        tosAcceptedAt: tosAccepted ? new Date() : null,
+      });
+    }
     isNewUser = true;
   } else {
     // A phone number is only ever meant to identify a customer account here — if this
@@ -89,6 +136,27 @@ export const verifyCustomerOtp = asyncHandler(async (req, res) => {
     user.phoneVerifiedAt = new Date();
     if (tosAccepted && !user.tosAcceptedAt) user.tosAcceptedAt = new Date();
     await user.save();
+
+    // This phone already belongs to an existing customer — the common case for a guest
+    // who's used the app before. Fold their guest-session activity into that account
+    // and retire the guest record, rather than leaving it to rot. The merge is
+    // internally best-effort already (guestAccount.service.js), but a login that
+    // already succeeded (user.save() above is already committed) must never fail
+    // just because the merge hit something unexpected — this catch is the backstop.
+    if (guestUser && String(guestUser._id) !== String(user._id)) {
+      try {
+        await mergeGuestIntoCustomer(guestUser, user);
+      } catch (err) {
+        logger.warn(
+          {
+            err: { name: err?.name, message: err?.message },
+            guestId: String(guestUser._id),
+            userId: String(user._id),
+          },
+          'Guest merge failed — login proceeds without carrying over the guest session'
+        );
+      }
+    }
   }
 
   const { accessToken, refreshToken } = authService.generateTokens(user._id, user.role);

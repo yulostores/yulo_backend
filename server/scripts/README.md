@@ -73,6 +73,15 @@ is only about doing related repairs together:
 Always do a dry run first where the script supports one, and check
 `migrations_applied` afterwards.
 
+## Maintenance
+
+Ongoing jobs — meant to run on a recurring schedule (a cron job / platform scheduled
+job), not once.
+
+| Script | Does | Default action | Preview flag | Schedule |
+| --- | --- | --- | --- | --- |
+| `cleanupStaleGuests.js` | Deletes guest accounts (`role: 'guest'`, from `POST /api/auth/customer/guest`) older than `--days` (default 7) that were never upgraded to a real customer, plus their cart/favorites/search history | dry run | *(dry unless `--apply`)* | e.g. daily |
+
 ## Seeds
 
 | Script | Purpose | Invocation | Re-runnable |

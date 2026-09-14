@@ -76,7 +76,14 @@ const userSchema = new mongoose.Schema(
     email: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
     passwordHash: { type: String, default: null },
     phone: { type: String, unique: true, sparse: true, trim: true },
-    role: { type: String, enum: ['customer', 'restaurant_owner', 'admin'], default: 'customer' },
+    // 'guest' — an anonymous browsing session minted by POST /api/auth/customer/guest
+    // (controllers/auth.controller.js's guestLogin). Same shape as a customer (no
+    // phone/email at creation) so it can use the cart/favorites/preferences/address
+    // endpoints unchanged; checkout, orders, reviews and support all reject it via
+    // middleware/requireCustomerAccount.js. Upgraded in place to 'customer' (or merged
+    // into an existing customer account — see services/guestAccount.service.js) the
+    // moment the same session completes a real phone+OTP verify.
+    role: { type: String, enum: ['customer', 'restaurant_owner', 'admin', 'guest'], default: 'customer' },
     savedAddresses: [addressSchema],
     profilePicture: { type: String, default: null },
     isActive: { type: Boolean, default: true },
