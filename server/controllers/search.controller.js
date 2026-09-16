@@ -2,6 +2,7 @@ import * as searchService from '../services/search.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { VEG_BANNER_TEXT } from '../constants/vegBanner.constant.js';
 
 export const getTypeahead = asyncHandler(async (req, res) => {
   const { q } = req.query;
@@ -14,7 +15,12 @@ export const getTypeahead = asyncHandler(async (req, res) => {
 export const getPopular = asyncHandler(async (req, res) => {
   const vegOnly = req.query.vegOnly === 'true';
   const popular = await searchService.getPopularSearches(vegOnly);
-  sendSuccess(res, 200, 'Popular searches', { popular });
+  // Same confirmation strip text/condition as the home feed — the client renders
+  // it above "Recent searches" whenever the caller asked for the veg-only grid.
+  sendSuccess(res, 200, 'Popular searches', {
+    popular,
+    vegBannerText: vegOnly ? VEG_BANNER_TEXT : null,
+  });
 });
 
 export const listRecent = asyncHandler(async (req, res) => {

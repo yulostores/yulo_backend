@@ -4,11 +4,10 @@ import QuickFilterChip from '../models/QuickFilterChip.js';
 import * as restaurantService from './restaurant.service.js';
 import * as menuService from './menu.service.js';
 import * as cacheService from './cache.service.js';
+import { VEG_BANNER_TEXT } from '../constants/vegBanner.constant.js';
 
 const NEARBY_LIMIT = 20;
 const RECOMMENDED_ITEMS_LIMIT = 10;
-
-const VEG_BANNER_TEXT = 'Pure veg mode is on — showing only vegetarian food';
 
 // The "What's on your mind?" row. Its labels/queries/icons live in the
 // QuickFilterChip collection (seeded via scripts/seedQuickFilterChips.js, icons on
