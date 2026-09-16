@@ -157,14 +157,22 @@ export const getCurrentOrder = asyncHandler(async (req, res) => {
   const assigned = await Order.findOne({
     'deliveryAssignment.partnerId': req.partner._id,
     'deliveryAssignment.status': { $in: ['assigned', 'picked_up'] },
-  })
-    .populate('restaurantId', 'name address')
-    .lean();
+  }).lean();
 
   if (!assigned) {
     return sendSuccess(res, 200, 'Current order', { kind: 'none', order: null });
   }
-  sendSuccess(res, 200, 'Current order', { kind: 'assigned', order: assigned });
+  // Reshaped through buildOfferPayload rather than returned as the raw Mongoose document —
+  // NavigationScreen.jsx (both GoToPickup and NavigateToCustomer) reads the flat
+  // restaurantName/restaurantAddress/pickupKm/restaurantLocation/dropoffLocation shape that
+  // shape produces, same as it does for the 'offer' branch above. Previously this branch
+  // returned the raw order (with restaurantId only populated 'name address', no coordinates
+  // at all) — harmless while every real navigation always arrived via IncomingOrder.jsx's
+  // already-shaped in-memory object, but it meant reopening the app mid-delivery (the one
+  // path that actually hits this branch) landed on a screen with no name, address, distance,
+  // or map pins. buildOfferPayload does its own Restaurant lookup, so no populate needed here.
+  const payload = await buildOfferPayload(assigned, req.partner);
+  sendSuccess(res, 200, 'Current order', { kind: 'assigned', order: payload });
 });
 
 const verifyPickupSchema = z.object({

@@ -100,8 +100,22 @@ export const buildOfferPayload = async (order, candidate) => {
 
   return {
     orderId: order._id,
+    // Lets a caller resuming mid-flight (GET /partner/orders/current's 'assigned' branch,
+    // used both right after acceptance and after reopening the app mid-delivery)
+    // distinguish "still need to collect it" from "already out for delivery" — see
+    // controllers/partner/order.controller.js's getCurrentOrder and the delivery app's
+    // Home.jsx/OrdersTab.jsx, which both used to route to the pickup screen unconditionally
+    // regardless of this, stranding a partner who reopened the app after already picking up.
+    assignmentStatus: order.deliveryAssignment?.status ?? null,
     restaurantName: restaurant?.name ?? null,
     restaurantAddress: formatAddress(restaurant?.address),
+    // Raw coordinates for the partner app's map (both normalized to bare [lng, lat] —
+    // restaurant.location is GeoJSON, deliveryAddress.coordinates already isn't, so this
+    // saves the client from handling two different shapes). Previously computed here
+    // (pickupKm/dropKm below already read these same fields) but never forwarded past
+    // the formatted address strings — the map component needs the actual points.
+    restaurantLocation: restaurant?.location?.coordinates ?? null,
+    dropoffLocation: order.deliveryAddress?.coordinates ?? null,
     // fleetType reflects the PARTNER being offered this order (fixed per-partner, same on
     // every offer they get) — separate from vegFleetOptIn/dedicatedBagRequired below,
     // which reflect what THIS order asked for. Order.vegFleetOptIn now exists (this is
