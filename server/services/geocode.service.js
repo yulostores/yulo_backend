@@ -4,14 +4,22 @@
 // only thing an owner actually knows is their street address — this service is the
 // bridge between the two.
 //
-// Two providers, picked at call time: Google Geocoding when GOOGLE_MAPS_API_KEY is set
-// (README already documents that key as the platform's maps key), otherwise
-// OpenStreetMap's Nominatim, which needs no key or account. Nominatim's usage policy
-// requires an identifying User-Agent and caps callers at ~1 request/second — fine for
-// restaurant onboarding (a handful of calls a day), NOT fine if this ever moves onto a
-// per-order path, which is when the Google key should be filled in.
+// Three providers, picked at call time, in this order:
+//
+//   1. HERE, when HERE_API_KEY is set. Preferred, and not just because it is the platform's
+//      provider: the customer's delivery pin is reverse-geocoded by HERE too (see
+//      services/places.service.js). Geocoding both ends of a delivery with the SAME provider is
+//      what keeps `Restaurant.delivery.radiusKm` honest — two providers can place the same
+//      address a few hundred metres apart, which is enough to make a restaurant appear in or
+//      vanish from a customer's feed depending on who geocoded what.
+//   2. Google, when only GOOGLE_MAPS_API_KEY is set. Legacy; kept so an existing deployment
+//      configured that way does not silently change provider on deploy.
+//   3. OpenStreetMap Nominatim, which needs no key or account. Its usage policy requires an
+//      identifying User-Agent and caps callers at ~1 request/second — fine for restaurant
+//      onboarding (a handful of calls a day), NOT fine on a per-order path.
 import { env } from '../config/env.js';
 import logger from '../utils/logger.js';
+import { geocodeQuery as geocodeWithHere } from './places.service.js';
 
 const GEOCODE_TIMEOUT_MS = 5000;
 const NOMINATIM_USER_AGENT = 'yulostores-platform/1.0 (restaurant onboarding geocoder)';
@@ -79,6 +87,14 @@ export async function geocodeAddress(address) {
   if (!query) return null;
 
   try {
+    if (env.HERE_API_KEY) {
+      // A HERE miss falls through to Nominatim rather than returning null: an unresolvable
+      // address blocks restaurant creation, so it is worth a second opinion before giving up.
+      const hit = await geocodeWithHere(query);
+      if (hit) return hit;
+      logger.warn({ query }, 'HERE geocoding returned no result — falling back to Nominatim');
+      return await geocodeWithNominatim(query);
+    }
     return env.GOOGLE_MAPS_API_KEY
       ? await geocodeWithGoogle(query)
       : await geocodeWithNominatim(query);

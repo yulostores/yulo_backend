@@ -75,8 +75,110 @@ export const PAYMENT_METHODS = [
   { id: 'cred', group: 'upi', label: 'CRED', hint: 'UPI', icon: 'shield-checkmark', tint: '#1C1C1C', wire: 'online', gatewayMethod: 'upi' },
   { id: 'card', group: 'card', label: 'Credit / Debit Card', hint: 'Visa · Mastercard · RuPay', icon: 'card', tint: '#1C1C1C', wire: 'online', gatewayMethod: 'card' },
   { id: 'netbanking', group: 'netbanking', label: 'Net Banking', hint: 'All Indian banks', icon: 'business', tint: '#0D8A16', wire: 'online', gatewayMethod: 'netbanking' },
-  { id: 'cod', group: 'cod', label: 'Pay on Delivery', hint: 'Cash / UPI on delivery', icon: 'cash', tint: '#0D8A16', wire: 'cod' },
+  { id: 'cod', group: 'cod', label: 'Pay on Delivery (Cash/UPI)', hint: 'Pay cash or ask for QR code', icon: 'cash', tint: '#0D8A16', wire: 'cod' },
 ];
+
+// ─── Tab bar ───────────────────────────────────────────────────────
+//
+// The customer app's bottom navigation bar — a white floating pill with an active
+// destination on the left, a raised circular scan button in the middle, and the remaining
+// destinations on the right. Which destinations it shows, what they are called, what they
+// route to, what they are drawn with and what colour they take are all data here; the app
+// renders whatever this says and nothing else. Reorder TAB_BAR_ITEMS and the bar reorders;
+// drop one and it disappears from the bar (its screen stays reachable by route).
+//
+// The app carries a synchronous twin of these three exports in
+// src/services/navigation.ts — a tab bar cannot wait on a network fetch to draw its first
+// frame — exactly like the payment catalogue above. test/shared-config.contract.test.js
+// asserts the two are identical, so a change here that isn't mirrored breaks a build.
+
+// `route` is the expo-router route name inside the app's `(tabs)` group.
+// `shape`  'pill' draws an icon + label that fills with `activePill` when selected;
+//          'fab' draws the raised accent circle (label is used for the screen reader only).
+// `icon` / `activeIcon` are Ionicons glyph names when `iconSource` is 'ionicons', or a key
+//          into the app's bundled-icon registry when it is 'asset' (Metro cannot require a
+//          path built at runtime, so an asset has to be registered by name in the app).
+// `badge`  null, or 'cart' to carry the live cart-item count.
+export const TAB_BAR_ITEMS = [
+  {
+    id: 'home',
+    route: 'index',
+    label: 'Delivery',
+    shape: 'pill',
+    iconSource: 'ionicons',
+    icon: 'bicycle-outline',
+    activeIcon: 'bicycle',
+    badge: null,
+  },
+  {
+    id: 'scan',
+    route: 'scan',
+    label: 'Scan a QR code',
+    shape: 'fab',
+    iconSource: 'asset',
+    icon: 'qr-scan',
+    activeIcon: 'qr-scan',
+    badge: null,
+  },
+  {
+    id: 'orders',
+    route: 'orders',
+    label: 'History',
+    shape: 'pill',
+    iconSource: 'ionicons',
+    icon: 'time-outline',
+    activeIcon: 'time',
+    badge: null,
+  },
+];
+
+// One palette per app-wide accent theme. `default` is the brand orange; `pure_veg` is the
+// green the whole app switches to while the customer has "Pure veg restaurants only" on
+// (preferences.vegModeEnabled + preferences.vegModeScope — see models/User.js). The app
+// picks the key off that preference, so the bar turns green with everything else.
+export const TAB_BAR_THEMES = {
+  default: {
+    bar: '#FFFFFF',
+    activePill: '#FFEDE2',
+    activeTint: '#FF5A00',
+    inactiveTint: '#4A4F58',
+    fab: '#FF5A00',
+    fabTint: '#FFFFFF',
+    badge: '#FF5A00',
+    badgeTint: '#FFFFFF',
+  },
+  pure_veg: {
+    bar: '#FFFFFF',
+    activePill: '#E8F5E9',
+    activeTint: '#0D8A16',
+    inactiveTint: '#4A4F58',
+    fab: '#0D8A16',
+    fabTint: '#FFFFFF',
+    badge: '#0D8A16',
+    badgeTint: '#FFFFFF',
+  },
+};
+
+// Geometry, in density-independent pixels. Here rather than in the app for the same reason
+// the colours are: the bar's proportions are part of the design, and the design is data.
+// `sideInset` / `bottomInset` are how far the floating pill sits off the screen edges —
+// bottomInset is a minimum, raised to the device's own gesture-bar inset when that is
+// larger.
+export const TAB_BAR_LAYOUT = {
+  barHeight: 64,
+  barRadius: 32,
+  barPadding: 6,
+  sideInset: 16,
+  bottomInset: 12,
+  pillHeight: 48,
+  pillRadius: 24,
+  pillPaddingX: 18,
+  pillGap: 8,
+  iconSize: 24,
+  labelSize: 15,
+  fabSize: 54,
+  fabIconSize: 26,
+};
 
 // ─── About ───────────────────────────────────────────────────────────────────
 //
@@ -205,6 +307,7 @@ export const buildAppConfig = () => ({
   languages: SUPPORTED_LANGUAGES,
   defaultLanguage: DEFAULT_LANGUAGE,
   payments: { groups: PAYMENT_GROUPS, methods: PAYMENT_METHODS },
+  tabBar: { items: TAB_BAR_ITEMS, themes: TAB_BAR_THEMES, layout: TAB_BAR_LAYOUT },
   about: {
     ...ABOUT,
     copyright: `© ${new Date().getFullYear()} ${ABOUT.copyrightHolder}`,

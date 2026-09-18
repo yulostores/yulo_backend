@@ -24,3 +24,8 @@ export const computeCommission = (grossRevenue) => grossRevenue * (commissionPer
 // same as the rest of this codebase's per-restaurant settings.
 export const cartPlatformFee = env.CART_PLATFORM_FEE;
 export const cartTaxPercent = env.CART_TAX_PERCENT;
+
+// Suggested delivery-tip amounts (rupees) shown on the checkout page. A plain constant,
+// not env-sourced, the same way config/appConfig.config.js's PAYMENT_GROUPS/PAYMENT_METHODS
+// are — platform-wide UI config that belongs in a file, not typed into the app.
+export const tipPresets = [10, 20, 30, 50];

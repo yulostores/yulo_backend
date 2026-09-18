@@ -2,14 +2,16 @@
 // tracking exists (DeliveryPartner.currentLocation). Three prior steps (order offers, delivery
 // execution, itemized earnings) each explicitly flagged this file as an empty placeholder
 // reserved for exactly this moment rather than bolting a formula on ahead of it; this is that
-// moment. Still no real routing/ETA engine — that needs actual road-network data (turn-by-turn
-// directions), a meaningfully bigger integration than straight-line distance. GOOGLE_MAPS_API_KEY
-// is documented in README.md as intended for this ("used for delivery geo queries"), but it's
-// blank in .env, no Maps client library is installed anywhere in package.json, and no code
-// anywhere calls it — wiring a real paid third-party API is a separate, larger task than this
-// step; haversine + MongoDB's native 2dsphere/$near give real (not fabricated) straight-line
-// distance without a new external dependency, consistent with every prior distance-related
-// decision in this codebase (see the dropKm/fare comments in services/deliveryAssignment.service.js).
+// moment.
+//
+// A real routing/ETA engine DOES now exist — see services/routing.service.js, which uses the HERE
+// Routing API for road distance and traffic-aware durations. This file is what that falls back
+// to: haversine + MongoDB's native 2dsphere/$near give real (not fabricated) straight-line
+// distance with no external dependency, so the platform keeps working when HERE_API_KEY is unset
+// or HERE is unreachable. Anything customer-facing that uses these numbers is expected to say so
+// (the tracking payload carries `etaSource: 'estimate'` for exactly that reason), because a
+// straight-line estimate is a materially worse number than a routed one and should not be
+// presented with the same confidence.
 
 const EARTH_RADIUS_KM = 6371;
 const toRad = (deg) => (deg * Math.PI) / 180;

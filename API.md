@@ -887,9 +887,10 @@ than duplicating it.
 
 ## Public — App Config
 
-Backs the customer app's **Settings** screen. Everything the screen renders — the
-languages it can be switched to, the payment-method catalogue, the "About Yulo Stores"
-block and the legal documents — comes from here, so the app hard-codes none of it. The
+Backs the customer app's **Settings** screen and its **bottom tab bar**. Everything they
+render — the languages the app can be switched to, the payment-method catalogue, the
+"About Yulo Stores" block, the legal documents, and the tab bar's destinations, labels,
+icons, colours and proportions — comes from here, so the app hard-codes none of it. The
 per-user piece (the customer's chosen language) is on
 [Customer — Preferences](#customer--preferences).
 
@@ -944,7 +945,23 @@ text with *Get Legal Document* below.
       "legal": [
         { "id": "terms", "title": "Terms of Service", "updatedAt": "2026-01-01", "canonicalUrl": null },
         { "id": "privacy", "title": "Privacy & data", "updatedAt": "2026-01-01", "canonicalUrl": null }
-      ]
+      ],
+      "tabBar": {
+        "items": [
+          { "id": "home", "route": "index", "label": "Delivery", "shape": "pill", "iconSource": "ionicons", "icon": "bicycle-outline", "activeIcon": "bicycle", "badge": null },
+          { "id": "scan", "route": "scan", "label": "Scan a QR code", "shape": "fab", "iconSource": "asset", "icon": "qr-scan", "activeIcon": "qr-scan", "badge": null },
+          { "id": "orders", "route": "orders", "label": "History", "shape": "pill", "iconSource": "ionicons", "icon": "time-outline", "activeIcon": "time", "badge": null }
+        ],
+        "themes": {
+          "default": { "bar": "#FFFFFF", "activePill": "#FFEDE2", "activeTint": "#FF5A00", "inactiveTint": "#4A4F58", "fab": "#FF5A00", "fabTint": "#FFFFFF", "badge": "#FF5A00", "badgeTint": "#FFFFFF" },
+          "pure_veg": { "bar": "#FFFFFF", "activePill": "#E8F5E9", "activeTint": "#0D8A16", "inactiveTint": "#4A4F58", "fab": "#0D8A16", "fabTint": "#FFFFFF", "badge": "#0D8A16", "badgeTint": "#FFFFFF" }
+        },
+        "layout": {
+          "barHeight": 64, "barRadius": 32, "barPadding": 6, "sideInset": 16, "bottomInset": 12,
+          "pillHeight": 48, "pillRadius": 24, "pillPaddingX": 18, "pillGap": 8,
+          "iconSize": 24, "labelSize": 15, "fabSize": 54, "fabIconSize": 26
+        }
+      }
     }
   }
 }
@@ -954,6 +971,29 @@ text with *Get Legal Document* below.
 everything else on a method is display. `copyright` is stamped with the current year at
 request time. A language with `"available": false` is shown in the picker but not
 selectable — see the preferred-language rule below.
+
+**`tabBar`** is the customer app's bottom navigation, end to end. `items` is the bar in
+draw order:
+
+| field | meaning |
+| --- | --- |
+| `route` | the expo-router route name inside the app's `(tabs)` group. An item whose route the installed build doesn't have is skipped. |
+| `label` | shown on a `pill`; the screen-reader label on a `fab`. |
+| `shape` | `"pill"` — icon + label, filled with `activePill` while it is the open screen. `"fab"` — the raised accent circle in the middle of the bar; at most one. |
+| `iconSource` | `"ionicons"` for an Ionicons glyph name, or `"asset"` for a key into the icons bundled with the app (currently `qr-scan`). A new `"asset"` key needs an app release to ship the PNG; everything else here takes effect on the next config fetch. |
+| `icon` / `activeIcon` | the unfocused and focused glyphs. |
+| `badge` | `null`, or `"cart"` to carry the live cart-item count. |
+
+`themes` holds one palette per app-wide accent theme: `default` is the brand orange, and
+`pure_veg` is the green the whole app switches to while the customer has veg mode on with
+`vegModeScope: "pure_veg_only"` (see [Customer — Preferences](#customer--preferences)).
+Both palettes must define the same keys. `layout` is every measurement of the bar in dp;
+`sideInset`/`bottomInset` are how far the floating pill sits off the screen edges, with
+`bottomInset` raised to the device's own gesture inset when that is larger.
+
+A route not listed in `items` gets no tab bar on that screen — that is how the app's cart,
+search and profile screens, which live in the same `(tabs)` group, present as screens you
+back out of rather than as destinations.
 
 ### Get Legal Document
 

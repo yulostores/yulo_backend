@@ -11,6 +11,12 @@ const cartItemSchema = new mongoose.Schema({
   // changes after placement" convention Order.js already uses for order line items.
   name: { type: String, required: true },
   unitPrice: { type: Number, required: true },
+  // Snapshot of what this line would have cost at MenuItem.sellingPrice (before any
+  // per-item markdown), same option deltas as unitPrice — lets the bill show "Item
+  // Discount" (mrpUnitPrice - unitPrice, summed) as its own line without re-reading
+  // MenuItem. Optional so lines added before this field existed still load; computeBill
+  // treats a missing value as "no markdown" (mrpUnitPrice defaults to unitPrice).
+  mrpUnitPrice: { type: Number },
   qty: { type: Number, required: true, min: 1 },
   // Snapshot of MenuItem.foodType at add-time — the cart screen shows a veg/non-veg
   // mark per line and colours its checkout CTA green only when every line is 'veg',

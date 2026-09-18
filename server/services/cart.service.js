@@ -98,10 +98,26 @@ const resolveSelectedOptions = async (items) => {
 // falls back to its own lookup for any other caller.
 export const computeBill = async (cart, restaurant) => {
   if (cart.items.length === 0) {
-    return { itemTotal: 0, deliveryFee: 0, platformFee: 0, tax: 0, discountAmount: 0, grandTotal: 0 };
+    return {
+      itemTotal: 0,
+      mrpTotal: 0,
+      itemDiscountAmount: 0,
+      deliveryFee: 0,
+      platformFee: 0,
+      tax: 0,
+      discountAmount: 0,
+      grandTotal: 0,
+    };
   }
 
   const itemTotal = cart.items.reduce((sum, item) => sum + item.unitPrice * item.qty, 0);
+  // Pre-markdown total, for the bill's "Item Total" row — falls back to unitPrice (no
+  // visible per-item discount) for any line that predates mrpUnitPrice being snapshotted.
+  const mrpTotal = cart.items.reduce(
+    (sum, item) => sum + (item.mrpUnitPrice ?? item.unitPrice) * item.qty,
+    0
+  );
+  const itemDiscountAmount = Math.max(0, mrpTotal - itemTotal);
 
   const restaurantDoc =
     restaurant ?? (await Restaurant.findById(cart.restaurantId).select('delivery').lean());
@@ -126,22 +142,48 @@ export const computeBill = async (cart, restaurant) => {
   }
 
   const grandTotal = itemTotal + deliveryFee + platformFee + tax - discountAmount;
-  return { itemTotal, deliveryFee, platformFee, tax, discountAmount, grandTotal };
+  return { itemTotal, mrpTotal, itemDiscountAmount, deliveryFee, platformFee, tax, discountAmount, grandTotal };
 };
 
-// Fills in `foodType` on any line that predates the Cart schema snapshotting it
-// (see Cart.js). One batch MenuItem query for the whole cart, mirroring how
-// resolveSelectedOptions handles OptionGroups.
+// Fills in `foodType` / `mrpUnitPrice` on any line that predates those fields being
+// snapshotted (see Cart.js). One batch MenuItem query for the whole cart, covering
+// both — not two separate passes.
 const backfillFoodTypes = async (items) => {
-  const missing = items.filter((i) => !i.foodType);
-  if (missing.length === 0) return;
+  const missingFoodType = items.filter((i) => !i.foodType);
+  const missingMrp = items.filter((i) => i.mrpUnitPrice == null);
+  if (missingFoodType.length === 0 && missingMrp.length === 0) return;
 
-  const ids = [...new Set(missing.map((i) => String(i.menuItemId)))];
-  const menuItems = await MenuItem.find({ _id: { $in: ids } }).select('foodType').lean();
-  const foodTypeById = new Map(menuItems.map((m) => [String(m._id), m.foodType]));
+  const ids = [...new Set([...missingFoodType, ...missingMrp].map((i) => String(i.menuItemId)))];
+  const menuItems = await MenuItem.find({ _id: { $in: ids } })
+    .select('foodType sellingPrice discountedPrice')
+    .lean();
+  const byId = new Map(menuItems.map((m) => [String(m._id), m]));
 
-  for (const item of missing) {
-    item.foodType = foodTypeById.get(String(item.menuItemId)) ?? null;
+  for (const item of missingFoodType) {
+    item.foodType = byId.get(String(item.menuItemId))?.foodType ?? null;
+  }
+  for (const item of missingMrp) {
+    const m = byId.get(String(item.menuItemId));
+    if (!m) continue;
+    const effectivePrice = m.discountedPrice ?? m.sellingPrice;
+    // Same option deltas either way — only the base differs — so the markdown on the
+    // dish itself (sellingPrice - effectivePrice) carries straight onto the line.
+    item.mrpUnitPrice = item.unitPrice + Math.max(0, m.sellingPrice - effectivePrice);
+  }
+};
+
+// Attaches each line's current dish photo — deliberately NOT snapshotted onto the Cart
+// item the way name/unitPrice/foodType are (those freeze on purpose, for billing
+// integrity; a photo has no such constraint, and showing whatever the restaurant has
+// on file *today* is the more correct behaviour if they swap it). One batch MenuItem
+// query for the whole cart, same shape as backfillFoodTypes above.
+const attachLineImages = async (items) => {
+  if (items.length === 0) return;
+  const ids = [...new Set(items.map((i) => String(i.menuItemId)))];
+  const menuItems = await MenuItem.find({ _id: { $in: ids } }).select('image').lean();
+  const imageById = new Map(menuItems.map((m) => [String(m._id), m.image ?? null]));
+  for (const item of items) {
+    item.image = imageById.get(String(item.menuItemId)) ?? null;
   }
 };
 
@@ -173,6 +215,7 @@ const buildCartResponse = async (cart) => {
   await Promise.all([
     resolveSelectedOptions(plainCart.items),
     backfillFoodTypes(plainCart.items),
+    attachLineImages(plainCart.items),
   ]);
   const bill = await computeBill(plainCart, restaurant ? { delivery: restaurant.delivery } : undefined);
   if (restaurant) delete restaurant.delivery;
@@ -207,6 +250,12 @@ export const addItem = async (userId, { menuItemId, qty, selectedOptions = [] })
     throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid item customization', { errors: pricing.errors });
   }
 
+  // Same option deltas as unitPrice, based on the dish's undiscounted sellingPrice —
+  // the gap between the two is this line's per-item markdown, for the bill's "Item
+  // Discount" row (computeBill above).
+  const mrpUnitPrice =
+    pricing.totalPriceMinor + Math.max(0, menuItem.sellingPrice - menuItem.effectivePrice);
+
   // Always a new line — two POSTs for the "same" item/customization produce two lines,
   // not a merged quantity. Increasing quantity of an existing line is what
   // PATCH /api/cart/items/:lineItemId is for.
@@ -214,6 +263,7 @@ export const addItem = async (userId, { menuItemId, qty, selectedOptions = [] })
     menuItemId: menuItem._id,
     name: menuItem.name,
     unitPrice: pricing.totalPriceMinor,
+    mrpUnitPrice,
     qty,
     foodType: menuItem.foodType,
     selectedOptions,
