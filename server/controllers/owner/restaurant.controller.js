@@ -1,5 +1,5 @@
 import Restaurant from '../../models/Restaurant.js';
-import { geocodeAddress } from '../../services/geocode.service.js';
+import { geocodeAddress, resolveRestaurantCoordinates } from '../../services/geocode.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
@@ -23,21 +23,12 @@ export const createRestaurant = asyncHandler(async (req, res) => {
 
   // Owners submit an address, not coordinates. `location.coordinates` is still honoured
   // when a caller genuinely has a point (admin tooling, a future map picker, imports) —
-  // otherwise the address is geocoded here. A failed lookup rejects the request instead of
-  // falling back to [0, 0]: that fallback silently dropped every such restaurant into the
-  // Gulf of Guinea, where the 2dsphere $near queries that power "nearby restaurants" would
-  // never surface it for its actual city.
-  let coords = location?.coordinates?.length === 2 ? location.coordinates : null;
-  if (!coords) {
-    coords = await geocodeAddress(address);
-    if (!coords) {
-      throw new ApiError(
-        400,
-        'ADDRESS_NOT_FOUND',
-        "We couldn't locate that address on the map. Please check the street, city and pincode."
-      );
-    }
-  }
+  // otherwise the address is geocoded, and a failed lookup rejects the request rather than
+  // falling back to [0, 0] (see resolveRestaurantCoordinates).
+  const coords = await resolveRestaurantCoordinates({
+    address,
+    coordinates: location?.coordinates,
+  });
 
   const restaurant = await Restaurant.create({
     ownerId: req.user._id,

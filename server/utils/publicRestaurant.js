@@ -28,5 +28,8 @@ export const isPubliclyVisible = (restaurant) =>
 // commentary about the store, for the same reason.
 //
 // Applied with `.select()` on the queries that return full documents; the surfaces that
-// already project a narrow field list (search typeahead) don't need it.
-export const PUBLIC_RESTAURANT_PROJECTION = '-documents -adminNotes';
+// already project a narrow field list (search typeahead) don't need it. Aggregation
+// pipelines (the nearby query) can't take the `.select()` string, so the field list is kept
+// here once and both forms are derived from it.
+export const PUBLIC_RESTAURANT_HIDDEN_FIELDS = Object.freeze(['documents', 'adminNotes']);
+export const PUBLIC_RESTAURANT_PROJECTION = PUBLIC_RESTAURANT_HIDDEN_FIELDS.map((f) => `-${f}`).join(' ');

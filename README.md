@@ -187,7 +187,7 @@ Authorization: Bearer <accessToken>
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/restaurants?lat=&lng=&radius=5&page=1` | Nearby restaurants (geo query, cached 60 s) |
+| `GET` | `/api/restaurants?lat=&lng=&page=1` | Restaurants whose delivery zone covers the point, nearest first (cached 60 s) |
 | `GET` | `/api/restaurants?q=burger` | Full-text search |
 | `GET` | `/api/restaurants/:id` | Restaurant detail |
 | `GET` | `/api/restaurants/:id/menu` | Full menu grouped by category (cached 5 min) |

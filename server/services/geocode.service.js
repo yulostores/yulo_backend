@@ -19,6 +19,7 @@
 //      onboarding (a handful of calls a day), NOT fine on a per-order path.
 import { env } from '../config/env.js';
 import logger from '../utils/logger.js';
+import { ApiError } from '../utils/ApiError.js';
 import { geocodeQuery as geocodeWithHere } from './places.service.js';
 
 const GEOCODE_TIMEOUT_MS = 5000;
@@ -102,4 +103,36 @@ export async function geocodeAddress(address) {
     logger.error({ err: err.message, query }, 'Geocoding lookup threw');
     return null;
   }
+}
+
+// A point a restaurant can actually be at: a finite [lng, lat] pair inside the valid ranges
+// and not [0, 0]. "Null Island" is what every missing/failed location used to be defaulted
+// to, so it is treated as "no location" rather than as a real address off the coast of
+// Africa — a store there is invisible to every customer, and that is exactly how a
+// Hazaribagh restaurant went missing.
+export const isUsableCoordinatePair = (coordinates) => {
+  if (!Array.isArray(coordinates) || coordinates.length !== 2) return false;
+  const [lng, lat] = coordinates;
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return false;
+  if (Math.abs(lng) > 180 || Math.abs(lat) > 90) return false;
+  return !(lng === 0 && lat === 0);
+};
+
+// The map point for a restaurant being CREATED (owner sign-up or an admin adding a store):
+// an explicit point when the caller genuinely has one, otherwise the address, geocoded.
+// A failed lookup rejects the request instead of falling back to [0, 0] — see
+// isUsableCoordinatePair. Shared so the owner portal and the admin console cannot disagree
+// about it again (the admin path used to default silently).
+export async function resolveRestaurantCoordinates({ address, coordinates }) {
+  if (isUsableCoordinatePair(coordinates)) return coordinates;
+
+  const geocoded = await geocodeAddress(address);
+  if (!geocoded) {
+    throw new ApiError(
+      400,
+      'ADDRESS_NOT_FOUND',
+      "We couldn't locate that address on the map. Please check the street, city and pincode."
+    );
+  }
+  return geocoded;
 }

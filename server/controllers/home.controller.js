@@ -5,7 +5,9 @@ import { ApiError } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
 export const getFeed = asyncHandler(async (req, res) => {
-  const { lat, lng, radius = 5, vegMode, vegScope } = req.query;
+  // A `radius` param is deliberately not read: builds in the field still send `radius=5`,
+  // and honouring it would keep them on a flat 5 km circle. Delivery zones are per-restaurant.
+  const { lat, lng, vegMode, vegScope } = req.query;
   if (!lat || !lng) throw new ApiError(400, 'VALIDATION_ERROR', 'lat and lng are required');
 
   const parsedVegMode = vegMode === 'true';
@@ -14,7 +16,6 @@ export const getFeed = asyncHandler(async (req, res) => {
   const feed = await homeService.getHomeFeed({
     lat,
     lng,
-    radius,
     vegMode: parsedVegMode,
     vegScope: parsedVegScope,
   });

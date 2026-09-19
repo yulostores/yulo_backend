@@ -122,7 +122,6 @@ const getFeaturedBanner = async (restaurantIds) => {
 export const getHomeFeed = async ({
   lat,
   lng,
-  radius = 5,
   vegMode = false,
   vegScope = 'all_restaurants',
 }) => {
@@ -131,7 +130,9 @@ export const getHomeFeed = async ({
   // veg-mode substitution/filtering in that case instead.
   const extraFilter = vegMode && vegScope === 'pure_veg_only' ? { isPureVeg: true } : {};
 
-  const nearbyRestaurants = await restaurantService.findNearby(lat, lng, radius, {
+  // "Nearby" means "delivers to this pin" — each restaurant's own zone decides, not a
+  // radius passed in by the caller (see restaurantService.findNearby).
+  const { restaurants: nearbyRestaurants } = await restaurantService.findNearby(lat, lng, {
     page: 1,
     limit: NEARBY_LIMIT,
     extraFilter,

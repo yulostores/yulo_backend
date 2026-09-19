@@ -9,6 +9,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { logActivity } from '../../services/activityLog.service.js';
 import { streamDocument } from '../../services/restaurantDocument.service.js';
 import { hashPassword } from '../../services/auth.service.js';
+import { geocodeAddress, resolveRestaurantCoordinates } from '../../services/geocode.service.js';
 import { STORE_STATUSES, shapeCounts } from '../../services/adminStats.service.js';
 
 // `operatingHours` and the two image fields are here because the admin console edits them
@@ -138,6 +139,17 @@ export const create = asyncHandler(async (req, res) => {
   }
   const { owner, location, ...storeData } = result.data;
 
+  // The admin form only collects an address, so the map point comes from geocoding it — same
+  // as owner sign-up. This used to default to [0, 0], which parked every store added here in
+  // the Gulf of Guinea: approved, "active", and invisible to every customer's nearby feed.
+  // Resolved before anything is written so an address that can't be located leaves nothing
+  // behind — a new owner account created first would be orphaned, and its one-time temp
+  // password lost, when the request is rejected.
+  const coordinates = await resolveRestaurantCoordinates({
+    address: storeData.address,
+    coordinates: location?.coordinates,
+  });
+
   let ownerUser = await User.findOne({ email: owner.email });
   let tempPassword = null;
 
@@ -159,7 +171,7 @@ export const create = asyncHandler(async (req, res) => {
   const store = await Restaurant.create({
     ...storeData,
     ownerId: ownerUser._id,
-    location: { type: 'Point', coordinates: location?.coordinates ?? [0, 0] },
+    location: { type: 'Point', coordinates },
     approvalStatus: 'active',
     reviewedAt: new Date(),
     reviewedBy: req.user._id,
@@ -289,6 +301,15 @@ export const update = asyncHandler(async (req, res) => {
   const data = {};
   for (const field of UPDATABLE_FIELDS) {
     if (req.body[field] !== undefined) data[field] = req.body[field];
+  }
+
+  // Address changed — re-geocode so the map point follows it instead of staying on the old
+  // premises (or on [0, 0] for a store created before creation geocoded). Best-effort, like
+  // the owner portal's edit: a geocoder outage must not block an admin fixing a typo, and the
+  // existing point stays until a lookup succeeds.
+  if (data.address) {
+    const coords = await geocodeAddress(data.address);
+    if (coords) data.location = { type: 'Point', coordinates: coords };
   }
 
   const store = await Restaurant.findByIdAndUpdate(req.params.id, { $set: data }, { new: true });

@@ -14,6 +14,9 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 
 const PAGE_SIZE = 20;
 
+// A location was supplied (both halves, non-blank) — the query string carries them as text.
+const hasPoint = (lat, lng) => [lat, lng].every((v) => v !== undefined && String(v).trim() !== '');
+
 const getFavoritedRestaurantIds = (req) =>
   req.user ? favoriteService.getFavoritedIdSet(req.user._id, 'restaurant') : null;
 
@@ -23,7 +26,10 @@ const attachStartingPrices = async (restaurants) => {
 };
 
 export const listRestaurants = asyncHandler(async (req, res) => {
-  const { lat, lng, radius = 5, page = 1, q, minRating, hasOffers, vegOnly } = req.query;
+  // No `radius` here on purpose: which restaurants deliver to a pin is each restaurant's own
+  // delivery zone (services/restaurant.service.js), and honouring a client-supplied radius
+  // would keep older app builds — which send a flat `radius=5` — on the old 5 km circle.
+  const { lat, lng, page = 1, q, minRating, hasOffers, vegOnly } = req.query;
   const favoritedIds = await getFavoritedRestaurantIds(req);
   const parsedPage = Math.max(1, parseInt(page, 10) || 1);
 
@@ -35,16 +41,15 @@ export const listRestaurants = asyncHandler(async (req, res) => {
   }
   const hasExtraFilters = Boolean(minRating || vegOnly === 'true' || hasOffers === 'true');
 
-  // Geo-browse (no `q`) sorts+filters via $near; a text/filter search doesn't need a
-  // location at all. The two are mutually exclusive below because MongoDB doesn't allow
-  // $near inside the $match an aggregation-based count uses — see the `useGeoNear` branch.
+  // Geo-browse (no `q`) requires a location. A text search (`q`) uses one when it is sent —
+  // scoping results to restaurants that deliver there — and otherwise runs unscoped.
   const useGeoNear = !q;
 
   // Only the plain geo-browse (no q, no extra filters) is cacheable — search/filter
   // combinations are far less repeatable and would need a combinatorial cache key.
   const isCacheable = useGeoNear && !hasExtraFilters;
   const cacheKey = isCacheable
-    ? `cache:restaurants:${parseFloat(lat)}:${parseFloat(lng)}:${radius}:${parsedPage}`
+    ? `cache:restaurants:${parseFloat(lat)}:${parseFloat(lng)}:${parsedPage}`
     : null;
 
   if (cacheKey) {
@@ -61,19 +66,18 @@ export const listRestaurants = asyncHandler(async (req, res) => {
   if (useGeoNear) {
     if (!lat || !lng) throw new ApiError(400, 'VALIDATION_ERROR', 'lat and lng are required');
 
-    // total/pages intentionally omitted: MongoDB only allows $geoWithin/$geoIntersects
-    // inside an aggregation $match (which is what countDocuments() uses under the hood) —
-    // not $near/$nearSphere. The pre-Prompt-7 version of this endpoint never computed
-    // total/pages for the geo-browse case either, for the same reason.
-    // restaurantService.findNearby is the same $near query the home feed's
-    // nearbyRestaurants reuses — see services/restaurant.service.js.
-    const restaurants = await restaurantService.findNearby(lat, lng, radius, {
+    // total/pages intentionally omitted: $geoNear has to be the first stage of its pipeline,
+    // so a matching count would mean repeating the whole geo scan. `hasMore` answers the only
+    // question a client paging through the list actually has.
+    // restaurantService.findNearby is the same query the home feed's nearbyRestaurants
+    // reuses — see services/restaurant.service.js.
+    const { restaurants, hasMore } = await restaurantService.findNearby(lat, lng, {
       page: parsedPage,
       limit: PAGE_SIZE,
       extraFilter,
     });
     await attachStartingPrices(restaurants);
-    data = { restaurants, page: parsedPage };
+    data = { restaurants, page: parsedPage, hasMore };
   } else {
     const regex = new RegExp(escapeRegExp(q.trim()), 'i');
 
@@ -89,31 +93,44 @@ export const listRestaurants = asyncHandler(async (req, res) => {
       isAvailable: true,
     });
 
-    const filter = {
-      ...PUBLIC_RESTAURANT_FILTER,
-      ...extraFilter,
-      $or: [
-        { name: regex },
-        { cuisineTypes: regex },
-        ...(menuMatchIds.length > 0 ? [{ _id: { $in: menuMatchIds } }] : []),
-      ],
-    };
+    const textMatch = [
+      { name: regex },
+      { cuisineTypes: regex },
+      ...(menuMatchIds.length > 0 ? [{ _id: { $in: menuMatchIds } }] : []),
+    ];
 
-    const [restaurants, total] = await Promise.all([
-      Restaurant.find(filter)
-        .select(PUBLIC_RESTAURANT_PROJECTION)
-        .skip((parsedPage - 1) * PAGE_SIZE)
-        .limit(PAGE_SIZE)
-        .lean(),
-      Restaurant.countDocuments(filter),
-    ]);
-    await attachStartingPrices(restaurants);
-    data = { restaurants, total, page: parsedPage, pages: Math.max(1, Math.ceil(total / PAGE_SIZE)) };
+    if (hasPoint(lat, lng)) {
+      // A customer with a delivery location only gets results they can actually order from:
+      // the same delivery-zone rule as the nearby feed, so searching can't surface a store in
+      // another city. Nearest first, and no total/pages for the reason given on the
+      // geo-browse branch above. Without a location (a guest, an older app build) the search
+      // stays unscoped, as it always was.
+      const { restaurants, hasMore } = await restaurantService.findNearby(lat, lng, {
+        page: parsedPage,
+        limit: PAGE_SIZE,
+        extraFilter: { ...extraFilter, $or: textMatch },
+      });
+      await attachStartingPrices(restaurants);
+      data = { restaurants, page: parsedPage, hasMore };
+    } else {
+      const filter = { ...PUBLIC_RESTAURANT_FILTER, ...extraFilter, $or: textMatch };
+
+      const [restaurants, total] = await Promise.all([
+        Restaurant.find(filter)
+          .select(PUBLIC_RESTAURANT_PROJECTION)
+          .skip((parsedPage - 1) * PAGE_SIZE)
+          .limit(PAGE_SIZE)
+          .lean(),
+        Restaurant.countDocuments(filter),
+      ]);
+      await attachStartingPrices(restaurants);
+      data = { restaurants, total, page: parsedPage, pages: Math.max(1, Math.ceil(total / PAGE_SIZE)) };
+    }
   }
 
   // Cache BEFORE annotating isFavorited: startingPrice is fine to share (not
   // user-specific), but isFavorited must never be baked into the shared 60s cache entry —
-  // the next request for this same lat/lng/radius/page could be a different (or
+  // the next request for this same lat/lng/page could be a different (or
   // anonymous) user.
   if (cacheKey) await cacheService.set(cacheKey, data, 60);
   favoriteService.annotateRestaurants(data.restaurants, favoritedIds);

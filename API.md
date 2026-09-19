@@ -482,10 +482,17 @@ GET /api/restaurants
 | `q` | string | `"biryani"` | Text search — matches restaurant name, cuisine, or the name of an available dish the restaurant serves. When given, `lat`/`lng` are not required and results are not geo-sorted. |
 | `lat` | number | `28.6139` | Required for geo-sort (omit when `q` is used) |
 | `lng` | number | `77.2090` | Required for geo-sort (omit when `q` is used) |
-| `radius` | number | `5000` | Meters, default 5000 |
-| `cuisine` | string | `"Indian"` | Filter by cuisine type |
-| `page` | number | `1` | Default 1 |
-| `limit` | number | `20` | Default 20, max 50 |
+| `page` | number | `1` | Default 1. Page size is fixed at 20. |
+| `minRating` | number | `4` | Minimum `avgRating` |
+| `hasOffers` | string | `"true"` | Only restaurants with a live offer |
+| `vegOnly` | string | `"true"` | Only pure-veg restaurants |
+
+There is no `radius` parameter (a value sent is ignored). A restaurant is listed for a `lat`/`lng`
+when that point is inside **the restaurant's own delivery radius** (`delivery.radiusKm`, default
+5 km when unset or 0), capped platform-wide at 15 km (`config/delivery.config.js`). Only
+approved, active restaurants are listed. Geo-browse results are ordered nearest first and each row
+carries `distanceKm` (straight-line, one decimal). Geo-browse has no `total`/`pages` — use
+`hasMore`. Text search (`q`) returns `total`/`pages` and no `distanceKm`.
 
 **Response** `200`
 
@@ -517,14 +524,14 @@ GET /api/restaurants
         "logo": "https://res.cloudinary.com/..."
       }
     ],
-    "total": 42,
     "page": 1,
-    "pages": 3
+    "hasMore": true
   }
 }
 ```
 
-Results are cached in Redis for 60 seconds.
+Each restaurant in a geo-browse response also has `"distanceKm": 1.2`. Results are cached in Redis
+for 60 seconds.
 
 ---
 

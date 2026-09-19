@@ -7,9 +7,8 @@
 // up the bill.
 
 import { z } from 'zod';
-import Restaurant from '../models/Restaurant.js';
 import { autocomplete, reverseGeocode } from '../services/places.service.js';
-import { haversineKm } from '../services/geo.service.js';
+import { checkServiceability } from '../services/restaurant.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -47,49 +46,22 @@ export const reverse = asyncHandler(async (req, res) => {
   sendSuccess(res, 200, 'Reverse geocoded', { place: await reverseGeocode(at) });
 });
 
-// How far out to look for a restaurant that might cover this pin. Nothing on the platform has a
-// radius anywhere near this; it only bounds the candidate set before each restaurant's own radius
-// is applied below.
-const SERVICEABILITY_SEARCH_KM = 25;
-
 // GET /api/geo/serviceability?at=lng,lat
 //
 // Answers "will anything actually deliver here?" before the customer saves the address and
-// discovers an empty home feed. Delivery radius is per-restaurant (Restaurant.delivery.radiusKm),
-// so a single $maxDistance query cannot answer this on its own — it narrows the candidates, then
-// each restaurant's own radius decides. `$near` returns nearest-first, so the first match found
-// this way is also the closest serviceable one.
+// discovers an empty home feed. It runs the SAME delivery-zone rule the home feed and the
+// restaurant list use (services/restaurant.service.js), so "yes, we deliver here" here can
+// never be followed by an empty feed there — including only counting restaurants that are
+// actually live (approved and active), which this endpoint used to skip.
 export const serviceability = asyncHandler(async (req, res) => {
   const at = parseCoordParam(req.query.at);
   if (!at) throw new ApiError(400, 'VALIDATION_ERROR', 'A valid `at=lng,lat` is required');
 
-  const candidates = await Restaurant.find({
-    isActive: true,
-    location: {
-      $near: {
-        $geometry: { type: 'Point', coordinates: at },
-        $maxDistance: SERVICEABILITY_SEARCH_KM * 1000,
-      },
-    },
-  })
-    .select('location delivery.radiusKm')
-    .limit(200)
-    .lean();
-
-  let serviceableCount = 0;
-  let nearestKm = null;
-
-  for (const restaurant of candidates) {
-    const distanceKm = haversineKm(at, restaurant.location.coordinates);
-    if (distanceKm <= (restaurant.delivery?.radiusKm ?? 5)) {
-      serviceableCount += 1;
-      if (nearestKm === null) nearestKm = Number(distanceKm.toFixed(1));
-    }
-  }
+  const { restaurantCount, nearestKm } = await checkServiceability(at[1], at[0]);
 
   sendSuccess(res, 200, 'Serviceability checked', {
-    serviceable: serviceableCount > 0,
-    restaurantCount: serviceableCount,
+    serviceable: restaurantCount > 0,
+    restaurantCount,
     nearestKm,
   });
 });
