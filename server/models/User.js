@@ -1,5 +1,36 @@
 import mongoose from 'mongoose';
 
+const addressLocationSchema = new mongoose.Schema(
+  {
+    type: { type: String, enum: ['Point'], required: true },
+    // `required` on both halves so a partial point cannot be persisted: a 2dsphere index
+    // (present or added later) rejects one, and every reader here treats a half-written
+    // point as a real one.
+    coordinates: {
+      type: [Number],
+      required: true,
+      validate: {
+        validator: (c) => Array.isArray(c) && c.length === 2 && c.every(Number.isFinite),
+        message: 'coordinates must be [longitude, latitude]',
+      },
+    },
+  },
+  { _id: false }
+);
+
+// A delivery address, kept in the parts a rider actually navigates by rather than as one
+// free-text line.
+//
+// The app has always ASKED for a flat number, a floor and a landmark — and then joined them
+// into `street` with commas before sending, because those were the only fields that existed
+// here. Everything downstream paid for it: the rider got "B-402, Floor 4, Near City Mall"
+// with no way to tell which part was the building, the customer could not edit one part
+// without retyping the line, and the "edit address" screen could not repopulate the form it
+// had just collected. They are separate fields now, the way every delivery app stores them.
+//
+// `street` survives as the composed one-line form, so older app builds, existing orders and
+// every screen that just prints an address keep working unchanged — it is now derived
+// (services/address.service.js composes it) rather than the only place the detail lives.
 const addressSchema = new mongoose.Schema(
   {
     label: { type: String, enum: ['home', 'work', 'other'], default: 'home' },
@@ -7,13 +38,49 @@ const addressSchema = new mongoose.Schema(
     // add/updateAddress logic in services/user.service.js, which clears this whenever
     // label is changed back to 'home'/'work' so it can't go stale.
     customLabel: { type: String, default: null },
+
+    // ── The parts the customer types ──────────────────────────────────────────────
+    // Flat / house / block number — the single most important line for a rider at the
+    // door, and the one a geocoder can never supply.
+    houseNumber: { type: String, default: null },
+    floor: { type: String, default: null },
+    // Building / apartment / society name.
+    building: { type: String, default: null },
+    landmark: { type: String, default: null },
+
+    // ── The parts a geocoder resolves ─────────────────────────────────────────────
+    // Locality / neighbourhood / sector, between the street and the city. HERE returns it
+    // as `district`; it is what makes an Indian address findable and was previously thrown
+    // away entirely.
+    area: { type: String, default: null },
     street: { type: String },
     city: { type: String },
     state: { type: String },
     pincode: { type: String },
-    location: {
-      type: { type: String, default: 'Point' },
-      coordinates: [Number],
+    country: { type: String, default: 'India' },
+    // The provider's own single-line rendering of the pin, kept verbatim. Useful when the
+    // parsed parts disagree with what the customer saw on the map screen.
+    formattedAddress: { type: String, default: null },
+
+    // GeoJSON [longitude, latitude].
+    //
+    // Declared as its OWN schema with `default: undefined`, not as an inline nested path.
+    // The difference is the whole bug: a nested path is materialised by Mongoose whenever
+    // the parent document is created, so an address whose geocode failed was stored as
+    // `{ type: 'Point', coordinates: [] }` — truthy, correctly typed, and completely
+    // empty. Every consumer mistook it for a real location: the customer app read it as
+    // `{ latitude: undefined }` and stopped loading the home feed altogether, and
+    // computeDropKm turned it into NaN on the rider's distance pay. As a sub-schema
+    // defaulting to undefined, "no location" is genuinely the absence of the field.
+    //
+    // services/address.service.js#normalizeLocation is the only thing that writes it.
+    location: { type: addressLocationSchema, default: undefined },
+    // How the coordinates were obtained, so a support agent (and the repair script) can
+    // tell a dragged-pin address from one the geocoder guessed off a typed line.
+    locationSource: {
+      type: String,
+      enum: ['device', 'map_pin', 'geocoded', 'unknown'],
+      default: 'unknown',
     },
     // Who receives the order at THIS address, when that isn't the account holder — a
     // parent's house, an office reception, a gift. Optional: checkout falls back to the
@@ -96,6 +163,13 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// No 2dsphere index on savedAddresses.location, deliberately. Nothing queries addresses
+// geospatially (every distance calculation already has the point in hand), and building one
+// against live data would FAIL rather than help: Mongo refuses to extract geo keys from the
+// `{ type: 'Point', coordinates: [] }` documents the old schema default produced, so an
+// autoIndex build would error on startup until every such row is repaired. If a geospatial
+// address query is ever needed, run scripts/fixAddressLocations.js first, then add it.
 
 userSchema.methods.toJSON = function () {
   const obj = this.toObject();

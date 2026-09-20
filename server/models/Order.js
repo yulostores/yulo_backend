@@ -190,12 +190,32 @@ const orderSchema = new mongoose.Schema(
     // contactName/contactPhone are per-address on purpose: an order placed for someone
     // else (a gift, a parent's house) reaches a different person at the door than the one
     // the account belongs to. They default to the account's own name/phone at checkout.
+    // A SNAPSHOT of the delivery address as it stood when the order was placed — never a
+    // reference to User.savedAddresses, which the customer can edit or delete afterwards.
+    //
+    // Carries the same parts the saved address now stores (see User.js's addressSchema) so
+    // the restaurant's order ticket and the rider's app get a flat number, a floor and a
+    // landmark as separate lines instead of having to re-split one comma-joined string
+    // that may or may not be in that order. `street` remains the composed one-line form for
+    // every existing screen and every order placed before this.
     deliveryAddress: {
       label: { type: String, default: null },
+      houseNumber: { type: String, default: null },
+      floor: { type: String, default: null },
+      building: { type: String, default: null },
+      landmark: { type: String, default: null },
+      area: { type: String, default: null },
       street: { type: String },
       city: { type: String },
       state: { type: String },
       pincode: { type: String },
+      // Flat [lng, lat] rather than a GeoJSON object, unlike Restaurant.location and
+      // DeliveryPartner.currentLocation. Kept flat deliberately: this is a frozen copy for
+      // display and arithmetic, never a document queried by a 2dsphere index, and every
+      // reader (geo.service.js, tracking.service.js, deliveryAssignment.service.js) has
+      // always destructured it as a bare pair. `null` — never `[]` — when the customer's
+      // address had no usable point; see services/geo.service.js's computeDropKm for why
+      // the difference matters.
       coordinates: { type: [Number], default: null },
       contactName: { type: String, default: null },
       contactPhone: { type: String, default: null },

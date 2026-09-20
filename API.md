@@ -487,12 +487,24 @@ GET /api/restaurants
 | `hasOffers` | string | `"true"` | Only restaurants with a live offer |
 | `vegOnly` | string | `"true"` | Only pure-veg restaurants |
 
-There is no `radius` parameter (a value sent is ignored). A restaurant is listed for a `lat`/`lng`
-when that point is inside **the restaurant's own delivery radius** (`delivery.radiusKm`, default
-5 km when unset or 0), capped platform-wide at 15 km (`config/delivery.config.js`). Only
-approved, active restaurants are listed. Geo-browse results are ordered nearest first and each row
-carries `distanceKm` (straight-line, one decimal). Geo-browse has no `total`/`pages` — use
-`hasMore`. Text search (`q`) returns `total`/`pages` and no `distanceKm`.
+There is no `radius` parameter (a value sent is ignored). **Listing and delivering are two
+different radii** (`config/delivery.config.js`):
+
+* **Discovery** — every approved, active restaurant within **25 km** (`DISCOVERY_RADIUS_KM`) of
+  `lat`/`lng` is listed, **ordered nearest first**. This is the whole listing rule.
+* **Delivery** — each row carries `deliversToPin`, computed from that restaurant's own
+  `delivery.radiusKm` (clamped to 25 km; **unset or 0 means the full 25 km**, i.e. the owner has
+  not restricted their reach). `false` means "visible and browsable, but it will not deliver this
+  far" — a state the client is expected to render, not to filter out.
+
+These were one rule until recently: a restaurant only appeared if the customer was inside *its*
+radius, and because `delivery.radiusKm` defaulted to 5 km on every store created through a form
+that doesn't ask about delivery, newly-added restaurants were invisible to most of their own city.
+
+Each geo-scoped row also carries `distanceKm` (straight-line, one decimal) — the same figure the
+sort used. Geo-browse has no `total`/`pages` — use `hasMore`. Text search (`q`) **with** `lat`/`lng`
+is scoped and sorted the same way; without them it is unscoped and returns `total`/`pages` and no
+`distanceKm`/`deliversToPin`.
 
 **Response** `200`
 
@@ -1145,7 +1157,12 @@ POST /api/users/me/addresses
 {
   "label": "other",
   "customLabel": "Parents' place",
-  "street": "100 Business Park",
+  "houseNumber": "B-402",
+  "building": "Sunrise Apartments",
+  "floor": "4",
+  "landmark": "Near City Mall",
+  "area": "Indiranagar",
+  "street": "100 Business Park Road",
   "city": "Bangalore",
   "state": "Karnataka",
   "pincode": "560001",
@@ -1159,27 +1176,56 @@ POST /api/users/me/addresses
 | --- | --- | --- | --- |
 | `label` | `"home"` \| `"work"` \| `"other"` | No | Defaults to `"home"` |
 | `customLabel` | string | Only when `label` is `"other"` | 1–40 chars. Cleared server-side whenever `label` goes back to `home`/`work` |
-| `street`, `city`, `state`, `pincode` | string | No | The postal address |
-| `location.coordinates` | `[lng, lat]` | No | GeoJSON order. See geocoding below |
+| `houseNumber` | string | No | Flat / house / block number — the line a rider reads at the door |
+| `building` | string | No | Building / apartment / society name |
+| `floor` | string | No | |
+| `landmark` | string | No | |
+| `area` | string | No | Locality / neighbourhood / sector |
+| `street` | string | No | The **road** only. Composed server-side — see below |
+| `city`, `state`, `pincode`, `country` | string | No | `country` defaults to `"India"` |
+| `formattedAddress` | string | No | The geocoder's own single-line rendering, kept verbatim |
+| `location.coordinates` | `[lng, lat]` | No | GeoJSON order. See coordinates below |
 | `contactName` | string | No | Who receives orders **here**, when that isn't the account holder |
 | `contactPhone` | string | No | Contact at this address |
 | `isDefault` | boolean | No | The first address saved becomes the default automatically |
 
-#### Coordinates are resolved server-side
+At least one of `location`, `city` or `pincode` is required on create — an address with none
+of them cannot be placed and would be silently excluded from every distance calculation.
+
+#### `street` is composed, not sent whole
+
+The parts are stored separately and the server writes the one-line display form back into
+`street` as `houseNumber, building, Floor N, landmark, street` (de-duplicated). So a client
+sends the road in `street` and the flat number in `houseNumber`, and reads `street` back as
+the full line. Anything that renders a single address line is unaffected; anything that needs
+the parts — the restaurant's order ticket, the rider's screen, the edit form — now has them.
+
+Clients used to join these into `street` themselves before sending, which made an address
+un-editable: the flat number could not be recovered from the joined line.
+
+#### Coordinates are validated and resolved server-side
 
 An address's coordinates are what the delivery fee, the partner's distance pay, the ETA and
-partner eligibility are all computed from — so they are never inferred from a placeholder.
+partner eligibility are all computed from — so they are neither trusted blindly nor inferred
+from a placeholder.
 
-- Send `location.coordinates` when the client has a real device fix; it is used as-is (a GPS
-  reading beats anything a geocoder can infer from a text line).
-- Omit it and the server geocodes `street, city, state, pincode` with the same provider that
-  resolves restaurant addresses (`services/geocode.service.js` — Google when
-  `GOOGLE_MAPS_API_KEY` is set, otherwise Nominatim).
-- If the lookup fails, the address saves **without** coordinates rather than being rejected
-  or stamped with a fallback point. Distance-based features degrade for it, which is honest.
+- Send `location.coordinates` when the client has a real device/map fix; it is used as-is (a
+  GPS reading beats anything a geocoder can infer from a text line).
+- They are **rejected** (`400 VALIDATION_ERROR`) when they are `[0, 0]`, malformed, outside
+  the served area, or **reversed** — `[latitude, longitude]` instead of GeoJSON's
+  `[longitude, latitude]`. A reversed pair is individually valid on both axes anywhere in
+  India, so nothing used to catch it and the address was simply wrong forever.
+- Omit it and the server geocodes `street, area, city, state, pincode` with the same provider
+  that resolves restaurant addresses (`services/geocode.service.js` — HERE when `HERE_API_KEY`
+  is set, otherwise Google or Nominatim).
+- If the lookup fails, the address saves **without** a `location` at all — never as an empty
+  point. Distance-based features degrade for it, which is honest.
+- `locationSource` (`device` \| `map_pin` \| `geocoded` \| `unknown`) records which of these
+  happened.
 
-Editing any of `street`/`city`/`state`/`pincode` without sending new coordinates re-runs the
-lookup, so an edited address doesn't keep the previous street's point.
+On **update**, the lookup re-runs only when a postal field's **value actually changed**. Sending
+the same street back with a new phone number leaves the pin alone — it used to re-geocode on the
+mere presence of the key, which quietly replaced a pin the customer had dragged on the map.
 
 **Response** `201`
 

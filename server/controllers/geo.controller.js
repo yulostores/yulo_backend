@@ -49,19 +49,29 @@ export const reverse = asyncHandler(async (req, res) => {
 // GET /api/geo/serviceability?at=lng,lat
 //
 // Answers "will anything actually deliver here?" before the customer saves the address and
-// discovers an empty home feed. It runs the SAME delivery-zone rule the home feed and the
-// restaurant list use (services/restaurant.service.js), so "yes, we deliver here" here can
-// never be followed by an empty feed there — including only counting restaurants that are
-// actually live (approved and active), which this endpoint used to skip.
+// discovers an empty home feed. It runs the SAME rules the home feed and the restaurant list
+// use (services/restaurant.service.js), so the two can never disagree — including only
+// counting restaurants that are actually live (approved and active), which this endpoint
+// used to skip.
+//
+// Two counts, because the app now has two things to say. `restaurantCount` is the strict one
+// (restaurants that will deliver to this pin) and still drives `serviceable`. `browsableCount`
+// is everything visible within the platform's discovery radius, which is what the customer
+// will actually see listed — so the address screen can distinguish "there is nothing out
+// here" from "plenty nearby, but none of them reach this far yet", two situations that used
+// to produce the identical, unhelpful "we don't deliver here".
 export const serviceability = asyncHandler(async (req, res) => {
   const at = parseCoordParam(req.query.at);
   if (!at) throw new ApiError(400, 'VALIDATION_ERROR', 'A valid `at=lng,lat` is required');
 
-  const { restaurantCount, nearestKm } = await checkServiceability(at[1], at[0]);
+  const { restaurantCount, discoverableCount, nearestKm, nearestDiscoverableKm } =
+    await checkServiceability(at[1], at[0]);
 
   sendSuccess(res, 200, 'Serviceability checked', {
     serviceable: restaurantCount > 0,
     restaurantCount,
     nearestKm,
+    browsableCount: discoverableCount,
+    nearestBrowsableKm: nearestDiscoverableKm,
   });
 });

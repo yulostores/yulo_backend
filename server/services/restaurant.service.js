@@ -1,8 +1,9 @@
 import mongoose from 'mongoose';
 import Restaurant from '../models/Restaurant.js';
 import {
+  DELIVERS_TO_PIN_EXPR,
+  DISCOVERY_RADIUS_KM,
   EFFECTIVE_RADIUS_KM_EXPR,
-  MAX_DELIVERY_RADIUS_KM,
 } from '../config/delivery.config.js';
 import {
   PUBLIC_RESTAURANT_FILTER,
@@ -32,24 +33,34 @@ const castFilter = (filter) => {
   return { ...filter, _id: { $in: ids.map((id) => new mongoose.Types.ObjectId(String(id))) } };
 };
 
-// The two stages that define "delivers to this pin", shared by every reader so the definition
-// can't drift between screens:
+// DISCOVERY: every live restaurant within the platform browse radius of the pin, nearest
+// first. One stage, because that is now the whole rule — no per-restaurant radius $match.
 //
-//   1. $geoNear pulls candidates in distance order, out to the platform ceiling only — the
-//      cheapest bound that can't hide anyone, since no store's zone extends past it.
-//   2. $match keeps a candidate only if the customer is inside THAT restaurant's own radius.
+// This is the stage that changed. It used to also drop any candidate the customer was
+// outside the delivery radius OF, which meant a restaurant that had never filled in the
+// delivery form (radius defaulted to 5 km) was missing from the app for everyone further
+// away, with no way for the owner or an admin to see that was happening. Reach is now
+// reported per row (`deliversToPin`) instead of deciding whether the row exists.
 //
 // Exported for the contract test that pins the rule.
-export const serviceableStages = (point, extraFilter = {}) => [
+export const discoveryStages = (point, extraFilter = {}) => [
   {
     $geoNear: {
       near: { type: 'Point', coordinates: point },
       distanceField: 'distanceMeters',
       spherical: true,
-      maxDistance: MAX_DELIVERY_RADIUS_KM * 1000,
+      maxDistance: DISCOVERY_RADIUS_KM * 1000,
       query: { ...PUBLIC_RESTAURANT_FILTER, ...castFilter(extraFilter) },
     },
   },
+];
+
+// DELIVERY: the narrower "can this restaurant actually bring food here" rule — discovery,
+// plus each restaurant's own zone. Used by /api/geo/serviceability, which answers "will
+// anything deliver to this address?" and must not count a restaurant the customer can see
+// but cannot order from.
+export const serviceableStages = (point, extraFilter = {}) => [
+  ...discoveryStages(point, extraFilter),
   {
     $match: {
       $expr: { $lte: ['$distanceMeters', { $multiply: [EFFECTIVE_RADIUS_KM_EXPR, 1000] }] },
@@ -57,19 +68,21 @@ export const serviceableStages = (point, extraFilter = {}) => [
   },
 ];
 
-// Restaurants that deliver to (lat, lng), nearest first. Shared by GET /api/restaurants'
-// geo-browse path (controllers/restaurant.controller.js) and the home feed's
-// nearbyRestaurants (services/home.service.js) — one query, not duplicated logic.
-// `extraFilter` lets callers layer on conditions (e.g. isPureVeg, avgRating, an offers `_id`
-// $in) without this function knowing about any of that itself.
+// Restaurants near (lat, lng), nearest first. Shared by GET /api/restaurants' geo-browse
+// path (controllers/restaurant.controller.js) and the home feed's nearbyRestaurants
+// (services/home.service.js) — one query, not duplicated logic. `extraFilter` lets callers
+// layer on conditions (isPureVeg, avgRating, an offers `_id` $in) without this function
+// knowing about any of that itself.
 //
-// Serviceability is decided by each restaurant's own delivery radius (capped by the
-// platform — see config/delivery.config.js), never by a radius the client sends: the app
-// used to pass a flat 5 km, which hid every store whose zone reached further and showed
-// ones that don't actually deliver that far.
+// Scope is the platform's DISCOVERY_RADIUS_KM, never a radius the client sends: the app
+// used to pass a flat 5 km, which hid every store whose zone reached further.
 //
-// Each row carries `distanceKm` (straight-line, one decimal) so clients show the same figure
-// the zone check used instead of recomputing it.
+// Each row carries:
+//   distanceKm    straight-line, one decimal — the same figure the sort used, so a client
+//                 never has to recompute it and land on a different number.
+//   deliversToPin whether THIS restaurant's own zone covers the pin. False means "listed,
+//                 but too far to order from" — a state the card is expected to render,
+//                 not one it should filter out silently.
 export const findNearby = async (
   lat,
   lng,
@@ -81,11 +94,20 @@ export const findNearby = async (
   // One row past the page tells us whether another page exists. The count that would say so
   // directly isn't available: $geoNear has to be the first stage, and a second aggregation
   // just to count would repeat the whole scan.
+  //
+  // $geoNear already emits in increasing distance order and $skip/$limit preserve it, so the
+  // "sorted by increasing distance" guarantee needs no $sort stage — but it is also the
+  // guarantee most easily lost by a later edit, so nearby.contract.test.js pins it.
   const rows = await Restaurant.aggregate([
-    ...serviceableStages(point, extraFilter),
+    ...discoveryStages(point, extraFilter),
     { $skip: (parsedPage - 1) * limit },
     { $limit: limit + 1 },
-    { $set: { distanceKm: { $round: [{ $divide: ['$distanceMeters', 1000] }, 1] } } },
+    {
+      $set: {
+        distanceKm: { $round: [{ $divide: ['$distanceMeters', 1000] }, 1] },
+        deliversToPin: DELIVERS_TO_PIN_EXPR,
+      },
+    },
     { $unset: ['distanceMeters', ...PUBLIC_RESTAURANT_HIDDEN_FIELDS] },
   ]);
 
@@ -95,15 +117,34 @@ export const findNearby = async (
 
 // "Will anything deliver here?" for /api/geo/serviceability — how many restaurants cover the
 // pin and how far the closest one is. Counted inside Mongo rather than by fetching documents.
+//
+// `restaurantCount` deliberately uses the DELIVERY rule, not discovery: this endpoint is what
+// the address flow shows before a customer commits to an address, so it must mean "can order
+// from", not "can see". `discoverableCount` reports the wider set so the app can distinguish
+// "nothing here at all" from "restaurants nearby, none of them delivering this far yet".
 export const checkServiceability = async (lat, lng) => {
   const point = parsePoint(lat, lng);
   const [summary] = await Restaurant.aggregate([
-    ...serviceableStages(point),
-    { $group: { _id: null, count: { $sum: 1 }, nearestMeters: { $min: '$distanceMeters' } } },
+    ...discoveryStages(point),
+    {
+      $group: {
+        _id: null,
+        discoverableCount: { $sum: 1 },
+        nearestMeters: { $min: '$distanceMeters' },
+        deliverableCount: { $sum: { $cond: [DELIVERS_TO_PIN_EXPR, 1, 0] } },
+        nearestDeliverableMeters: {
+          $min: { $cond: [DELIVERS_TO_PIN_EXPR, '$distanceMeters', null] },
+        },
+      },
+    },
   ]);
 
   return {
-    restaurantCount: summary?.count ?? 0,
-    nearestKm: summary ? roundKm(summary.nearestMeters) : null,
+    restaurantCount: summary?.deliverableCount ?? 0,
+    discoverableCount: summary?.discoverableCount ?? 0,
+    nearestKm: summary?.nearestDeliverableMeters != null
+      ? roundKm(summary.nearestDeliverableMeters)
+      : null,
+    nearestDiscoverableKm: summary ? roundKm(summary.nearestMeters) : null,
   };
 };

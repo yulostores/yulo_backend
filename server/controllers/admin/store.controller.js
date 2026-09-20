@@ -317,6 +317,54 @@ export const update = asyncHandler(async (req, res) => {
   sendSuccess(res, 200, 'Store updated', { store });
 });
 
+// PATCH /api/admin/stores/:id/location
+//
+// The map point, on its own. A restaurant that is approved, active and correctly addressed
+// is still invisible to every customer if its point is wrong, and until now there was no
+// way for an admin to SEE that, let alone fix it — the store profile showed the street,
+// city, state and pincode, and never the coordinates those had been turned into. That is
+// how a Hazaribagh restaurant sat at [0, 0] off the coast of West Africa, "active" and
+// unreachable, with nobody able to tell why.
+//
+// Two ways to fix one: send explicit `coordinates` (an admin reading a pin off a map), or
+// send nothing and have the stored address re-geocoded. Unlike the address-edit path this
+// is NOT best-effort — an admin who pressed this button is asking whether the lookup
+// works, so a failure is a 400 that says so rather than a 200 that changed nothing.
+const locationSchema = z.object({
+  coordinates: z.tuple([z.number(), z.number()]).optional(),
+});
+
+export const updateLocation = asyncHandler(async (req, res) => {
+  const result = locationSchema.safeParse(req.body ?? {});
+  if (!result.success) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid coordinates', result.error.flatten());
+  }
+
+  const store = await Restaurant.findById(req.params.id).select('address location name');
+  if (!store) throw new ApiError(404, 'NOT_FOUND', 'Store not found');
+
+  const coordinates = await resolveRestaurantCoordinates({
+    address: store.address,
+    coordinates: result.data.coordinates,
+  });
+
+  const updated = await Restaurant.findByIdAndUpdate(
+    req.params.id,
+    { $set: { location: { type: 'Point', coordinates } } },
+    { new: true }
+  );
+
+  await logActivity({
+    adminId: req.user._id,
+    action: 'STORE_LOCATION_UPDATED',
+    targetType: 'restaurant',
+    targetId: store._id,
+    metadata: { coordinates, source: result.data.coordinates ? 'manual' : 'geocoded' },
+  });
+
+  sendSuccess(res, 200, 'Store location updated', { store: updated });
+});
+
 const noteSchema = z.object({ note: z.string().min(1) });
 
 export const addNote = asyncHandler(async (req, res) => {

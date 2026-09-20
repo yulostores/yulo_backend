@@ -26,9 +26,12 @@ const attachStartingPrices = async (restaurants) => {
 };
 
 export const listRestaurants = asyncHandler(async (req, res) => {
-  // No `radius` here on purpose: which restaurants deliver to a pin is each restaurant's own
-  // delivery zone (services/restaurant.service.js), and honouring a client-supplied radius
+  // No `radius` here on purpose: the browse radius is the platform's own
+  // DISCOVERY_RADIUS_KM (config/delivery.config.js), and honouring a client-supplied radius
   // would keep older app builds — which send a flat `radius=5` — on the old 5 km circle.
+  // Every restaurant inside that radius is listed, nearest first; whether each one can
+  // actually deliver to the pin rides along as `deliversToPin` rather than deciding
+  // whether the row appears at all.
   const { lat, lng, page = 1, q, minRating, hasOffers, vegOnly } = req.query;
   const favoritedIds = await getFavoritedRestaurantIds(req);
   const parsedPage = Math.max(1, parseInt(page, 10) || 1);
@@ -48,8 +51,12 @@ export const listRestaurants = asyncHandler(async (req, res) => {
   // Only the plain geo-browse (no q, no extra filters) is cacheable — search/filter
   // combinations are far less repeatable and would need a combinatorial cache key.
   const isCacheable = useGeoNear && !hasExtraFilters;
+  // `v2` because the rule behind the cached value changed (per-restaurant delivery zone ->
+  // platform discovery radius). Without the bump, a warm Redis would keep serving the old,
+  // narrower list for up to a TTL after deploy — exactly the "my new restaurant still isn't
+  // showing" report this change is meant to end.
   const cacheKey = isCacheable
-    ? `cache:restaurants:${parseFloat(lat)}:${parseFloat(lng)}:${parsedPage}`
+    ? `cache:restaurants:v2:${parseFloat(lat)}:${parseFloat(lng)}:${parsedPage}`
     : null;
 
   if (cacheKey) {
@@ -100,11 +107,11 @@ export const listRestaurants = asyncHandler(async (req, res) => {
     ];
 
     if (hasPoint(lat, lng)) {
-      // A customer with a delivery location only gets results they can actually order from:
-      // the same delivery-zone rule as the nearby feed, so searching can't surface a store in
-      // another city. Nearest first, and no total/pages for the reason given on the
-      // geo-browse branch above. Without a location (a guest, an older app build) the search
-      // stays unscoped, as it always was.
+      // A customer with a delivery location gets results from their own area rather than the
+      // whole country: the same discovery radius as the nearby feed, so searching can't
+      // surface a store three states away. Nearest first, and no total/pages for the reason
+      // given on the geo-browse branch above. Without a location (a guest, an older app
+      // build) the search stays unscoped, as it always was.
       const { restaurants, hasMore } = await restaurantService.findNearby(lat, lng, {
         page: parsedPage,
         limit: PAGE_SIZE,

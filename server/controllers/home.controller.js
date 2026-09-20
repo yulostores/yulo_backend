@@ -6,7 +6,8 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 
 export const getFeed = asyncHandler(async (req, res) => {
   // A `radius` param is deliberately not read: builds in the field still send `radius=5`,
-  // and honouring it would keep them on a flat 5 km circle. Delivery zones are per-restaurant.
+  // and honouring it would keep them on a flat 5 km circle. The browse radius is the
+  // platform's DISCOVERY_RADIUS_KM; per-restaurant zones only decide `deliversToPin`.
   const { lat, lng, vegMode, vegScope } = req.query;
   if (!lat || !lng) throw new ApiError(400, 'VALIDATION_ERROR', 'lat and lng are required');
 

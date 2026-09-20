@@ -4,6 +4,7 @@ import Restaurant from '../models/Restaurant.js';
 import User from '../models/User.js';
 import { redis } from '../config/redis.js';
 import { maxConcurrentOrdersPerPartner, perDeliveryRate, offerWindowSeconds } from '../config/finance.config.js';
+import { PARTNER_PICKUP_SEARCH_RADIUS_KM } from '../config/delivery.config.js';
 import { getIO } from '../socket.js';
 import { notifyService } from './notify.service.js';
 import logger from '../utils/logger.js';
@@ -58,7 +59,10 @@ const rankCandidates = async (restaurant, { requireFleetType } = {}) => {
   }
 
   const freshCutoff = new Date(Date.now() - LOCATION_FRESHNESS_SECONDS * 1000);
-  const maxDistanceMeters = (restaurant.delivery?.radiusKm ?? 5) * 1000;
+  // A flat platform radius, not the restaurant's own delivery zone — see
+  // PARTNER_PICKUP_SEARCH_RADIUS_KM for why reusing that setting was wrong in both
+  // directions (a zero-radius restaurant found nobody; an unset one would now search 25 km).
+  const maxDistanceMeters = PARTNER_PICKUP_SEARCH_RADIUS_KM * 1000;
 
   const nearby = await DeliveryPartner.find({
     ...baseFilter,
@@ -115,7 +119,11 @@ export const buildOfferPayload = async (order, candidate) => {
     // (pickupKm/dropKm below already read these same fields) but never forwarded past
     // the formatted address strings — the map component needs the actual points.
     restaurantLocation: restaurant?.location?.coordinates ?? null,
-    dropoffLocation: order.deliveryAddress?.coordinates ?? null,
+    // `length === 2`, not `?? null`: an address whose geocode failed can carry an empty
+    // coordinates array, and `[]` survives `??`. The partner app would then get `[]` as a
+    // map destination rather than the null it already knows how to handle.
+    dropoffLocation:
+      order.deliveryAddress?.coordinates?.length === 2 ? order.deliveryAddress.coordinates : null,
     // fleetType reflects the PARTNER being offered this order (fixed per-partner, same on
     // every offer they get) — separate from vegFleetOptIn/dedicatedBagRequired below,
     // which reflect what THIS order asked for. Order.vegFleetOptIn now exists (this is
@@ -146,6 +154,15 @@ export const buildOfferPayload = async (order, candidate) => {
     customerPhone:
       order.deliveryAddress?.contactPhone || order.customerPhone || customer?.phone || null,
     customerAddress: formatAddress(order.deliveryAddress),
+    // The two parts a rider standing outside a building actually needs, as their own
+    // fields rather than buried mid-line in the formatted address above. Null on orders
+    // placed before addresses were stored in parts — `customerAddress` still contains
+    // them for those, since the composed `street` line is what it is built from.
+    customerHouseNumber:
+      [order.deliveryAddress?.houseNumber, order.deliveryAddress?.building]
+        .filter(Boolean)
+        .join(', ') || null,
+    customerLandmark: order.deliveryAddress?.landmark || null,
     // Still no real routing/ETA engine (straight-line distance ≠ travel time) — see the
     // geo.service.js file comment on why that's a separate, larger capability than this step adds.
     customerEtaMin: null,

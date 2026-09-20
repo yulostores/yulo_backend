@@ -90,8 +90,15 @@ const remainingPrepMinutes = (order, restaurant) => {
  * geocoding existed, a restaurant with no pin); the screen simply omits the ETA.
  */
 async function buildEtaAndRoute(order, restaurant, partner) {
-  const customerCoords = order.deliveryAddress?.coordinates ?? null;
-  const restaurantCoords = restaurant?.location?.coordinates ?? null;
+  // `usablePoint`, not a truthiness check: an address whose geocode failed can hold an empty
+  // coordinates array, which is truthy and would send `[]` to the routing API as an origin.
+  const usablePoint = (c) => Array.isArray(c) && c.length === 2 && c.every(Number.isFinite);
+  const customerCoords = usablePoint(order.deliveryAddress?.coordinates)
+    ? order.deliveryAddress.coordinates
+    : null;
+  const restaurantCoords = usablePoint(restaurant?.location?.coordinates)
+    ? restaurant.location.coordinates
+    : null;
   if (!customerCoords || !restaurantCoords) return { etaMinutes: null, route: null, etaSource: null };
 
   const assignmentStatus = order.deliveryAssignment?.status ?? 'unassigned';

@@ -16,6 +16,7 @@
 // of options in sync with this file.
 
 import { ALLOWED_IMAGE_MIME_TYPES } from '../middleware/upload.js';
+import { MAX_DELIVERY_RADIUS_KM } from './delivery.config.js';
 
 // Indian company classifications — from company law, not from our data, so there is no
 // collection to derive them from (unlike cuisines, see controllers/cuisine.controller.js).
@@ -275,8 +276,13 @@ export const STORE_SETTINGS_FIELDS = [
     type: 'number',
     required: false,
     min: 0,
-    max: 100,
+    // The platform ceiling itself, not the 100 this used to allow. Accepting a number the
+    // platform then silently clamps is worse than rejecting it: an owner who saved 50 km
+    // believed they were reaching 50 km, saw the value persisted, and had no way to learn
+    // that everything past the ceiling was never served.
+    max: MAX_DELIVERY_RADIUS_KM,
     step: 0.5,
+    help: `How far you will actually deliver, up to ${MAX_DELIVERY_RADIUS_KM} km. Leave it blank to deliver anywhere customers can see you; they can see you up to ${MAX_DELIVERY_RADIUS_KM} km away either way.`,
   },
   {
     path: 'delivery.baseCharge',

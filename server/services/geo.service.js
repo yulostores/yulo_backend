@@ -24,13 +24,22 @@ export const haversineKm = ([lng1, lat1], [lng2, lat2]) => {
   return EARTH_RADIUS_KM * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
 
+// A pair that can actually be measured. The truthiness check these replaced let an EMPTY
+// array through — `[]` is truthy — which an address with a failed geocode used to store.
+// Destructuring it gives two undefineds, the haversine returns NaN, and NaN then travelled
+// into the rider's distance pay, the customer's ETA and the tracking payload as a number
+// nothing rejected. "Unknown distance" has always been representable here (null); this just
+// makes sure the unknown cases actually reach it.
+const measurable = (coordinates) =>
+  Array.isArray(coordinates) && coordinates.length === 2 && coordinates.every(Number.isFinite);
+
 export const computeDropKm = (restaurant, order) =>
-  restaurant?.location?.coordinates && order.deliveryAddress?.coordinates
+  measurable(restaurant?.location?.coordinates) && measurable(order?.deliveryAddress?.coordinates)
     ? Number(haversineKm(restaurant.location.coordinates, order.deliveryAddress.coordinates).toFixed(1))
     : null;
 
 export const computePickupKm = (partnerLocation, restaurant) =>
-  partnerLocation?.coordinates && restaurant?.location?.coordinates
+  measurable(partnerLocation?.coordinates) && measurable(restaurant?.location?.coordinates)
     ? Number(haversineKm(partnerLocation.coordinates, restaurant.location.coordinates).toFixed(1))
     : null;
 

@@ -84,7 +84,17 @@ const restaurantSchema = new mongoose.Schema(
     },
     operatingHours: [operatingHoursSchema],
     delivery: {
-      radiusKm: { type: Number, default: 5 },
+      // NO schema default, deliberately. A default here is indistinguishable from a value
+      // the owner chose, and that is exactly what went wrong: every restaurant created
+      // through a form that doesn't ask about delivery (owner sign-up, the admin console's
+      // Add Store) was silently written with `radiusKm: 5` and then hidden from every
+      // customer more than 5 km away — a restriction nobody set and nobody could see.
+      //
+      // Left unset, `effectiveDeliveryRadiusKm` (config/delivery.config.js) treats it as
+      // "the owner has not restricted their reach" and applies the full discovery radius.
+      // The default lives there, in one place, where it can be reasoned about — rather than
+      // being baked into the document at creation where it outlives any change to it.
+      radiusKm: { type: Number },
       baseCharge: { type: Number, default: 0 },
       freeThreshold: { type: Number },
       estimatedMinutes: { type: Number },

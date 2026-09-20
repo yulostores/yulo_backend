@@ -386,11 +386,26 @@ export const createOrderFromCart = async ({
     // account holder — an address saved for someone else carries its own.
     deliveryAddress: {
       label: address.customLabel?.trim() || address.label || null,
+      // Every part, not just the composed line: the restaurant's ticket and the rider's app
+      // can then show "B-402" and "Near City Mall" as their own lines. `street` still
+      // carries the joined form for everything that reads one string.
+      houseNumber: address.houseNumber ?? null,
+      floor: address.floor ?? null,
+      building: address.building ?? null,
+      landmark: address.landmark ?? null,
+      area: address.area ?? null,
       street: address.street,
       city: address.city,
       state: address.state,
       pincode: address.pincode,
-      coordinates: address.location?.coordinates ?? null,
+      // `|| null`, not `?? null`: an address whose geocode failed can hold an empty
+      // coordinates array, and `[]` survives `??` intact. It then reaches computeDropKm,
+      // where destructuring it yields undefined and the haversine returns NaN — which went
+      // straight into the rider's distance pay and the customer's ETA. Normalised to a
+      // clean null here, which every reader already handles.
+      coordinates: address.location?.coordinates?.length === 2
+        ? address.location.coordinates
+        : null,
       contactName: address.contactName?.trim() || user.name?.trim() || null,
       contactPhone: address.contactPhone || user.phone || null,
     },

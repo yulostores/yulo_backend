@@ -130,8 +130,9 @@ export const getHomeFeed = async ({
   // veg-mode substitution/filtering in that case instead.
   const extraFilter = vegMode && vegScope === 'pure_veg_only' ? { isPureVeg: true } : {};
 
-  // "Nearby" means "delivers to this pin" — each restaurant's own zone decides, not a
-  // radius passed in by the caller (see restaurantService.findNearby).
+  // "Nearby" means "inside the platform's discovery radius", nearest first — not "delivers
+  // to this pin", which is now reported per row as `deliversToPin` (see
+  // restaurantService.findNearby and config/delivery.config.js for why the two were split).
   const { restaurants: nearbyRestaurants } = await restaurantService.findNearby(lat, lng, {
     page: 1,
     limit: NEARBY_LIMIT,

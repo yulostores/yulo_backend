@@ -8,6 +8,7 @@ import {
   suspend,
   reactivate,
   update,
+  updateLocation,
   addNote,
   verifyDocument,
   getDocumentFile,
@@ -23,6 +24,8 @@ router.patch('/:id/approve', approve);
 router.patch('/:id/reject', reject);
 router.patch('/:id/suspend', suspend);
 router.patch('/:id/reactivate', reactivate);
+// Before '/:id' so the literal segment is not swallowed by the parameterised route.
+router.patch('/:id/location', updateLocation);
 router.patch('/:id', update);
 router.post('/:id/notes', addNote);
 router.get('/:id/documents/:docId/file', getDocumentFile);
