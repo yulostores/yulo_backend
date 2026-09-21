@@ -165,7 +165,7 @@ export const composeStreetLine = (address = {}) => {
 };
 
 /** Single-line address for a geocoder query — the postal parts only, never the flat number. */
-const geocodableLine = (address = {}) =>
+export const geocodableLine = (address = {}) =>
   [address.street, address.area, address.city, address.state, address.pincode]
     .map((p) => String(p ?? '').trim())
     .filter(Boolean)

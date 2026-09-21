@@ -2,6 +2,7 @@ import User from '../models/User.js';
 import Restaurant from '../models/Restaurant.js';
 import * as cartService from './cart.service.js';
 import * as menuService from './menu.service.js';
+import { ensureAddressLocated } from './user.service.js';
 import { tipPresets } from '../config/finance.config.js';
 
 const MEAL_SECTION_ITEM_LIMIT = 8;
@@ -76,6 +77,21 @@ export const getCheckoutSummary = async (userId) => {
   ]);
 
   const address = user.savedAddresses.find((a) => a.isDefault) || user.savedAddresses[0] || null;
+
+  // Retry the geocode for an address that has never been placed on the map, here rather than
+  // only at placement, for two reasons: the resolved point is written back to the address, so
+  // the order behind this summary already has one; and when it STILL cannot be placed, the
+  // client can see that (no `location` on the address it was handed) and say so before the
+  // order is paid for, instead of the customer discovering it from a tracking screen with no
+  // map on it. See services/user.service.js's ensureAddressLocated.
+  if (address) {
+    const coordinates = await ensureAddressLocated(userId, address);
+    // Normalised the same way address.service.js's normalizeLocation does it: a real point or
+    // no `location` key at all, never the `{ type: 'Point', coordinates: [] }` an older failed
+    // geocode left behind — which is truthy, and which every client read as a real place.
+    if (coordinates) address.location = { type: 'Point', coordinates };
+    else delete address.location;
+  }
 
   let mealSections = [];
   let vegFleetEligible = false;

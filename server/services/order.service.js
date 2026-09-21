@@ -11,6 +11,7 @@ import { redis } from '../config/redis.js';
 import { cartPlatformFee, cartTaxPercent } from '../config/finance.config.js';
 import * as cartService from './cart.service.js';
 import * as discountService from './discount.service.js';
+import { ensureAddressLocated } from './user.service.js';
 import { VEG_FLEET_SEARCH_WINDOW_MS } from './deliveryAssignment.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { isPubliclyVisible } from '../utils/publicRestaurant.js';
@@ -247,6 +248,14 @@ export const createOrderFromCart = async ({
     : user.savedAddresses.find((a) => a.isDefault) || user.savedAddresses[0];
   if (!address) throw new ApiError(400, 'VALIDATION_ERROR', 'No delivery address available');
 
+  // The order is the last point at which this address can still be put on the map. Usually a
+  // no-op — the checkout summary already ran the same lookup and wrote the result back — but
+  // not every placement is preceded by one (an address added or switched since, a retried
+  // checkout, a client that never loaded the summary). Returns null for an address the
+  // geocoder genuinely cannot place, which still does not block the order; see
+  // services/user.service.js's ensureAddressLocated for what that costs downstream.
+  const dropCoordinates = await ensureAddressLocated(userId, address);
+
   // Step 1 — Re-validate item prices/availability fresh (menu items may have changed
   // since they were added to cart) — the cart's own unitPrice snapshot is only for
   // display continuity while browsing; the actual order commit never trusts it blindly.
@@ -398,14 +407,13 @@ export const createOrderFromCart = async ({
       city: address.city,
       state: address.state,
       pincode: address.pincode,
-      // `|| null`, not `?? null`: an address whose geocode failed can hold an empty
-      // coordinates array, and `[]` survives `??` intact. It then reaches computeDropKm,
-      // where destructuring it yields undefined and the haversine returns NaN — which went
-      // straight into the rider's distance pay and the customer's ETA. Normalised to a
-      // clean null here, which every reader already handles.
-      coordinates: address.location?.coordinates?.length === 2
-        ? address.location.coordinates
-        : null,
+      // Resolved above, not read off the address: a point the geocoder only just recovered
+      // belongs on this order too, not just on the next one. Already normalised to a real
+      // pair or a clean null — an address whose geocode failed can hold an empty coordinates
+      // array, and `[]` survives `??` intact, reaching computeDropKm where destructuring it
+      // yields undefined and the haversine returns NaN, straight into the rider's distance
+      // pay and the customer's ETA. `null` is what every reader already handles.
+      coordinates: dropCoordinates,
       contactName: address.contactName?.trim() || user.name?.trim() || null,
       contactPhone: address.contactPhone || user.phone || null,
     },

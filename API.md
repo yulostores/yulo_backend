@@ -1227,6 +1227,22 @@ On **update**, the lookup re-runs only when a postal field's **value actually ch
 the same street back with a new phone number leaves the pin alone — it used to re-geocode on the
 mere presence of the key, which quietly replaced a pin the customer had dragged on the map.
 
+#### The lookup is retried at checkout
+
+An address that saved without a `location` is looked up again on the two endpoints that are
+about to depend on it — `GET /api/checkout/summary` and `POST /api/orders/checkout` — and a hit
+is written back onto the saved address, so it costs one lookup per address rather than one per
+order. Most save-time failures have nothing to do with the address (a timeout, a rate limit, a
+provider outage, an address added with no signal), and the order is where it finally matters:
+`Order.deliveryAddress.coordinates` is what the drop distance, the partner's distance pay, the
+ETA, the auto-assignment ranking and the tracking map are all computed from.
+
+An address the geocoder still cannot place is **not** blocked — a postal address the customer
+knows is real must still be orderable. The order carries `coordinates: null` and those features
+degrade. The summary response is the client's signal: the `address` it returns has no `location`
+key, which is what the customer app's checkout screen uses to offer a map pin before the order
+is paid for.
+
 **Response** `201`
 
 ```json

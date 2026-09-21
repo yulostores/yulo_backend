@@ -6,7 +6,7 @@ const menuItemSchema = new mongoose.Schema(
     restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Restaurant', required: true },
     categoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', required: true },
     subCategoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'SubCategory' },
-    name: { type: String, required: true, trim: true },
+    name: { type: String, required: true, trim: true, maxlength: 100 },
     description: { type: String },
     image: { type: String },
     prepTime: { type: Number },

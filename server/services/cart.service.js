@@ -256,18 +256,34 @@ export const addItem = async (userId, { menuItemId, qty, selectedOptions = [] })
   const mrpUnitPrice =
     pricing.totalPriceMinor + Math.max(0, menuItem.sellingPrice - menuItem.effectivePrice);
 
-  // Always a new line — two POSTs for the "same" item/customization produce two lines,
-  // not a merged quantity. Increasing quantity of an existing line is what
-  // PATCH /api/cart/items/:lineItemId is for.
-  cart.items.push({
-    menuItemId: menuItem._id,
-    name: menuItem.name,
-    unitPrice: pricing.totalPriceMinor,
-    mrpUnitPrice,
-    qty,
-    foodType: menuItem.foodType,
-    selectedOptions,
-  });
+  // Same dish + identical customization merges into the existing line (qty increases);
+  // a different customization of the same dish stays its own line.
+  const optionKey = (opts = []) =>
+    opts
+      .map((o) => `${String(o.optionId)}:${o.qty ?? 1}`)
+      .sort()
+      .join('|');
+  const wantedKey = optionKey(selectedOptions);
+  const existing = cart.items.find(
+    (line) =>
+      String(line.menuItemId) === String(menuItem._id) && optionKey(line.selectedOptions) === wantedKey
+  );
+
+  if (existing) {
+    existing.qty += qty;
+    existing.unitPrice = pricing.totalPriceMinor;
+    existing.mrpUnitPrice = mrpUnitPrice;
+  } else {
+    cart.items.push({
+      menuItemId: menuItem._id,
+      name: menuItem.name,
+      unitPrice: pricing.totalPriceMinor,
+      mrpUnitPrice,
+      qty,
+      foodType: menuItem.foodType,
+      selectedOptions,
+    });
+  }
   cart.restaurantId = menuItem.restaurantId;
 
   await cart.save();

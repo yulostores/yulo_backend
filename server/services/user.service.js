@@ -1,11 +1,15 @@
 import User from '../models/User.js';
 import UserDevice from '../models/UserDevice.js';
 import {
+  geocodableLine,
   parseAddressInput,
   postalPartsChanged,
   resolveAddress,
 } from './address.service.js';
+import { geocodeAddress, isUsableCoordinatePair } from './geocode.service.js';
+import { redis } from '../config/redis.js';
 import { ApiError } from '../utils/ApiError.js';
+import logger from '../utils/logger.js';
 
 export const getPreferences = async (userId) => {
   const user = await User.findById(userId).select('preferences').lean();
@@ -165,4 +169,101 @@ export const removeAddress = async (userId, addrId) => {
 
   await user.save();
   return user.savedAddresses;
+};
+
+// How long a failed lookup is remembered for, keyed by address. Long enough that a customer
+// re-opening checkout doesn't pay for the same timeout twice, short enough that a provider
+// that has since learned the street gets another chance the same day.
+const GEOCODE_MISS_TTL_SECONDS = 6 * 60 * 60;
+
+const cachedMiss = async (key) => {
+  try {
+    return await redis?.get(key);
+  } catch (err) {
+    logger.warn({ err: err.message, key }, 'Could not read the geocode-miss cache');
+    return null;
+  }
+};
+
+const rememberMiss = async (key, query) => {
+  try {
+    await redis?.set(key, query, 'EX', GEOCODE_MISS_TTL_SECONDS);
+  } catch (err) {
+    logger.warn({ err: err.message, key }, 'Could not write the geocode-miss cache');
+  }
+};
+
+/**
+ * The last chance to put a saved address on the map, run on the paths that are about to
+ * depend on it having a point: the checkout summary, and the order placement behind it.
+ *
+ * An address the geocoder could not place is kept without coordinates on purpose — see
+ * services/address.service.js's `resolveAddress`: a postal address the customer trusts must
+ * still be savable, and inventing a city-centre point for it made every distance quietly
+ * wrong. But "no point" is not free either. It is snapshotted onto the order as
+ * `coordinates: null`, and from there computeDropKm returns null, the rider's distance pay
+ * falls back to a flat rate, deliveryAssignment cannot rank candidates by how far the drop
+ * is, and the customer's tracking map has no destination to draw.
+ *
+ * So the lookup is retried here rather than only at save time. Most of the ways it fails are
+ * temporary and have nothing to do with the address — a timeout, a rate limit, a provider
+ * outage, an address saved with no network at all — and a success is written straight back
+ * onto the saved address, so this costs one lookup per address, not one per order.
+ *
+ * Never throws and never blocks. An address the geocoder still cannot place returns null and
+ * the order goes through exactly as it does today, with the degraded-but-honest null.
+ *
+ * @param address a saved-address subdocument (lean or hydrated) — the one the order will use
+ * @returns GeoJSON-order [longitude, latitude], or null when it remains unplaceable
+ */
+export const ensureAddressLocated = async (userId, address) => {
+  if (!address) return null;
+  if (isUsableCoordinatePair(address.location?.coordinates)) {
+    return address.location.coordinates;
+  }
+
+  const query = geocodableLine(address);
+  if (!query) {
+    logger.warn(
+      { userId, addressId: address._id },
+      'Address has no postal line to geocode — order will carry no drop point'
+    );
+    return null;
+  }
+
+  // A provider that cannot place this line will not place it on the next load either, and a
+  // miss costs the full geocoder timeout — on the checkout summary, which is a page the
+  // customer is sitting in front of, and again on the order behind it. The miss is remembered
+  // against the exact line that produced it, so reloading checkout is free while correcting
+  // the address retries immediately. Cache failures are ignored: a missing cache means an
+  // extra lookup, never a wrong answer.
+  const missKey = address._id ? `geo:miss:${address._id}` : null;
+  if (missKey && (await cachedMiss(missKey)) === query) return null;
+
+  const coordinates = await geocodeAddress(address);
+  if (!coordinates) {
+    if (missKey) await rememberMiss(missKey, query);
+    logger.warn(
+      { userId, addressId: address._id, query },
+      'Address still unlocatable at checkout — order will carry no drop point'
+    );
+    return null;
+  }
+
+  // Positional write rather than a full document save: nothing else about the address is
+  // being changed, and a concurrent edit from the address screen must not lose to this.
+  await User.updateOne(
+    { _id: userId, 'savedAddresses._id': address._id },
+    {
+      $set: {
+        'savedAddresses.$.location': { type: 'Point', coordinates },
+        'savedAddresses.$.locationSource': 'geocoded',
+      },
+    }
+  );
+  logger.info(
+    { userId, addressId: address._id },
+    'Backfilled a saved address location at checkout'
+  );
+  return coordinates;
 };

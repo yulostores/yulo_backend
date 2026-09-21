@@ -28,6 +28,7 @@ import {
   postalPartsChanged,
   resolveAddress,
 } from '../services/address.service.js';
+import { ensureAddressLocated } from '../services/user.service.js';
 
 const at = (coordinates) => ({ type: 'Point', coordinates });
 const parse = (body) => parseAddressInput({ label: 'home', city: 'Ranchi', ...body });
@@ -125,4 +126,33 @@ test('resolveAddress: the composed street line survives into the patch', async (
     { houseNumber: 'B-402', building: 'Sunrise', landmark: 'Near City Mall', location: at([85.3616, 23.9924]) }
   );
   assert.equal(out.street, 'B-402, Sunrise, Near City Mall');
+});
+
+// ─── The checkout backfill ──────────────────────────────────────────────────
+// `ensureAddressLocated` is what stops an order being placed against an address nobody
+// can navigate to: it retries the lookup the save-time geocode failed, writes a hit back
+// onto the saved address, and hands the order the point. Both of its early exits are
+// covered here because they are what keep it OFF the hot path — everything past them
+// talks to a geocoder and to Mongo, neither of which this suite has.
+
+test('ensureAddressLocated: an address that already has a point resolves without a lookup', async () => {
+  const coordinates = await ensureAddressLocated('u1', {
+    _id: 'a1',
+    street: 'MG Road',
+    city: 'Ranchi',
+    location: at([85.3616, 23.9924]),
+  });
+  assert.deepEqual(coordinates, [85.3616, 23.9924]);
+});
+
+test('ensureAddressLocated: an empty point is not a point, and is retried', async () => {
+  // `{ type: 'Point', coordinates: [] }` is the shape a failed geocode used to persist.
+  // It must not satisfy the short-circuit above, or the address it belongs to can never
+  // be repaired. With no postal line to query, the retry gives up and returns null —
+  // which is the degraded-but-honest value, not a thrown error.
+  assert.equal(await ensureAddressLocated('u1', { _id: 'a1', location: at([]) }), null);
+});
+
+test('ensureAddressLocated: no address at all is null, not a throw', async () => {
+  assert.equal(await ensureAddressLocated('u1', null), null);
 });
