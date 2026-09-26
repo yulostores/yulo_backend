@@ -2516,7 +2516,8 @@ Every `placed` order, **oldest first**, not paginated (capped at 200). Each is e
 ```json
 { "data": { "orders": [ { "_id": "...", "status": "placed", "awaitingPayment": false, "...": "..." } ],
             "count": 1,
-            "rejectionReasons": ["Restaurant is too busy right now", "One or more items are out of stock", "..."] } }
+            "rejectionReasons": ["Restaurant is too busy right now", "One or more items are out of stock", "..."],
+            "approvalTimeoutMinutes": 15 } }
 ```
 
 #### Accept

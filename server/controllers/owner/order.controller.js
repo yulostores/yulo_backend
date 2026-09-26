@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { env } from '../../config/env.js';
 import Order from '../../models/Order.js';
 import * as orderViewService from '../../services/orderView.service.js';
 import * as orderApprovalService from '../../services/orderApproval.service.js';
@@ -81,6 +82,9 @@ export const listPendingOrders = asyncHandler(async (req, res) => {
     })),
     count,
     rejectionReasons: orderApprovalService.REJECTION_REASONS,
+    // So the inbox can show "auto-cancels in 4 min" per order — the sweep cancels anything
+    // older than this (orderApproval.service.js's expireUnansweredOrders).
+    approvalTimeoutMinutes: env.ORDER_APPROVAL_TIMEOUT_MINUTES,
   });
 });
 
