@@ -2,6 +2,7 @@ import Order from '../models/Order.js';
 import Restaurant from '../models/Restaurant.js';
 import DeliveryPartner from '../models/DeliveryPartner.js';
 import { ApiError } from '../utils/ApiError.js';
+import { env } from '../config/env.js';
 import { haversineKm, estimateEtaMinutes, isLocationFresh } from './geo.service.js';
 import { getRoute, getTwoLegEta } from './routing.service.js';
 
@@ -193,6 +194,11 @@ export const getOrderTracking = async (orderId, userId) => {
       ? { etaMinutes: null, route: null, etaSource: null }
       : await buildEtaAndRoute(order, restaurant, partner);
 
+  const approvalExpiresAt =
+    order.status === 'placed' && order.createdAt
+      ? new Date(new Date(order.createdAt).getTime() + env.ORDER_APPROVAL_TIMEOUT_MINUTES * 60 * 1000)
+      : null;
+
   return {
     orderId: String(order._id),
     restaurantId: String(order.restaurantId),
@@ -200,7 +206,18 @@ export const getOrderTracking = async (orderId, userId) => {
     // 'placed' now means "sent to the restaurant, waiting for them to accept". The tracking
     // screen says so explicitly rather than implying the kitchen has started.
     awaitingRestaurantApproval: order.status === 'placed',
+    // When the approval sweep will auto-cancel it if the restaurant still hasn't answered,
+    // so the app can show a countdown instead of an open-ended wait. Null once decided.
+    approvalExpiresAt,
+    // The same deadline as seconds from now, measured on the server's clock — the app counts
+    // down from this rather than from approvalExpiresAt, so a phone whose clock is off still
+    // shows the right time. 0 once passed (the sweep runs once a minute).
+    approvalSecondsLeft:
+      approvalExpiresAt ? Math.max(0, Math.round((approvalExpiresAt.getTime() - Date.now()) / 1000)) : null,
     acceptedAt: order.acceptedAt ?? null,
+    // 'pending' when a paid order was cancelled and the money is owed back — see
+    // services/refund.service.js. 'none' otherwise.
+    refundStatus: order.refundStatus ?? 'none',
     // Set when the restaurant rejected the order (or it was cancelled later) — the
     // customer-facing reason.
     cancellation:
