@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import Table from '../models/Table.js';
 import * as guestOrderService from '../services/guestOrder.service.js';
+import { env } from '../config/env.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -47,13 +48,29 @@ export const getTable = asyncHandler(async (req, res) => {
 
 // GET /api/restaurants/:id/tables/:tableId/session — the guest's current visit, if any
 // order has been placed yet this session (polled by the status screen).
+//
+// Every round still waiting for the restaurant carries approvalSecondsLeft — how long until
+// the approval sweep cancels it if nobody answers (orderApproval.service.js), measured on
+// the server's clock so a guest phone with the wrong time still counts down correctly.
+// 0 once the deadline has passed (the sweep runs once a minute); null on decided rounds.
 export const getSession = asyncHandler(async (req, res) => {
   const session = await guestOrderService.getGuestSession({
     restaurantId: req.publicRestaurant._id,
     tableId: req.params.tableId,
   });
+  if (!session) return sendSuccess(res, 200, 'Session', { session: null });
 
-  sendSuccess(res, 200, 'Session', { session: session || null });
+  const timeoutMs = env.ORDER_APPROVAL_TIMEOUT_MINUTES * 60 * 1000;
+  const now = Date.now();
+  const orders = (session.orders ?? []).filter(Boolean).map((order) => ({
+    ...order,
+    approvalSecondsLeft:
+      order.status === 'placed' && order.createdAt
+        ? Math.max(0, Math.round((new Date(order.createdAt).getTime() + timeoutMs - now) / 1000))
+        : null,
+  }));
+
+  sendSuccess(res, 200, 'Session', { session: { ...session, orders } });
 });
 
 // POST /api/restaurants/:id/tables/:tableId/orders — place a dine-in order with no login.
