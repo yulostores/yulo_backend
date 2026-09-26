@@ -23,7 +23,16 @@ const buildTimeline = (order) => {
   );
 
   return STATUS_STAGES.map((stage, index) => {
-    const completed = order.status === 'delivered' ? true : index <= currentIndex;
+    // A cancelled order (most often one the restaurant rejected) has no position on the
+    // happy path, so `currentIndex` is -1 — which used to mark even 'placed' as never
+    // reached. The stages it genuinely passed through are the ones in its history; the
+    // cancellation itself is reported separately as `cancellation` on the payload.
+    const completed =
+      order.status === 'delivered'
+        ? true
+        : order.status === 'cancelled'
+          ? stage === 'placed' || historyAt.has(stage)
+          : index <= currentIndex;
 
     let timestamp = historyAt.get(stage) ?? null;
     if (timestamp) return { stage, timestamp, completed };
@@ -67,9 +76,16 @@ const DEFAULT_PREP_MINUTES = 18;
 const remainingPrepMinutes = (order, restaurant) => {
   if (['ready', 'out_for_delivery', 'delivered'].includes(order.status)) return 0;
 
-  const acceptedAt =
-    (order.statusHistory ?? []).find((entry) => entry.status === 'confirmed')?.at ?? order.createdAt;
   const totalPrep = restaurant?.delivery?.estimatedMinutes ?? DEFAULT_PREP_MINUTES;
+  // Still waiting for the restaurant to accept: nothing is cooking yet, so the whole prep
+  // time is still ahead. Falling through to `createdAt` here would count the minutes the
+  // order spent waiting for approval as minutes of cooking.
+  if (order.status === 'placed') return totalPrep;
+
+  const acceptedAt =
+    order.acceptedAt ??
+    (order.statusHistory ?? []).find((entry) => entry.status === 'confirmed')?.at ??
+    order.createdAt;
   const elapsedMinutes = (Date.now() - new Date(acceptedAt).getTime()) / 60_000;
 
   return Math.max(0, Math.round(totalPrep - elapsedMinutes));
@@ -170,12 +186,31 @@ export const getOrderTracking = async (orderId, userId) => {
     }
   }
 
-  const { etaMinutes, route, etaSource } = await buildEtaAndRoute(order, restaurant, partner);
+  // A cancelled order (rejected, timed out) is never arriving: no ETA, no route, and no
+  // paid routing call spent on it every time the tracking screen polls.
+  const { etaMinutes, route, etaSource } =
+    order.status === 'cancelled'
+      ? { etaMinutes: null, route: null, etaSource: null }
+      : await buildEtaAndRoute(order, restaurant, partner);
 
   return {
     orderId: String(order._id),
     restaurantId: String(order.restaurantId),
     status: order.status,
+    // 'placed' now means "sent to the restaurant, waiting for them to accept". The tracking
+    // screen says so explicitly rather than implying the kitchen has started.
+    awaitingRestaurantApproval: order.status === 'placed',
+    acceptedAt: order.acceptedAt ?? null,
+    // Set when the restaurant rejected the order (or it was cancelled later) — the
+    // customer-facing reason.
+    cancellation:
+      order.status === 'cancelled'
+        ? {
+            reason: order.cancellationReason ?? null,
+            by: order.cancelledBy ?? null,
+            at: order.cancelledAt ?? null,
+          }
+        : null,
     // Delivery-assignment sub-status mirrors Order.deliveryAssignment.status —
     // 'unassigned' | 'assigned' | 'picked_up' | 'delivered' | 'failed'.
     // The tracking screen uses this alongside order.status to show finer-grained

@@ -154,11 +154,34 @@ const orderSchema = new mongoose.Schema(
     // and is set by the waiter, not the kitchen — see the waiter status endpoint in
     // controllers/staff/waiter.controller.js. Delivery/takeaway orders never enter it;
     // they go 'ready' -> 'out_for_delivery' -> 'delivered' as before.
+    //
+    // 'placed' means "waiting for the restaurant to accept". A customer's order (delivery
+    // app, or the table QR) stops here until the owner portal accepts it — only then does
+    // it become 'confirmed' and reach the chef KDS, the waiter portal and rider search.
+    // Waiter-placed orders skip the gate (staff took the order in person) and are created
+    // 'confirmed'. See services/orderApproval.service.js.
     status: {
       type: String,
       enum: ['placed', 'confirmed', 'preparing', 'ready', 'served', 'out_for_delivery', 'delivered', 'cancelled'],
       default: 'placed',
     },
+    // When the restaurant accepted the order (placed -> confirmed). Null while it is still
+    // awaiting approval, and for orders placed before the approval step existed.
+    acceptedAt: { type: Date, default: null },
+    // Why and by whom an order was cancelled — the restaurant rejecting it at the approval
+    // step is the common case. Shown to the customer, so it is their-facing wording.
+    cancelledAt: { type: Date, default: null },
+    cancellationReason: { type: String, default: null },
+    cancelledBy: {
+      type: String,
+      enum: ['restaurant', 'kitchen', 'waiter', 'customer', 'admin', 'system', null],
+      default: null,
+    },
+    // Money owed back to the customer. Set to 'pending' whenever an order ends up both
+    // cancelled and paid — rejected after online payment, or a payment that was captured
+    // after the order was already cancelled. No refund integration exists yet, so this is
+    // the flag an admin/finance process works from; 'refunded' is for them to set.
+    refundStatus: { type: String, enum: ['none', 'pending', 'refunded'], default: 'none' },
     servedAt: { type: Date, default: null },
     statusHistory: { type: [orderStatusHistorySchema], default: [] },
     paymentStatus: {

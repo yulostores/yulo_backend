@@ -13,7 +13,7 @@ export const getKPIs = async (restaurantId) => {
   const [totalOrders, revenueResult, liveRaw, restaurant] = await Promise.all([
     Order.countDocuments({ restaurantId: rid, createdAt: { $gte: today } }),
     Order.aggregate([
-      { $match: { restaurantId: rid, paymentStatus: 'paid', createdAt: { $gte: today } } },
+      { $match: { restaurantId: rid, paymentStatus: 'paid', status: { $ne: 'cancelled' }, createdAt: { $gte: today } } },
       { $group: { _id: null, total: { $sum: '$subtotal' } } },
     ]),
     redis.get(`live:count:${restaurantId}`),
@@ -37,7 +37,7 @@ export const getSalesChart = (restaurantId, period = 'week') => {
   const rid = new mongoose.Types.ObjectId(restaurantId);
 
   return Order.aggregate([
-    { $match: { restaurantId: rid, paymentStatus: 'paid', createdAt: { $gte: startDate } } },
+    { $match: { restaurantId: rid, paymentStatus: 'paid', status: { $ne: 'cancelled' }, createdAt: { $gte: startDate } } },
     {
       $group: {
         _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: '+05:30' } },
@@ -53,7 +53,7 @@ export const getTopItems = (restaurantId, limit = 5) => {
   const rid = new mongoose.Types.ObjectId(restaurantId);
 
   return Order.aggregate([
-    { $match: { restaurantId: rid, paymentStatus: 'paid' } },
+    { $match: { restaurantId: rid, paymentStatus: 'paid', status: { $ne: 'cancelled' } } },
     { $unwind: '$items' },
     {
       $group: {

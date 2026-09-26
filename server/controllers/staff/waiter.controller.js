@@ -114,7 +114,9 @@ export const getSessions = asyncHandler(async (req, res) => {
     : [];
   const tableById = new Map(tables.map((t) => [String(t._id), t]));
 
-  const enrichedOrders = await orderViewService.enrichOrders(sessions.flatMap((s) => s.orders));
+  const enrichedOrders = await orderViewService.enrichOrders(
+    sessions.flatMap((s) => s.orders).filter((o) => o.status !== 'placed')
+  );
   const orderById = new Map(enrichedOrders.map((o) => [String(o._id), o]));
 
   // How a settled sitting was paid lives on its bill, not on the session, and it is the
@@ -130,7 +132,12 @@ export const getSessions = asyncHandler(async (req, res) => {
 
   const result = sessions.map((s) => {
     const table = tableById.get(String(s.tableId)) ?? null;
+    // A round the restaurant hasn't accepted yet isn't the floor's to serve — it only
+    // reaches the waiter once the owner portal confirms it. Counted, not listed, so the
+    // waiter can still tell a guest "your order is with the restaurant".
+    const awaitingApprovalCount = s.orders.filter((o) => o.status === 'placed').length;
     const orders = s.orders
+      .filter((o) => o.status !== 'placed')
       .map((o) => orderById.get(String(o._id)) ?? o)
       .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
       .map((o, i) => ({ ...o, round: o.batchNumber ?? i + 1 }));
@@ -140,6 +147,7 @@ export const getSessions = asyncHandler(async (req, res) => {
     return {
       ...s,
       orders,
+      awaitingApprovalCount,
       tableNumber: table?.identifier ?? null,
       table: table ? { _id: table._id, identifier: table.identifier, capacity: table.capacity } : null,
       runningTotal: orders
@@ -164,8 +172,11 @@ export const getSessions = asyncHandler(async (req, res) => {
 // the waiter is the only person moving the ticket. The shared transition table in
 // kitchen.service.js still enforces the ordering, so a waiter can advance a ticket but
 // never skip backwards or invent a state.
+//
+// No 'confirmed': accepting a customer's order is the restaurant's approval step
+// (services/orderApproval.service.js), and a waiter's own orders are created confirmed.
 const waiterStatusSchema = z.object({
-  newStatus: z.enum(['confirmed', 'preparing', 'ready', 'served']),
+  newStatus: z.enum(['preparing', 'ready', 'served']),
 });
 
 export const updateOrderStatus = asyncHandler(async (req, res) => {
@@ -181,6 +192,7 @@ export const updateOrderStatus = asyncHandler(async (req, res) => {
     .select('status type')
     .lean();
   if (!existing) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
+  kitchenService.assertNotAwaitingApproval(existing);
 
   // 'served' means "carried to the table" — meaningless for delivery/takeaway, which
   // reach the customer via 'out_for_delivery' -> 'delivered' instead.

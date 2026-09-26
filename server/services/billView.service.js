@@ -31,6 +31,10 @@ const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const shortCode = (id) => (id ? String(id).slice(-6).toUpperCase() : null);
 
 const CANCELLED = 'cancelled';
+const AWAITING_APPROVAL = 'placed';
+// Rounds that are on the bill's history but not charged: voided ones, and ones the
+// restaurant hasn't accepted yet (billing.service.js's isBilledOrder).
+const isUnbilled = (status) => status === CANCELLED || status === AWAITING_APPROVAL;
 
 const plainBill = (bill) => {
   if (!bill) return null;
@@ -145,7 +149,7 @@ const restaurantHeader = (bill, restaurant) => {
 const aggregateItems = (batches) => {
   const lines = new Map();
   for (const batch of batches) {
-    if (batch.status === CANCELLED) continue;
+    if (isUnbilled(batch.status)) continue;
     for (const item of batch.items ?? []) {
       const key = `${item.name}::${item.price}`;
       const line = lines.get(key) ?? {
@@ -196,7 +200,7 @@ const buildOne = (rawBill, ctx) => {
     })
     .sort((a, b) => new Date(a.placedAt ?? 0) - new Date(b.placedAt ?? 0));
 
-  const billedBatches = batches.filter((b) => b.status !== CANCELLED);
+  const billedBatches = batches.filter((b) => !isUnbilled(b.status));
   const items = aggregateItems(batches);
 
   const gstAmount = round2(bill.gstAmount);
@@ -269,7 +273,8 @@ const buildOne = (rawBill, ctx) => {
     items,
     itemCount: items.reduce((n, i) => n + i.quantity, 0),
     orderCount: billedBatches.length,
-    cancelledOrderCount: batches.length - billedBatches.length,
+    cancelledOrderCount: batches.filter((b) => b.status === CANCELLED).length,
+    awaitingApprovalCount: batches.filter((b) => b.status === AWAITING_APPROVAL).length,
 
     charges: {
       subtotal: round2(bill.subtotal),

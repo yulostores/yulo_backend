@@ -6,6 +6,7 @@ import Order from './models/Order.js';
 import Restaurant from './models/Restaurant.js';
 import * as liveMonitorService from './services/liveMonitor.service.js';
 import { sweepExpiredOffers, sweepExpiredVegFleetSearches } from './services/deliveryAssignment.service.js';
+import { expireUnansweredOrders } from './services/orderApproval.service.js';
 import logger from './utils/logger.js';
 
 let io;
@@ -52,6 +53,9 @@ export function initSocket(httpServer) {
       const owns = await Restaurant.exists({ _id: restaurantId, ownerId: decoded.userId });
       if (!owns) return socket.disconnect();
       socket.join(`restaurant:${restaurantId}`);
+      // Owner-only room: orders awaiting the restaurant's approval are emitted here and
+      // nowhere else, since `restaurant:` is shared with waiter sockets.
+      socket.join(`owner:${restaurantId}`);
       socket.data.restaurantId = restaurantId;
       await redis.sadd('live:active_restaurants', restaurantId);
     });
@@ -68,6 +72,9 @@ export function initSocket(httpServer) {
       if (!decoded || decoded.role !== 'waiter') return socket.disconnect();
       if (decoded.restaurantId !== restaurantId) return socket.disconnect();
       socket.join(`restaurant:${restaurantId}`);
+      // Waiters-only room: where an order the restaurant just accepted is announced
+      // (notify.service.js's orderAccepted), without echoing it back to the owner.
+      socket.join(`floor:${restaurantId}`);
       socket.join(`waiter:${restaurantId}:${decoded.staffId}`);
     });
 
@@ -129,6 +136,13 @@ export function initSocket(httpServer) {
     // with no customer decision. See its own comment for why both are folded in here.
     sweepExpiredVegFleetSearches().catch((err) => logger.error({ err }, 'sweepExpiredVegFleetSearches failed'));
   }, 5_000);
+
+  // Customer orders nobody at the restaurant answered within ORDER_APPROVAL_TIMEOUT_MINUTES
+  // are cancelled so the customer isn't left waiting forever (orderApproval.service.js). A
+  // minute is plenty of resolution for a timeout measured in minutes.
+  setInterval(() => {
+    expireUnansweredOrders().catch((err) => logger.error({ err }, 'expireUnansweredOrders failed'));
+  }, 60_000);
 }
 
 export const getIO = () => {

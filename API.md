@@ -2446,9 +2446,116 @@ Invalidates the current QR token. Any waiter scan with the old token will fail.
 
 ---
 
-## Owner — Orders (view only)
+## Owner — Orders
 
 Base path: `/api/owner/:restaurantId/orders`
+
+### Order approval
+
+Every **customer** order waits for the restaurant before anyone cooks it. That covers
+delivery app checkout, the raw `POST /api/orders`, and the table QR (`yulo_menu`). Such an
+order is created with `status: "placed"`, which now means *waiting for the restaurant to
+accept*:
+
+- The chef KDS queue, the waiter's sessions and the rider search all ignore a `placed`
+  order.
+- The chef and waiter status endpoints answer `409 ORDER_AWAITING_APPROVAL` for one.
+- The owner portal accepts the order (→ `confirmed`: it reaches the kitchen and floor, and a
+  delivery order starts rider search) or rejects it (→ `cancelled`, with a reason the
+  customer sees).
+
+**Waiter-placed orders skip this step.** The waiter took the order in person, so they are
+created `confirmed` (history: `placed` then `confirmed`, both by the waiter).
+
+Sockets:
+
+| Event | Room | When |
+|---|---|---|
+| `order_awaiting_approval` | `owner:<restaurantId>` (joined by `join_restaurant`) | a customer order is placed |
+| `order_payment_updated` | `owner:<restaurantId>` | a waiting online order's payment settles (`awaitingPayment` becomes `false`) |
+| `new_order` | `kitchen:<id>` + `floor:<id>` (waiters only) | the restaurant accepts an order (not echoed back to the owner) |
+| `new_order` | `restaurant:<id>` + `kitchen:<id>` | a waiter places an order (pre-approved) |
+| `order_status_updated` | as before, now with `cancellationReason` | accept / reject / cancel / timeout and every later change |
+
+**Every exit from `placed`:**
+
+| Exit | Who | Result |
+|---|---|---|
+| `PATCH …/orders/:id/accept` | owner | `confirmed` |
+| `PATCH …/orders/:id/reject` | owner | `cancelled`, `cancelledBy: "restaurant"` |
+| `POST /api/orders/:id/cancel` | the customer who placed it | `cancelled`, `cancelledBy: "customer"`, reason `"Cancelled by you"` |
+| Nobody answers within `ORDER_APPROVAL_TIMEOUT_MINUTES` (env, default 15) | system sweep, every minute | `cancelled`, `cancelledBy: "system"`, reason `"The restaurant didn't respond in time"` |
+
+These rules are enforced inside `updateOrderStatus` itself, so no caller can bypass them.
+Only these roles can leave `placed`, and an online order can only be confirmed once it is
+paid; the check runs atomically with the status change.
+
+**Refunds.** An order that ends up both `cancelled` and `paid` gets
+`refundStatus: "pending"`. That covers two cases:
+
+- a paid order that was rejected, cancelled or timed out;
+- a payment captured after the order was already cancelled.
+
+No refund integration exists yet; finance works from this flag. Such orders are excluded
+from the owner dashboard's revenue. A late `payment.failed` webhook never downgrades a
+captured payment. `POST /api/orders/:id/payment/simulate` answers `409 ORDER_CANCELLED` for
+a cancelled, unpaid order.
+
+#### Pending orders (the inbox)
+
+```
+GET /api/owner/:restaurantId/orders/pending
+```
+
+Every `placed` order, **oldest first**, not paginated (capped at 200). Each is enriched like
+*List Orders*, plus:
+
+- `awaitingPayment: true` marks an online order the customer hasn't paid for yet. It is
+  listed, but accepting it answers `409 PAYMENT_PENDING`.
+
+```json
+{ "data": { "orders": [ { "_id": "...", "status": "placed", "awaitingPayment": false, "...": "..." } ],
+            "count": 1,
+            "rejectionReasons": ["Restaurant is too busy right now", "One or more items are out of stock", "..."] } }
+```
+
+#### Accept
+
+```
+PATCH /api/owner/:restaurantId/orders/:orderId/accept
+```
+
+`placed` → `confirmed`, sets `acceptedAt`, and appends a `byRole: "owner"` history entry.
+Returns `{ order }`, enriched.
+
+For a veg-fleet order, the 3-minute rider-search countdown (`vegFleetSearchDeadline`)
+**starts at acceptance**, not at checkout: it is `null` while the order is `placed`, and
+`POST /api/orders/:id/veg-fleet/keep-waiting` answers `409 ORDER_AWAITING_APPROVAL` until then.
+
+| Error | When |
+|---|---|
+| `409 ORDER_ALREADY_DECIDED` | the order is no longer `placed` |
+| `409 PAYMENT_PENDING` | online order not yet paid |
+| `404 NOT_FOUND` | not this restaurant's order |
+
+#### Reject
+
+```
+PATCH /api/owner/:restaurantId/orders/:orderId/reject
+{ "reason": "One or more items are out of stock" }
+```
+
+`reason` is required (3–200 characters) and is shown to the customer. The bare chip text
+`"Other"` is rejected with `400`; the owner has to type the actual reason. The order becomes
+`cancelled`, with `cancellationReason`, `cancelledBy: "restaurant"` and `cancelledAt` set. A rejected dine-in round drops off the bill like any cancelled round.
+
+A dine-in round that is still `placed` is **not billed**: it is left out of the bill
+`subtotal` and `items` and reported as `awaitingApprovalCount`. It still holds the bill open
+(`409 ORDERS_PENDING` on generate or pay) until it is accepted or rejected. Same errors as *Accept*,
+except `PAYMENT_PENDING`.
+
+> A paid order that is rejected is flagged `refundStatus: "pending"` (see above). It is
+> **not refunded automatically**, because no refund integration exists yet.
 
 ### List Orders
 

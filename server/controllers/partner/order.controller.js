@@ -14,6 +14,7 @@ import {
   expireIfStale,
   buildOfferPayload,
   countActiveAssignments,
+  ASSIGNABLE_STATUSES,
 } from '../../services/deliveryAssignment.service.js';
 import { computeDropKm, computePickupKm, isLocationFresh } from '../../services/geo.service.js';
 
@@ -51,6 +52,16 @@ export const acceptOrder = asyncHandler(async (req, res) => {
     throw new ApiError(409, 'OFFER_EXPIRED', 'This offer has expired');
   }
   assertOfferBelongsToPartner(order, req.partner._id);
+
+  // The offer can outlive the order: the kitchen may cancel it (or, for an order offered
+  // before the restaurant-approval step existed, the restaurant may reject it) while the
+  // offer is still on the rider's screen. Close the offer out instead of assigning a rider
+  // to food nobody is cooking.
+  if (!ASSIGNABLE_STATUSES.includes(order.status)) {
+    order.deliveryAssignment.offerStatus = 'expired';
+    await order.save();
+    throw new ApiError(409, 'ORDER_UNAVAILABLE', 'This order is no longer available');
+  }
 
   const now = new Date();
   order.deliveryAssignment.status = 'assigned';

@@ -72,6 +72,10 @@ const schema = z.object({
   // Per-phone OTP send budget inside a 10-minute window. Raise it while testing the
   // login flow end to end; the default is the production-safe value.
   OTP_MAX_REQUESTS_PER_WINDOW: z.coerce.number().int().min(1).default(3),
+  // How long a customer order may wait for the restaurant to accept it before it is
+  // cancelled automatically ("the restaurant didn't respond"). Keeps a customer from waiting
+  // forever on an owner portal nobody is watching. See services/orderApproval.service.js.
+  ORDER_APPROVAL_TIMEOUT_MINUTES: z.coerce.number().min(1).default(15),
 });
 
 const result = schema.safeParse(process.env);

@@ -6,6 +6,7 @@ import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { logActivity } from '../../services/activityLog.service.js';
 import { notifyService } from '../../services/notify.service.js';
+import { ASSIGNABLE_STATUSES } from '../../services/deliveryAssignment.service.js';
 
 const reassignSchema = z.object({
   partnerId: z.string().min(1),
@@ -23,6 +24,18 @@ export const reassignDeliveryPartner = asyncHandler(async (req, res) => {
   if (!order) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
   if (order.type !== 'delivery') {
     throw new ApiError(400, 'INVALID_ORDER_TYPE', 'Only delivery orders can be reassigned');
+  }
+  // Automatic assignment's rule (deliveryAssignment.service.js's ASSIGNABLE_STATUSES), plus
+  // 'out_for_delivery': a rider breaking down mid-delivery is exactly when an admin steps in.
+  // Never for food the restaurant hasn't accepted, has cancelled, or has already delivered.
+  if (![...ASSIGNABLE_STATUSES, 'out_for_delivery'].includes(order.status)) {
+    throw new ApiError(
+      409,
+      'ORDER_NOT_ASSIGNABLE',
+      order.status === 'placed'
+        ? 'The restaurant has not accepted this order yet'
+        : `A rider can't be assigned to an order that is ${order.status.replace(/_/g, ' ')}`
+    );
   }
 
   const previousPartnerId = order.deliveryAssignment?.partnerId ?? null;

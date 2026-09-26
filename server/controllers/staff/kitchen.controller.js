@@ -5,10 +5,11 @@ import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import Order from '../../models/Order.js';
 
+// No 'confirmed': accepting an order ('placed' -> 'confirmed') is the restaurant's
+// approval step (services/orderApproval.service.js). The kitchen only ever sees orders that
+// are already confirmed and moves them on from there.
 const updateStatusSchema = z.object({
-  newStatus: z.enum([
-    'confirmed', 'preparing', 'ready', 'served', 'out_for_delivery', 'delivered', 'cancelled',
-  ]),
+  newStatus: z.enum(['preparing', 'ready', 'served', 'out_for_delivery', 'delivered', 'cancelled']),
 });
 
 export const getQueue = asyncHandler(async (req, res) => {
@@ -33,6 +34,8 @@ export const updateStatus = asyncHandler(async (req, res) => {
     restaurantId: req.staff.restaurantId,
   }).select('status type');
   if (!existing) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
+  // Accepting an order is the restaurant's decision, not the kitchen's.
+  kitchenService.assertNotAwaitingApproval(existing);
 
   if (result.data.newStatus === 'served' && existing.type !== 'dine_in') {
     throw new ApiError(400, 'INVALID_TRANSITION', "Only dine-in orders can be marked 'served'");
@@ -50,9 +53,12 @@ export const updateStatus = asyncHandler(async (req, res) => {
 });
 
 export const getOrderDetail = asyncHandler(async (req, res) => {
+  // A 'placed' order is still awaiting the restaurant's approval and doesn't exist for the
+  // kitchen yet — same answer as an unknown id.
   const order = await Order.findOne({
     _id: req.params.orderId,
     restaurantId: req.staff.restaurantId,
+    status: { $ne: 'placed' },
   }).lean();
 
   if (!order) throw new ApiError(404, 'NOT_FOUND', 'Order not found');

@@ -11,6 +11,7 @@ import {
   getOrder,
   getTracking,
   reorder,
+  cancelOrder,
   getVegFleetStatus,
   keepWaitingVegFleet,
   fallbackVegFleet,
@@ -28,6 +29,8 @@ router.get('/', listOrders);
 router.get('/:id', getOrder);
 router.get('/:id/tracking', getTracking);
 router.post('/:id/reorder', reorder);
+// Only while the restaurant hasn't accepted it yet — see orderApproval.service.js.
+router.post('/:id/cancel', cancelOrder);
 
 router.get('/:id/veg-fleet/status', getVegFleetStatus);
 router.post('/:id/veg-fleet/keep-waiting', keepWaitingVegFleet);

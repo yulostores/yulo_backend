@@ -31,9 +31,60 @@ export const notifyService = {
       // not the delivery partner (deliveryInstructions below is the partner-facing one).
       cookingRequests: order.cookingRequests,
       extraCutlery: order.extraCutlery,
+      status: order.status,
+      paymentMethod: order.paymentMethod ?? null,
+      paymentStatus: order.paymentStatus ?? null,
+      grandTotal: order.grandTotal ?? null,
     };
+
+    // Still awaiting the restaurant's approval: only the owner portal hears about it. The
+    // `restaurant:` room also holds every waiter socket (socket.js's join_waiter), so the
+    // owner-only `owner:` room is what keeps an unapproved order off the floor.
+    if (order.status === 'placed') {
+      io.to(`owner:${order.restaurantId}`).emit('order_awaiting_approval', payload);
+      return;
+    }
+
     io.to(`restaurant:${order.restaurantId}`).emit('new_order', payload);
     io.to(`kitchen:${order.restaurantId}`).emit('new_order', payload);
+  },
+
+  // The restaurant just accepted a customer order: this is when it reaches the kitchen and
+  // the floor. Sent to `kitchen:` and `floor:` (waiters only) rather than `restaurant:`,
+  // which also holds the owner socket that made the decision and already knows about it —
+  // the owner gets order_status_updated like every other change.
+  orderAccepted(order) {
+    const io = getIO();
+    const payload = {
+      orderId: order._id,
+      type: order.type,
+      tableId: order.tableId,
+      tableNumber: order.tableNumber,
+      staffId: order.staffId,
+      placedBy: order.placedBy,
+      customerName: order.customerName ?? null,
+      customerPhone: order.customerPhone ?? null,
+      batchNumber: order.batchNumber,
+      items: order.items,
+      specialInstructions: order.specialInstructions,
+      subtotal: order.subtotal,
+      cookingRequests: order.cookingRequests,
+      extraCutlery: order.extraCutlery,
+      status: order.status,
+    };
+    io.to(`kitchen:${order.restaurantId}`).emit('new_order', payload);
+    io.to(`floor:${order.restaurantId}`).emit('new_order', payload);
+  },
+
+  // A payment settled on an order that is still waiting for the restaurant — the owner's
+  // inbox had it flagged "awaiting payment" with Accept disabled; this lifts that live.
+  orderPaymentUpdated(order) {
+    if (order.status !== 'placed') return;
+    getIO().to(`owner:${order.restaurantId}`).emit('order_payment_updated', {
+      orderId: order._id,
+      paymentStatus: order.paymentStatus,
+      awaitingPayment: order.paymentMethod === 'online' && order.paymentStatus !== 'paid',
+    });
   },
 
   // Fired whenever Order.vegFleetAssignmentStatus changes (order placement, keep-waiting,
@@ -65,6 +116,9 @@ export const notifyService = {
       tableId: order.tableId,
       tableNumber: order.tableNumber,
       updatedAt: order.updatedAt,
+      // So a listening customer screen can show "Rejected by the restaurant: <reason>"
+      // straight from the event, without refetching.
+      cancellationReason: order.status === 'cancelled' ? order.cancellationReason ?? null : null,
       changedBy: lastChange
         ? { staffId: lastChange.byStaffId, name: lastChange.byStaffName, role: lastChange.byRole }
         : null,

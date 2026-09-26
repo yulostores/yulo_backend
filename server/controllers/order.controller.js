@@ -7,6 +7,7 @@ import * as orderService from '../services/order.service.js';
 import * as deliveryAssignmentService from '../services/deliveryAssignment.service.js';
 import * as paymentService from '../services/payment.service.js';
 import * as trackingService from '../services/tracking.service.js';
+import * as orderApprovalService from '../services/orderApproval.service.js';
 import { env } from '../config/env.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
@@ -242,12 +243,16 @@ export const simulatePayment = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'VALIDATION_ERROR', 'This order was not placed for online payment');
   }
 
+  // No money moves in a simulation, so there's nothing to refund: just refuse to "pay"
+  // for an order the restaurant rejected (or that timed out) instead of flagging one.
+  if (order.status === 'cancelled' && order.paymentStatus !== 'paid') {
+    throw new ApiError(409, 'ORDER_CANCELLED', 'This order was cancelled — there is nothing to pay');
+  }
+
   // Idempotent: a retry after a dropped response re-confirms the same simulated payment
   // rather than minting a second fake payment id.
   if (order.paymentStatus !== 'paid') {
-    order.paymentStatus = 'paid';
-    order.razorpayPaymentId = `sim_${crypto.randomBytes(12).toString('hex')}`;
-    await order.save();
+    await paymentService.recordCapturedPayment(order, `sim_${crypto.randomBytes(12).toString('hex')}`);
   }
 
   sendSuccess(res, 200, 'Payment simulated', { order });
@@ -288,6 +293,17 @@ export const keepWaitingVegFleet = asyncHandler(async (req, res) => {
       `Cannot keep waiting from status '${order.vegFleetAssignmentStatus}'`
     );
   }
+  // The rider search — and with it the countdown this extends — only starts once the
+  // restaurant accepts the order; a rejected one never searches at all.
+  if (order.status === 'placed' || order.status === 'cancelled') {
+    throw new ApiError(
+      409,
+      order.status === 'placed' ? 'ORDER_AWAITING_APPROVAL' : 'INVALID_STATE',
+      order.status === 'placed'
+        ? 'The restaurant has not accepted this order yet'
+        : 'This order has been cancelled'
+    );
+  }
 
   await deliveryAssignmentService.keepWaitingForVegFleet(order);
 
@@ -310,6 +326,12 @@ export const fallbackVegFleet = asyncHandler(async (req, res) => {
       'INVALID_STATE',
       `Cannot fall back from status '${order.vegFleetAssignmentStatus}'`
     );
+  }
+  // Allowed while the restaurant is still deciding (it is just the customer relaxing their
+  // preference ahead of time — autoAssign won't search until acceptance), but not once the
+  // order is cancelled.
+  if (order.status === 'cancelled') {
+    throw new ApiError(409, 'INVALID_STATE', 'This order has been cancelled');
   }
 
   await deliveryAssignmentService.fallbackVegFleet(order);
@@ -377,4 +399,15 @@ export const getTracking = asyncHandler(async (req, res) => {
 export const reorder = asyncHandler(async (req, res) => {
   const { cart, bill, removedItems } = await orderService.reorderOrder(req.params.id, req.user._id);
   sendSuccess(res, 200, 'Items added to cart', { cart, bill, removedItems });
+});
+
+// POST /api/orders/:id/cancel — the customer cancelling while the restaurant hasn't
+// accepted the order yet. Refused once it's accepted (the kitchen may be cooking). A paid
+// online order is flagged refundStatus 'pending' — see services/refund.service.js.
+export const cancelOrder = asyncHandler(async (req, res) => {
+  const order = await orderApprovalService.cancelByCustomer({
+    userId: req.user._id,
+    orderId: req.params.id,
+  });
+  sendSuccess(res, 200, 'Order cancelled', { order });
 });

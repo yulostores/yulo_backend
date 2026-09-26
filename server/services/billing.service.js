@@ -17,8 +17,11 @@ import { notifyService } from './notify.service.js';
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 // A cancelled round is history — it belongs on the bill's order-history panel so the
-// guest can see it was voided, but it must never be charged for.
-const isBilledOrder = (order) => order?.status !== 'cancelled';
+// guest can see it was voided, but it must never be charged for. Neither is a round the
+// restaurant hasn't accepted yet ('placed'): it may still be rejected, and until it is
+// accepted it isn't food anyone owes for. (It still holds the bill open — see
+// pendingRoundsOf — so a table can't be settled around it.)
+const isBilledOrder = (order) => order?.status !== 'cancelled' && order?.status !== 'placed';
 
 // A round the floor has finished with: carried to the table ('served'), or 'delivered' —
 // kept for dine-in rounds closed out before 'served' existed as a state.
@@ -48,13 +51,20 @@ export const assertSessionFullyServed = async (tableSessionId) => {
 
   const pending = pendingRoundsOf(session.orders);
   if (pending.length) {
+    // A round still awaiting the restaurant's approval is pending too, but for a different
+    // reason — say so, since the floor can't do anything about it and the owner can.
+    const awaitingApproval = pending.filter((o) => o.status === 'placed').length;
+    const message = awaitingApproval === pending.length
+      ? `${awaitingApproval === 1 ? 'One round is' : `${awaitingApproval} rounds are`} still waiting for the restaurant to accept — accept or reject ${awaitingApproval === 1 ? 'it' : 'them'} before generating the bill.`
+      : pending.length === 1
+        ? 'One round has not been served yet — the bill can be generated once it reaches the table.'
+        : `${pending.length} rounds have not been served yet — the bill can be generated once they reach the table.`;
     throw new ApiError(
       409,
       'ORDERS_PENDING',
-      pending.length === 1
-        ? 'One round has not been served yet — the bill can be generated once it reaches the table.'
-        : `${pending.length} rounds have not been served yet — the bill can be generated once they reach the table.`,
+      message,
       {
+        awaitingApprovalCount: awaitingApproval,
         pendingCount: pending.length,
         pendingOrders: pending.map((o) => ({
           orderId: o._id,

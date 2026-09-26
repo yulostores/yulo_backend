@@ -18,7 +18,9 @@ export const scanTable = async ({ restaurantId, qrToken, staffId }) => {
     session = await TableSession.create({ restaurantId, tableId: table._id, waiterId: staffId });
   }
 
-  await session.populate('orders');
+  // Rounds still awaiting the restaurant's approval stay off the floor (same rule as the
+  // waiter's session list in controllers/staff/waiter.controller.js).
+  await session.populate({ path: 'orders', match: { status: { $ne: 'placed' } } });
 
   return { table, session };
 };

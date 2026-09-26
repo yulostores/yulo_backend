@@ -12,7 +12,6 @@ import { cartPlatformFee, cartTaxPercent } from '../config/finance.config.js';
 import * as cartService from './cart.service.js';
 import * as discountService from './discount.service.js';
 import { ensureAddressLocated } from './user.service.js';
-import { VEG_FLEET_SEARCH_WINDOW_MS } from './deliveryAssignment.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { isPubliclyVisible } from '../utils/publicRestaurant.js';
 import { notifyService } from './notify.service.js';
@@ -121,6 +120,13 @@ export const createOrder = async ({
     // their name/number was ever collected.
     const customer = await resolveOrderCustomer({ userId, session: updatedSession });
 
+    // A waiter taking the order in person IS the restaurant accepting it, so it skips the
+    // approval step and goes straight to the kitchen. A guest or customer ordering from the
+    // table QR waits at 'placed' for the owner portal, like a delivery order does.
+    const placedAt = new Date();
+    const byRole = staffId ? 'waiter' : userId ? 'customer' : 'guest';
+    const preApproved = Boolean(staffId);
+
     const order = await Order.create({
       restaurantId,
       tableSessionId,
@@ -136,13 +142,13 @@ export const createOrder = async ({
       subtotal,
       specialInstructions,
       paymentMethod: paymentMethod || 'cash',
+      status: preApproved ? 'confirmed' : 'placed',
+      acceptedAt: preApproved ? placedAt : null,
       statusHistory: [
-        {
-          status: 'placed',
-          at: new Date(),
-          byStaffId: staffId ?? null,
-          byRole: staffId ? 'waiter' : userId ? 'customer' : 'guest',
-        },
+        { status: 'placed', at: placedAt, byStaffId: staffId ?? null, byRole },
+        ...(preApproved
+          ? [{ status: 'confirmed', at: placedAt, byStaffId: staffId, byRole: 'waiter' }]
+          : []),
       ],
     });
 
@@ -420,7 +426,10 @@ export const createOrderFromCart = async ({
     vegFleetOptIn: effectiveVegFleetOptIn,
     dedicatedBagRequired: effectiveVegFleetOptIn,
     vegFleetAssignmentStatus: effectiveVegFleetOptIn ? 'searching' : 'not_requested',
-    vegFleetSearchDeadline: effectiveVegFleetOptIn ? new Date(Date.now() + VEG_FLEET_SEARCH_WINDOW_MS) : null,
+    // Not started yet: the veg-fleet rider search (and the customer's countdown for it)
+    // begins when the restaurant accepts the order — see kitchen.service.js's
+    // updateOrderStatus. Until then there is no search to count down.
+    vegFleetSearchDeadline: null,
   });
 
   if (idempotencyKey) {

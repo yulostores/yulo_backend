@@ -171,8 +171,14 @@ export const buildOfferPayload = async (order, candidate) => {
   };
 };
 
+// Statuses in which an order may be offered to a rider: accepted by the restaurant and not
+// yet handed over. 'placed' (still awaiting the restaurant's approval — see
+// services/orderApproval.service.js) and 'cancelled' (rejected) must never reach a rider.
+export const ASSIGNABLE_STATUSES = ['confirmed', 'preparing', 'ready'];
+
 export const autoAssign = async (order) => {
   if (order.type !== 'delivery') return null;
+  if (!ASSIGNABLE_STATUSES.includes(order.status)) return null;
 
   const alreadyTried = new Set(
     (order.deliveryAssignment?.history || []).map((h) => h.partnerId?.toString()).filter(Boolean)
@@ -335,6 +341,9 @@ export const fallbackVegFleet = async (order) => {
 export const sweepExpiredVegFleetSearches = async () => {
   const now = new Date();
   const searching = await Order.find({
+    // Only orders the restaurant has accepted — a 'placed' one isn't looking for a rider yet,
+    // and a rejected one never will be.
+    status: { $in: ASSIGNABLE_STATUSES },
     vegFleetAssignmentStatus: 'searching',
     'deliveryAssignment.status': 'unassigned',
     'deliveryAssignment.offerStatus': { $ne: 'offered' },

@@ -5,6 +5,21 @@ import { env } from '../config/env.js';
 import { ApiError } from '../utils/ApiError.js';
 import logger from '../utils/logger.js';
 import * as billingService from './billing.service.js';
+import { flagRefundIfOwed } from './refund.service.js';
+import { notifyService } from './notify.service.js';
+
+// The single place an order becomes paid (client verify, webhook, the dev simulate
+// endpoint). Beyond the two fields, it covers the two approval-flow consequences of a
+// payment landing: the owner inbox is told the order can now be accepted, and a payment
+// captured on an order that was already cancelled is flagged for refund.
+export const recordCapturedPayment = async (order, paymentId) => {
+  order.paymentStatus = 'paid';
+  order.razorpayPaymentId = paymentId;
+  await order.save();
+  if (await flagRefundIfOwed(order._id)) order.refundStatus = 'pending';
+  notifyService.orderPaymentUpdated(order);
+  return order;
+};
 
 const hmacHex = (payload, secret) => crypto.createHmac('sha256', secret).update(payload).digest('hex');
 
@@ -61,14 +76,16 @@ export const verifyOrderPayment = async (
   const expected = hmacHex(`${razorpay_order_id}|${razorpay_payment_id}`, env.RAZORPAY_KEY_SECRET);
   const valid = timingSafeEqualHex(expected, razorpay_signature);
 
-  order.paymentStatus = valid ? 'paid' : 'failed';
-  if (valid) order.razorpayPaymentId = razorpay_payment_id;
-  await order.save();
-
   if (!valid) {
+    // A bad signature never downgrades an order that is already paid (a webhook may have
+    // settled it first) — it only fails one that was still waiting.
+    if (order.paymentStatus !== 'paid') {
+      order.paymentStatus = 'failed';
+      await order.save();
+    }
     throw new ApiError(400, 'PAYMENT_VERIFICATION_FAILED', 'Payment signature verification failed');
   }
-  return order;
+  return recordCapturedPayment(order, razorpay_payment_id);
 };
 
 // Same scheme as verifyOrderPayment above, against a Bill instead of an Order — a guest
@@ -123,9 +140,13 @@ export const handleWebhookEvent = async (event) => {
 
   const order = await Order.findOne({ paymentIntentId: payment.order_id });
   if (order) {
-    order.paymentStatus = event.event === 'payment.captured' ? 'paid' : 'failed';
-    if (event.event === 'payment.captured') order.razorpayPaymentId = payment.id;
-    await order.save();
+    if (event.event === 'payment.captured') {
+      await recordCapturedPayment(order, payment.id);
+    } else if (order.paymentStatus !== 'paid') {
+      // A late/duplicate payment.failed must not undo a payment that already succeeded.
+      order.paymentStatus = 'failed';
+      await order.save();
+    }
     return;
   }
 
