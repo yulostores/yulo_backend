@@ -1,7 +1,7 @@
-import argon2 from 'argon2';
 import Restaurant from '../../models/Restaurant.js';
 import StaffMember from '../../models/StaffMember.js';
 import * as authService from '../../services/auth.service.js';
+import * as otpService from '../../services/otp.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
@@ -115,32 +115,15 @@ export const searchRestaurants = asyncHandler(async (req, res) => {
   });
 });
 
-// Verifying a throwaway hash when the staff code does not exist keeps the failed-login
-// response time flat. Without it, "no such code" answers in a few milliseconds while a
-// wrong PIN pays the full argon2 cost — a gap wide enough to enumerate a restaurant's
-// staff codes from outside. Built once, lazily, so it costs nothing until a bad attempt.
-let decoyHashPromise = null;
-const decoyHash = () => {
-  decoyHashPromise ??= argon2.hash('staff-login-decoy', { type: argon2.argon2id });
-  return decoyHashPromise;
-};
+// Where the member's OTP lives — its own namespace per restaurant (see otp.service.js), so a
+// customer or partner code for the same number can never finish a staff login, nor a code
+// requested at one restaurant sign the number in at another.
+const staffOtpScope = (restaurantId) => `staff:${restaurantId}`;
 
-/**
- * POST /api/staff/auth/login  { restaurantId, staffCode, pin }
- *
- * The credentials are exactly what the owner created in the restaurant portal
- * (controllers/owner/staff.controller.js): the auto-assigned staffCode (W01, C02…) and
- * the PIN the owner set. There is no other way into this portal — no signup, no seeds.
- */
-export const staffLogin = asyncHandler(async (req, res) => {
-  const { restaurantId } = req.body;
-  const staffCode = req.body.staffCode.replace(/\s+/g, '').toUpperCase();
-  const pin = req.body.pin.trim();
-
+const assertRestaurantOpenForStaff = async (restaurantId) => {
   const restaurant = await Restaurant.findById(restaurantId)
     .select('name logo isActive approvalStatus')
     .lean();
-
   if (!restaurant) throw new ApiError(404, 'NOT_FOUND', 'Restaurant not found');
 
   // A suspended or not-yet-approved store cannot take orders, so its staff must not be
@@ -154,34 +137,85 @@ export const staffLogin = asyncHandler(async (req, res) => {
       'This restaurant is not currently active. Please contact your manager.'
     );
   }
+  return restaurant;
+};
 
-  // O(1) — the { restaurantId, staffCode } unique index answers this directly.
-  const staff = await StaffMember.findOne({ restaurantId, staffCode });
+const findSignInableStaff = (restaurantId, phone) =>
+  StaffMember.findOne({ restaurantId, phone, isActive: true });
 
-  // A deactivated member is indistinguishable from wrong credentials on purpose: someone
-  // who has been let go should not learn that their code is still on file.
-  if (!staff || !staff.isActive) {
-    await argon2.verify(await decoyHash(), pin).catch(() => false);
-    throw new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid staff code or PIN');
+/**
+ * POST /api/staff/auth/otp/send  { restaurantId, phone }
+ *
+ * Staff sign in with an OTP sent to the phone the owner registered for them
+ * (controllers/owner/staff.controller.js). The answer is the same whether or not the
+ * number belongs to an active member here — otherwise this endpoint would tell anyone who
+ * works where — and a code is only actually requested (an SMS spent) when it does.
+ */
+export const sendStaffOtp = asyncHandler(async (req, res) => {
+  const { restaurantId, phone } = req.body;
+  await assertRestaurantOpenForStaff(restaurantId);
+
+  const staff = await findSignInableStaff(restaurantId, phone);
+  // Every number spends its send budget the same way (and gets the same 429 on the 4th
+  // try), but only a member's number actually gets a code stored and an SMS sent. A
+  // non-member's verify then fails as OTP_EXPIRED, since nothing was stored for it.
+  const result = await otpService.requestOtp(phone, {
+    scope: staffOtpScope(restaurantId),
+    send: Boolean(staff),
+  });
+
+  sendSuccess(res, 200, 'If this number is registered for this restaurant, a code has been sent', {
+    phone: result.phone,
+    ...(result.otpBypass ? { otpBypass: true } : {}),
+    // Dev only (SMS_PROVIDER=mock outside production) — see otp.service.js.
+    ...(result.devOtp ? { devOtp: result.devOtp } : {}),
+  });
+});
+
+/**
+ * POST /api/staff/auth/otp/verify  { restaurantId, phone, code }
+ *
+ * Returns a staff token good for exactly 24 hours (services/auth.service.js) — there is no
+ * refresh; the member signs in again the next day.
+ */
+export const verifyStaffOtp = asyncHandler(async (req, res) => {
+  const { restaurantId, phone, code } = req.body;
+  const restaurant = await assertRestaurantOpenForStaff(restaurantId);
+
+  // Throws OTP_EXPIRED / INVALID_OTP / OTP_LOCKED. A number that isn't staff here never had
+  // a code stored, so it fails as OTP_EXPIRED — the same as a member who never asked.
+  await otpService.verifyOtp(phone, code, { scope: staffOtpScope(restaurantId) });
+
+  // Re-read after the code checks out: the owner may have deactivated the member, or moved
+  // the number to someone else, in the minutes since the code was sent.
+  const staff = await findSignInableStaff(restaurantId, phone);
+  if (!staff) {
+    throw new ApiError(401, 'INVALID_CREDENTIALS', 'This number is not registered as staff here');
   }
 
-  const valid = await argon2.verify(staff.pinHash, pin);
-  if (!valid) throw new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid staff code or PIN');
-
-  const staffToken = authService.generateStaffToken(staff._id, staff.role, staff.restaurantId);
+  const staffToken = authService.generateStaffToken(
+    staff._id,
+    staff.role,
+    staff.restaurantId,
+    staff.sessionVersion ?? 0
+  );
 
   sendSuccess(res, 200, 'Login successful', {
     staffToken,
-    staff: {
-      _id: staff._id,
-      name: staff.name,
-      role: staff.role,
-      staffCode: staff.staffCode,
-      restaurantId: staff.restaurantId,
-      restaurantName: restaurant.name,
-      restaurantLogo: restaurant.logo ?? null,
-    },
+    expiresAt: new Date(Date.now() + authService.STAFF_SESSION_SECONDS * 1000).toISOString(),
+    staff: toStaffProfile(staff, restaurant),
   });
+});
+
+const toStaffProfile = (staff, restaurant) => ({
+  _id: staff._id,
+  name: staff.name,
+  role: staff.role,
+  staffCode: staff.staffCode,
+  phone: staff.phone ?? null,
+  restaurantId: staff.restaurantId,
+  restaurantName: restaurant.name,
+  restaurantLogo: restaurant.logo ?? null,
 });
 
 /**
@@ -205,18 +239,14 @@ export const staffSession = asyncHandler(async (req, res) => {
     );
   }
 
-  const staff = await StaffMember.findById(req.staff._id).select('-pinHash').lean();
+  const staff = await StaffMember.findById(req.staff._id).lean();
+  // Removed between authenticateStaff's lookup and this one.
+  if (!staff) throw new ApiError(401, 'INVALID_TOKEN', 'Staff member not found');
 
   sendSuccess(res, 200, 'Staff session', {
-    staff: {
-      _id: staff._id,
-      name: staff.name,
-      role: staff.role,
-      staffCode: staff.staffCode,
-      restaurantId: staff.restaurantId,
-      restaurantName: restaurant.name,
-      restaurantLogo: restaurant.logo ?? null,
-    },
+    staff: toStaffProfile(staff, restaurant),
+    // When this session ends (24h after sign-in), so the portal can say so.
+    expiresAt: req.staff.tokenExpiresAt ?? null,
   });
 });
 

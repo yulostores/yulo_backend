@@ -90,7 +90,7 @@ So `POST /api/auth/refresh?portal=owner` reads `yulo_rt_owner` and will only eve
 
 ### Staff token
 
-Obtained from `POST /api/staff/auth/login`. Single long-lived token (8 hours):
+Obtained from `POST /api/staff/auth/otp/verify` (phone + OTP). A single token that lasts exactly **24 hours** from sign-in and is never refreshed — staff sign in again every day:
 
 ```
 Authorization: Bearer <staffToken>
@@ -162,7 +162,7 @@ The `restaurantId` in the URL must match the staff member's assigned restaurant,
 | 401 | `UNAUTHORIZED` | No token provided |
 | 401 | `INVALID_TOKEN` | Malformed or revoked token |
 | 401 | `TOKEN_EXPIRED` | Access token has expired — call `/auth/refresh` |
-| 401 | `INVALID_CREDENTIALS` | Wrong email/password or wrong PIN |
+| 401 | `INVALID_CREDENTIALS` | Wrong email/password, or a staff number that is no longer registered |
 | 403 | `FORBIDDEN` | Authenticated but not permitted for this action |
 | 403 | `RESTAURANT_NOT_APPROVED` | Restaurant's `approvalStatus` isn't `active` yet — staff/menu-item/category routes are locked until an admin approves it |
 | 403 | `NOT_OWNER` | `:restaurantId` in the URL doesn't belong to the authenticated owner |
@@ -184,7 +184,8 @@ The `restaurantId` in the URL must match the staff member's assigned restaurant,
 
 | Scope | Limit |
 | --- | --- |
-| Auth endpoints (`/api/auth/*`, `/api/owner/auth/*`, `/api/admin/auth/*`, `/api/staff/auth/login`) | 10 requests / 15 min per IP |
+| Auth endpoints (`/api/auth/*`, `/api/owner/auth/*`, `/api/admin/auth/*`) | 10 requests / 15 min per IP |
+| Staff OTP (`/api/staff/auth/otp/send`, `/otp/verify`) | 60 requests / min per IP — a whole shift signs in from one restaurant Wi-Fi; guessing is capped per code and per number instead |
 | `GET /api/staff/auth/restaurants` (login typeahead) | 60 requests / min per IP |
 | All other `/api/*` endpoints | 100 requests / 15 min per IP |
 
@@ -1937,13 +1938,14 @@ GET /api/owner/:restaurantId/staff
   "message": "Staff members",
   "data": {
     "staff": [
-      { "_id": "664s...", "name": "Ravi Kumar", "role": "waiter", "email": "ravi@x.com", "isActive": true }
+      { "_id": "664s...", "name": "Ravi Kumar", "role": "waiter", "staffCode": "W01", "phone": "9876543210", "email": "ravi@x.com", "isActive": true, "sessionVersion": 0 }
     ]
   }
 }
 ```
 
-`pinHash` is never returned.
+`phone` is `null` for members created before phone login existed — they cannot sign in
+until the owner adds a number.
 
 ---
 
@@ -1959,19 +1961,25 @@ POST /api/owner/:restaurantId/staff
 {
   "name": "Ravi Kumar",
   "role": "waiter",
-  "pin": "1234",
+  "phone": "9876543210",
   "email": "ravi@example.com"
 }
 ```
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `name` | string | Yes |  |
-| `role` | `"waiter"` | `"chef"` | Yes | `chef` = kitchen display; waiter routes check for `waiter`, kitchen routes check for `chef` |
-| `pin` | string | Yes | 4–8 digits, stored as argon2id hash |
+| `name` | string | Yes | 1–60 chars |
+| `role` | `"waiter"` \| `"chef"` | Yes | `chef` = kitchen display; waiter routes check for `waiter`, kitchen routes check for `chef` |
+| `phone` | string | Yes | Indian mobile number — what the member signs in with (an OTP is sent to it). `+91 98765 43210`, `098765 43210` and `9876543210` are all accepted and stored as the 10 digits. Unique among the restaurant's **active** staff (a deactivated member's number can be given to someone new); the same number may be staff at other restaurants. |
 | `email` | string | No |  |
 
-**Response** `201`
+The server assigns `staffCode` (`W01`, `W02`… / `C01`, `C02`…), now only a short display id.
+There is no PIN.
+
+**Response** `201` — `data: { staff }`
+
+**Errors** — `400 VALIDATION_ERROR` (missing name, bad role, invalid phone), `409 PHONE_TAKEN`
+(another member here already has that number).
 
 ---
 
@@ -1981,7 +1989,12 @@ POST /api/owner/:restaurantId/staff
 PATCH /api/owner/:restaurantId/staff/:staffId
 ```
 
-**Body** — any of `name`, `email`, `isActive`, `pin`
+**Body** — any of `name`, `phone`, `email`, `isActive`
+
+Changing `phone`, or setting `isActive: false`, **ends every existing session** of that member
+at once: their `sessionVersion` is bumped (their tokens stop working on the next request) and
+their open kitchen/floor sockets are disconnected. `409 PHONE_TAKEN` as on create — also when
+reactivating a member whose number has since been given to another active member.
 
 ---
 
@@ -1991,7 +2004,7 @@ PATCH /api/owner/:restaurantId/staff/:staffId
 DELETE /api/owner/:restaurantId/staff/:staffId
 ```
 
-Soft delete — sets `isActive: false`.
+Soft delete — sets `isActive: false` and ends the member's sessions, as above.
 
 **Response** `200` — `data: null`
 
@@ -4209,14 +4222,18 @@ Sorted by `totalDeliveries` descending.
 
 ## Staff — Authentication
 
-Staff credentials are issued entirely by the restaurant owner in the owner portal
-([Create Staff Member](#create-staff-member)): the server assigns the `staffCode`
-(`W01`, `W02` for waiters, `C01`, `C02` for chefs) and the owner sets the PIN. There is no
-staff signup, and no seeded staff account.
+Staff (waiters and chefs) sign in with **their own phone number and a one-time code** sent to
+it. The owner registers each member's phone in the owner portal
+([Create Staff Member](#create-staff-member)); there is no staff signup, no seeded account,
+and no PIN any more (the old `POST /api/staff/auth/login` is gone).
 
-A `staffCode` is unique only **within** one restaurant, so `restaurantId`, `staffCode` and
-`pin` together form the identity. That is why the login screen settles the restaurant
-first, via the typeahead below.
+The same number may be staff at several restaurants, so the login screen settles the
+restaurant first, via the typeahead below, and every login is for **one restaurant**. Codes
+are kept apart per restaurant and from the customer/partner logins: a code requested for one
+can never complete another.
+
+A session lasts exactly **24 hours** from sign-in and is never refreshed. It also ends early
+when the member logs out, is deactivated, or has their phone changed by the owner.
 
 ### Restaurant Typeahead (staff login picker)
 
@@ -4273,10 +4290,10 @@ fires per keystroke, so it does not share the login budget.
 
 ---
 
-### Staff Login
+### Send Staff Login Code
 
 ```
-POST /api/staff/auth/login
+POST /api/staff/auth/otp/send
 ```
 
 **No auth required.**
@@ -4284,18 +4301,52 @@ POST /api/staff/auth/login
 **Body**
 
 ```json
-{
-  "restaurantId": "664abc...",
-  "staffCode": "W01",
-  "pin": "1234"
-}
+{ "restaurantId": "664abc...", "phone": "9876543210" }
 ```
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `restaurantId` | string | Yes | ObjectId (24 hex chars) |
-| `staffCode` | string | Yes | 2–10 chars. Case- and whitespace-insensitive — `zz99` and `ZZ 99` both match `ZZ99`. |
-| `pin` | string | Yes | 4–8 digits |
+| `phone` | string | Yes | Indian mobile; `+91`/leading `0`/spaces/dashes are accepted |
+
+**Response** `200` — the same answer whether or not the number is an active staff member at
+this restaurant (so it can't be used to find out who works where). A code is only actually
+sent — an SMS spent — when it is.
+
+```json
+{
+  "status": "success",
+  "message": "If this number is registered for this restaurant, a code has been sent",
+  "data": { "phone": "9876543210" }
+}
+```
+
+`data.otpBypass: true` while the server runs with `SMS_PROVIDER=bypass` (no SMS is sent; any
+6-digit code verifies a registered number). `data.devOtp` carries the code in development
+with `SMS_PROVIDER=mock`.
+
+The code is 6 digits, valid 5 minutes, at most 3 sends per number per 10 minutes (counted for
+every number, registered or not, so the limit reveals nothing), 5 wrong tries before it is
+discarded — counted atomically, so parallel guesses can't exceed it — and single-use.
+
+**Errors** — `400 VALIDATION_ERROR`, `404 NOT_FOUND` (no such restaurant), `403
+RESTAURANT_UNAVAILABLE` (restaurant not active), `429 RATE_LIMITED`.
+
+---
+
+### Verify Staff Login Code
+
+```
+POST /api/staff/auth/otp/verify
+```
+
+**No auth required.**
+
+**Body**
+
+```json
+{ "restaurantId": "664abc...", "phone": "9876543210", "code": "123456" }
+```
 
 **Response** `200`
 
@@ -4305,11 +4356,13 @@ POST /api/staff/auth/login
   "message": "Login successful",
   "data": {
     "staffToken": "eyJ...",
+    "expiresAt": "2026-09-28T09:30:00.000Z",
     "staff": {
       "_id": "664staff...",
       "name": "Ravi Kumar",
       "role": "waiter",
       "staffCode": "W01",
+      "phone": "9876543210",
       "restaurantId": "664abc...",
       "restaurantName": "Test Kitchen",
       "restaurantLogo": null
@@ -4322,15 +4375,13 @@ POST /api/staff/auth/login
 
 | Status | Code | When |
 | --- | --- | --- |
-| `400` | `VALIDATION_ERROR` | Malformed `restaurantId`, `staffCode` or `pin` |
+| `400` | `VALIDATION_ERROR` | Malformed `restaurantId`, `phone` or `code` |
+| `400` | `OTP_EXPIRED` | No code pending for this number here — expired, never requested, or the number isn't staff here |
+| `400` | `INVALID_OTP` | Wrong code; `details.attemptsLeft` says how many tries remain |
+| `400` | `OTP_LOCKED` | Too many wrong tries — request a new code |
+| `401` | `INVALID_CREDENTIALS` | The member was deactivated, or their number changed, after the code was sent |
 | `404` | `NOT_FOUND` | No restaurant with that id |
 | `403` | `RESTAURANT_UNAVAILABLE` | Restaurant suspended, rejected, expired, or still pending approval |
-| `401` | `INVALID_CREDENTIALS` | Unknown staff code, wrong PIN, **or** a deactivated staff member |
-
-The PIN is verified with argon2id. A deactivated member is answered exactly like a wrong
-PIN — someone who has been let go should not learn that their code is still on file — and
-an unknown staff code still pays an argon2 verification against a throwaway hash, so the
-response time does not reveal which of the two failed.
 
 ---
 
@@ -4342,16 +4393,21 @@ GET /api/staff/auth/me
 
 **Auth: Staff Bearer token**
 
-Returns the same `staff` object as login. The staff token is long-lived (8 h) and is stored
-in `localStorage` so a shift survives a phone locking itself — which means it can outlive
-the facts it was minted from. The portal calls this on boot and trusts the answer rather
-than the cached profile, so a member deactivated mid-shift, or a restaurant suspended
-mid-shift, is signed out on the next page load.
+Returns the same `staff` object as login, plus `expiresAt` — when this session ends (24 h
+after sign-in). The token is stored in `localStorage` so a shift survives a phone locking
+itself, which means it can outlive the facts it was minted from; the portal calls this on
+boot and trusts the answer rather than the cached profile.
 
-**Response** `200` — `data: { staff }`
+**Response** `200` — `data: { staff, expiresAt }`
 
-**Errors** — `401 INVALID_TOKEN` (revoked, expired, or the member no longer exists / is
-inactive), `403 RESTAURANT_UNAVAILABLE` (restaurant no longer active).
+**Errors** — `401 INVALID_TOKEN` (expired, revoked, the member no longer exists / is
+inactive, or their sessions were ended by a phone change), `403 RESTAURANT_UNAVAILABLE`
+(restaurant no longer active). Every staff route answers `403 RESTAURANT_UNAVAILABLE` the same
+way once the restaurant is suspended, so a suspension takes effect at once rather than when the
+day's token expires.
+
+Kitchen and floor sockets (`join_kitchen`, `join_waiter`) apply the same checks when they
+join and are disconnected when the token expires or the owner ends the member's sessions.
 
 ---
 

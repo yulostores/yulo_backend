@@ -12,7 +12,6 @@ const schema = z.object({
   JWT_PARTNER_SECRET: z.string().min(32),
   JWT_ACCESS_EXPIRES: z.string().default('15m'),
   JWT_REFRESH_EXPIRES: z.string().default('7d'),
-  JWT_STAFF_EXPIRES: z.string().default('8h'),
   JWT_PARTNER_ACCESS_EXPIRES: z.string().default('15m'),
   JWT_PARTNER_REFRESH_EXPIRES: z.string().default('30d'),
   // Server-side error monitoring. Unset → Sentry is a complete no-op (see instrument.js).

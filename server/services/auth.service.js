@@ -24,10 +24,19 @@ export const generateTokens = (userId, role) => {
   return { accessToken, refreshToken };
 };
 
-export const generateStaffToken = (staffId, role, restaurantId) =>
-  jwt.sign({ staffId, role, restaurantId, jti: randomUUID() }, env.JWT_STAFF_SECRET, {
-    expiresIn: env.JWT_STAFF_EXPIRES,
-  });
+// A staff session is one working day: exactly 24 hours from the OTP login, never refreshed
+// or extended, so every waiter and chef proves they still hold their phone at least daily.
+// Fixed in code on purpose — it is a security rule, not a tunable.
+export const STAFF_SESSION_SECONDS = 24 * 60 * 60;
+
+// `sv` is the member's sessionVersion at sign-in (models/StaffMember.js); bumping it on the
+// member ends every token issued before.
+export const generateStaffToken = (staffId, role, restaurantId, sessionVersion = 0) =>
+  jwt.sign(
+    { staffId, role, restaurantId, sv: sessionVersion, jti: randomUUID() },
+    env.JWT_STAFF_SECRET,
+    { expiresIn: STAFF_SESSION_SECONDS }
+  );
 
 // Partner tokens are access+refresh (unlike staff's single token) because the mobile app needs
 // long-lived sessions without repeating an OTP login. RN has no cookie jar (see the comment in

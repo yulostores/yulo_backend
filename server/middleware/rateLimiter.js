@@ -33,6 +33,19 @@ export const guestLoginLimiter = rateLimit({
 // by the fourth page refresh — every screen then 429'd, POST /auth/refresh with
 // it, and the portal signed the owner out. Keep a ceiling against abuse, but set
 // it above what the app legitimately needs.
+// Staff OTP send/verify. Looser than authLimiter on purpose: a whole shift signs in from the
+// restaurant's one Wi-Fi address at opening time (each member needs a send and a verify),
+// and authLimiter's 10/min would lock half the floor out. Guessing is already capped per
+// code (5 tries) and per number (3 codes / 10 min) in services/otp.service.js.
+export const staffOtpLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  message: { status: 'error', code: 'RATE_LIMITED', message: 'Too many login attempts. Please wait a minute and try again.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipPreflight,
+});
+
 export const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: env.RATE_LIMIT_MAX,
