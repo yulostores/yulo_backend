@@ -4357,6 +4357,7 @@ POST /api/staff/auth/otp/verify
   "data": {
     "staffToken": "eyJ...",
     "expiresAt": "2026-09-28T09:30:00.000Z",
+    "expiresInSeconds": 86400,
     "staff": {
       "_id": "664staff...",
       "name": "Ravi Kumar",
@@ -4394,11 +4395,12 @@ GET /api/staff/auth/me
 **Auth: Staff Bearer token**
 
 Returns the same `staff` object as login, plus `expiresAt` — when this session ends (24 h
-after sign-in). The token is stored in `localStorage` so a shift survives a phone locking
+after sign-in) — and `expiresInSeconds`, the same moment counted from now on the server's
+clock (clients should count down from this: a device clock may be wrong). The token is stored in `localStorage` so a shift survives a phone locking
 itself, which means it can outlive the facts it was minted from; the portal calls this on
 boot and trusts the answer rather than the cached profile.
 
-**Response** `200` — `data: { staff, expiresAt }`
+**Response** `200` — `data: { staff, expiresAt, expiresInSeconds }`
 
 **Errors** — `401 INVALID_TOKEN` (expired, revoked, the member no longer exists / is
 inactive, or their sessions were ended by a phone change), `403 RESTAURANT_UNAVAILABLE`

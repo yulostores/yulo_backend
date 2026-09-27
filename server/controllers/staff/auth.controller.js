@@ -203,6 +203,9 @@ export const verifyStaffOtp = asyncHandler(async (req, res) => {
   sendSuccess(res, 200, 'Login successful', {
     staffToken,
     expiresAt: new Date(Date.now() + authService.STAFF_SESSION_SECONDS * 1000).toISOString(),
+    // The same moment as seconds from now. A restaurant tablet's clock is often wrong, so
+    // the portal counts down from this rather than comparing expiresAt with its own clock.
+    expiresInSeconds: authService.STAFF_SESSION_SECONDS,
     staff: toStaffProfile(staff, restaurant),
   });
 });
@@ -245,8 +248,12 @@ export const staffSession = asyncHandler(async (req, res) => {
 
   sendSuccess(res, 200, 'Staff session', {
     staff: toStaffProfile(staff, restaurant),
-    // When this session ends (24h after sign-in), so the portal can say so.
+    // When this session ends (24h after sign-in), so the portal can say so — as a time,
+    // and as seconds from now for a device whose clock can't be trusted.
     expiresAt: req.staff.tokenExpiresAt ?? null,
+    expiresInSeconds: req.staff.tokenExpiresAt
+      ? Math.max(0, Math.round((new Date(req.staff.tokenExpiresAt).getTime() - Date.now()) / 1000))
+      : null,
   });
 });
 
