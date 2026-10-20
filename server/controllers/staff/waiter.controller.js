@@ -9,6 +9,7 @@ import * as orderViewService from '../../services/orderView.service.js';
 import * as menuService from '../../services/menu.service.js';
 import * as orderService from '../../services/order.service.js';
 import * as billingService from '../../services/billing.service.js';
+import * as counterPaymentService from '../../services/counterPayment.service.js';
 import * as billViewService from '../../services/billView.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
@@ -40,7 +41,9 @@ export const scanTable = asyncHandler(async (req, res) => {
 export const getTables = asyncHandler(async (req, res) => {
   const [tables, sessions] = await Promise.all([
     Table.find({ restaurantId: req.staff.restaurantId, isActive: true }).lean(),
-    TableSession.find({ restaurantId: req.staff.restaurantId, status: 'open' }).lean(),
+    // A sitting whose guest is paying online (bill_requested) stays on the floor — the waiter
+    // may need to release that payment or settle the bill at the counter.
+    TableSession.find({ restaurantId: req.staff.restaurantId, status: { $in: ['open', 'bill_requested'] } }).lean(),
   ]);
 
   const sessionMap = new Map(sessions.map((s) => [s.tableId.toString(), s]));
@@ -99,7 +102,7 @@ export const getSessions = asyncHandler(async (req, res) => {
           status: 'paid',
           closedAt: { $gte: startOfToday() },
         }
-      : { restaurantId: req.staff.restaurantId, status: 'open' }
+      : { restaurantId: req.staff.restaurantId, status: { $in: ['open', 'bill_requested'] } }
   )
     .populate('orders')
     .sort(scope === 'completed' ? { closedAt: -1 } : { openedAt: 1 })
@@ -226,9 +229,11 @@ export const getBill = asyncHandler(async (req, res) => {
   sendSuccess(res, 200, 'Bill', { bill: await billViewService.buildBillView(bill) });
 });
 
+// Body: { method: 'cash' | 'upi' | 'card' } — `paymentMethod` is still accepted for older
+// clients. Online payments are the guest's own (yulo_menu); the floor never marks one.
 export const markPaid = asyncHandler(async (req, res) => {
-  const { paymentMethod } = req.body;
-  if (!paymentMethod) throw new ApiError(400, 'VALIDATION_ERROR', 'paymentMethod is required');
+  const method = req.body?.method ?? req.body?.paymentMethod;
+  if (!method) throw new ApiError(400, 'VALIDATION_ERROR', 'method is required (cash, upi or card)');
 
   // Resolve billId from the session
   const session = await TableSession.findById(req.params.sessionId).lean();
@@ -240,14 +245,27 @@ export const markPaid = asyncHandler(async (req, res) => {
   // while the kitchen still owes it a round.
   await billingService.assertSessionFullyServed(req.params.sessionId);
 
-  const bill = await Bill.findOne({ tableSessionId: req.params.sessionId, status: 'open' }).lean();
-  if (!bill) throw new ApiError(404, 'NOT_FOUND', 'No open bill for this session — call assemble first');
+  const bill = await Bill.findOne({ tableSessionId: req.params.sessionId }).sort({ createdAt: -1 }).lean();
+  if (!bill) throw new ApiError(404, 'NOT_FOUND', 'No bill for this session — call assemble first');
 
-  const paid = await billingService.markPaid({
+  const paid = await counterPaymentService.markPaidAtCounter({
     billId: bill._id,
     restaurantId: req.staff.restaurantId,
-    paymentMethod,
+    method,
   });
 
   sendSuccess(res, 200, 'Bill marked as paid', { bill: await billViewService.buildBillView(paid) });
+});
+
+// POST /api/staff/:restaurantId/waiter/sessions/:sessionId/bill/release-payment — the floor's
+// way to release a bill held for a guest's online payment (see billing.service.releasePayment).
+export const releaseBillPayment = asyncHandler(async (req, res) => {
+  const session = await TableSession.findById(req.params.sessionId).lean();
+  if (!session || session.restaurantId.toString() !== req.staff.restaurantId.toString()) {
+    throw new ApiError(404, 'NOT_FOUND', 'Session not found');
+  }
+  const bill = await Bill.findOne({ tableSessionId: req.params.sessionId }).sort({ createdAt: -1 }).lean();
+  if (!bill) throw new ApiError(404, 'NOT_FOUND', 'No bill for this session');
+  const released = await billingService.releasePayment({ billId: bill._id, restaurantId: req.staff.restaurantId });
+  sendSuccess(res, 200, 'Bill payment released', { bill: await billViewService.buildBillView(released) });
 });

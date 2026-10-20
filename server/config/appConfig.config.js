@@ -303,10 +303,14 @@ export const LEGAL_DOCUMENTS = [
 // year without a constant that goes stale every January. Legal documents appear here as
 // summaries only — the section bodies are served one document at a time by
 // getLegalDocument, so the Settings list stays a small download.
-export const buildAppConfig = () => ({
+//
+// `payments` also carries the two runtime payment switches (config/payments.config.js):
+// codEnabled — hide/disable "Pay on delivery" when false; paymentSimulationEnabled — dev
+// builds settle online payments through the simulate endpoint instead of Razorpay.
+export const buildAppConfig = ({ codEnabled = false, paymentSimulationEnabled = false } = {}) => ({
   languages: SUPPORTED_LANGUAGES,
   defaultLanguage: DEFAULT_LANGUAGE,
-  payments: { groups: PAYMENT_GROUPS, methods: PAYMENT_METHODS },
+  payments: { groups: PAYMENT_GROUPS, methods: PAYMENT_METHODS, codEnabled, paymentSimulationEnabled },
   tabBar: { items: TAB_BAR_ITEMS, themes: TAB_BAR_THEMES, layout: TAB_BAR_LAYOUT },
   about: {
     ...ABOUT,

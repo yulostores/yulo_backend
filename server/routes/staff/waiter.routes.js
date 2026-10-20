@@ -4,7 +4,7 @@ import { authorizeStaffRole } from '../../middleware/authorizeStaffRole.js';
 import { authorizeStaffRestaurant } from '../../middleware/authorizeStaffRestaurant.js';
 import {
   scanTable, getTables, getMenu, createOrder, updateOrderStatus,
-  getSessions, getBill, markPaid,
+  getSessions, getBill, markPaid, releaseBillPayment,
 } from '../../controllers/staff/waiter.controller.js';
 
 const router = Router({ mergeParams: true });
@@ -20,5 +20,6 @@ router.patch('/orders/:orderId/status', updateOrderStatus);
 router.get('/sessions', getSessions);
 router.get('/sessions/:sessionId/bill', getBill);
 router.post('/sessions/:sessionId/bill/mark-paid', markPaid);
+router.post('/sessions/:sessionId/bill/release-payment', releaseBillPayment);
 
 export default router;

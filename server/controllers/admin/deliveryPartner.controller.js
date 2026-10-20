@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { z } from 'zod';
 import DeliveryPartner from '../../models/DeliveryPartner.js';
 import Order from '../../models/Order.js';
@@ -208,10 +209,18 @@ export const getPayouts = asyncHandler(async (req, res) => {
   sendSuccess(res, 200, 'Delivery partner payouts', data);
 });
 
+// Rupees, to the paisa. The cap is a typo guard (₹1 lakh on one rider's week).
+const MAX_PAYOUT_ADJUSTMENT_RUPEES = 100000;
+const rupeeAmount = z
+  .number()
+  .finite()
+  .min(0)
+  .max(MAX_PAYOUT_ADJUSTMENT_RUPEES)
+  .refine((n) => Math.abs(Math.round(n * 100) - n * 100) < 1e-6, 'At most two decimal places');
 const adjustPayoutSchema = z.object({
-  incentives: z.number().min(0).optional(),
-  deductions: z.number().min(0).optional(),
-  notes: z.string().optional(),
+  incentives: rupeeAmount.optional(),
+  deductions: rupeeAmount.optional(),
+  notes: z.string().trim().max(500).optional(),
 });
 
 export const adjustPayout = asyncHandler(async (req, res) => {
@@ -230,12 +239,22 @@ export const adjustPayout = asyncHandler(async (req, res) => {
     action: 'PAYOUT_ADJUSTED',
     targetType: 'payout',
     targetId: payout._id,
+    metadata: {
+      partnerId: payout.partnerId,
+      periodStart: payout.periodStart,
+      incentives: payout.incentives,
+      deductions: payout.deductions,
+      netPayable: payout.netPayable,
+      notes: result.data.notes ?? null,
+    },
   });
 
   sendSuccess(res, 200, 'Payout adjusted', { payout });
 });
 
-const markPaidSchema = z.object({ payoutIds: z.array(z.string()).min(1) });
+const markPaidSchema = z.object({
+  payoutIds: z.array(z.string().refine(mongoose.isValidObjectId, 'Invalid payout id')).min(1).max(500),
+});
 
 export const markPayoutsPaid = asyncHandler(async (req, res) => {
   const result = markPaidSchema.safeParse(req.body);
@@ -243,16 +262,17 @@ export const markPayoutsPaid = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid payout ids', result.error.flatten());
   }
 
-  const modifiedCount = await payoutService.markPayoutsPaid(result.data.payoutIds);
+  // Only weekly payouts whose week has ended are paid; the rest come back in `skipped` with why.
+  const { modifiedCount, skipped } = await payoutService.markPayoutsPaid(result.data.payoutIds);
 
   await logActivity({
     adminId: req.user._id,
     action: 'PAYOUTS_MARKED_PAID',
     targetType: 'payout',
-    metadata: { count: modifiedCount, payoutIds: result.data.payoutIds },
+    metadata: { count: modifiedCount, payoutIds: result.data.payoutIds, skipped },
   });
 
-  sendSuccess(res, 200, 'Payouts marked as paid', { modifiedCount });
+  sendSuccess(res, 200, 'Payouts marked as paid', { modifiedCount, skipped });
 });
 
 export const payoutSummary = asyncHandler(async (req, res) => {

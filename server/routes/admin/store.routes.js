@@ -14,6 +14,15 @@ import {
   getDocumentFile,
   remove,
 } from '../../controllers/admin/store.controller.js';
+import {
+  getPayoutAccount,
+  revealPayoutAccount,
+  verifyPayoutAccount,
+  rejectPayoutAccount,
+  verifyChangeRequest,
+  rejectChangeRequest,
+  requestChangeInfo,
+} from '../../controllers/admin/payoutAccount.controller.js';
 
 const router = Router();
 
@@ -26,6 +35,14 @@ router.patch('/:id/suspend', suspend);
 router.patch('/:id/reactivate', reactivate);
 // Before '/:id' so the literal segment is not swallowed by the parameterised route.
 router.patch('/:id/location', updateLocation);
+// The store's settlement bank account: masked view, audit-logged reveal, verify / reject.
+router.get('/:id/payout-account', getPayoutAccount);
+router.post('/:id/payout-account/reveal', revealPayoutAccount);
+router.patch('/:id/payout-account/verify', verifyPayoutAccount);
+router.patch('/:id/payout-account/reject', rejectPayoutAccount);
+router.patch('/:id/payout-account/change/verify', verifyChangeRequest);
+router.patch('/:id/payout-account/change/reject', rejectChangeRequest);
+router.patch('/:id/payout-account/change/request-info', requestChangeInfo);
 router.patch('/:id', update);
 router.post('/:id/notes', addNote);
 router.get('/:id/documents/:docId/file', getDocumentFile);

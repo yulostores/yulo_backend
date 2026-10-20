@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import SupportTicket from '../../models/SupportTicket.js';
+import { legacyTicketView } from '../../services/supportTicket.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
@@ -34,7 +35,7 @@ export const createSupportTicket = asyncHandler(async (req, res) => {
     category: category ?? 'other',
   });
 
-  sendSuccess(res, 201, 'Support ticket submitted', { ticket });
+  sendSuccess(res, 201, 'Support ticket submitted', { ticket: legacyTicketView(ticket.toObject()) });
 });
 
 export const listSupportTickets = asyncHandler(async (req, res) => {
@@ -48,7 +49,8 @@ export const listSupportTickets = asyncHandler(async (req, res) => {
   ]);
 
   sendSuccess(res, 200, 'Support tickets', {
-    rows,
+    // The rider app reads the pre-B12 status vocabulary (open / in_progress / resolved / closed).
+    rows: rows.map(legacyTicketView),
     total,
     page: Number(page),
     pages: Math.ceil(total / Number(limit)),

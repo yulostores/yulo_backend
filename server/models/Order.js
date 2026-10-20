@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { refundSchema } from './refundSchema.js';
 
 const orderSelectedOptionSchema = new mongoose.Schema(
   { optionId: { type: mongoose.Schema.Types.ObjectId, required: true }, qty: { type: Number, default: 1 } },
@@ -114,6 +115,18 @@ const orderSchema = new mongoose.Schema(
     // Frozen at placement (subtotal + deliveryFee + platformFee + tax + tip - discountAmount)
     // — never recomputed later, same "never re-priced after the fact" convention as `items[].price`.
     grandTotal: { type: Number, default: null },
+    // The full price breakdown, in PAISE, exactly as services/charges.service.js's
+    // computeCustomerCharges produced it at placement — food and its GST, delivery (and who
+    // paid it), platform fee with its GST, tip, round-off, the display lines, and the Finance
+    // Settings version that priced it. Frozen; the rupee fields above are derived from it
+    // (toLegacyTotals) for the screens that read them. Null on orders placed before B3, and
+    // on dine-in rounds (their pricing lives on the table's Bill).
+    charges: { type: mongoose.Schema.Types.Mixed, default: null },
+    // What this order means for the restaurant's settlement, frozen when its ledger row was
+    // written (services/ledger.service.js): customer paid, Yulo Money, settlement charge,
+    // restaurant-borne delivery, Razorpay's actual fee, Yulo's margin, rider pay, the
+    // restaurant's net. Views read this; nothing recomputes it. Null until settled-eligible.
+    financials: { type: mongoose.Schema.Types.Mixed, default: null, select: false },
     // Free-text note "for the delivery partner" (screen 19) — distinct from
     // specialInstructions above, which is kitchen-facing prep notes; deliberately not the
     // same field, since the two have different audiences and this one flows to
@@ -177,11 +190,11 @@ const orderSchema = new mongoose.Schema(
       enum: ['restaurant', 'kitchen', 'waiter', 'customer', 'admin', 'system', null],
       default: null,
     },
-    // Money owed back to the customer. Set to 'pending' whenever an order ends up both
-    // cancelled and paid — rejected after online payment, or a payment that was captured
-    // after the order was already cancelled. No refund integration exists yet, so this is
-    // the flag an admin/finance process works from; 'refunded' is for them to set.
+    // Legacy three-state view of `refund` below (none | pending | refunded), kept in step by
+    // services/refund.service.js for the screens that still read it.
     refundStatus: { type: String, enum: ['none', 'pending', 'refunded'], default: 'none' },
+    // The refund of this order's online payment, if one is owed — see models/refundSchema.js.
+    refund: { type: refundSchema, default: () => ({}) },
     servedAt: { type: Date, default: null },
     statusHistory: { type: [orderStatusHistorySchema], default: [] },
     paymentStatus: {
@@ -195,7 +208,40 @@ const orderSchema = new mongoose.Schema(
       enum: ['pending', 'pending_cod', 'paid', 'failed', 'refunded'],
       default: 'pending',
     },
+    // When paymentStatus first became 'paid' — set by the hooks at the bottom of this file on
+    // every write path, so no caller has to remember it. An online order only reaches the
+    // restaurant (can be accepted) once paid, so its approval clock runs from here, not from
+    // createdAt (services/orderApproval.service.js). Null for unpaid and pre-existing orders.
+    paidAt: { type: Date, default: null },
     paymentMethod: { type: String, enum: ['cash', 'upi', 'card', 'online'], default: null },
+    // HOW the money reaches anyone, which is what settlement cares about — distinct from
+    // paymentMethod (the instrument). 'online' = paid to Yulo through Razorpay; 'cod' = cash
+    // collected by the rider on delivery; 'counter' = paid to the restaurant directly at the
+    // table (dine-in cash/UPI/card). Null on orders from before this field existed until
+    // scripts/backfillPaymentChannel.js runs, and on a dine-in round until its bill is settled.
+    paymentChannel: { type: String, enum: ['online', 'counter', 'cod', null], default: null },
+    // The exact amount, in paise, the Razorpay order was created for. A captured payment is
+    // only accepted when its amount equals this — see services/payment.service.js's
+    // confirmCapturedPayment. Stored rather than re-derived from grandTotal so the comparison
+    // is against what Razorpay was actually asked to collect.
+    paymentAmountPaise: { type: Number, default: null },
+    // Every Razorpay order id ever created for this payment, oldest first — a retry
+    // (POST …/payment/retry) can replace paymentIntentId with a fresh one, and a payment that
+    // completes late against an earlier one must still be recognised as this one's.
+    paymentIntentHistory: { type: [String], default: [] },
+    // How the payment was confirmed: the app's own verify call, Razorpay's webhook, or dev
+    // simulation. Lets an app that lost its verify response see that a webhook settled it.
+    paymentConfirmedVia: { type: String, enum: ['verify', 'webhook', 'simulation', null], default: null },
+    // Razorpay's own deduction on the captured payment, in paise, read from the payment
+    // entity (`fee` includes `tax`). Settlement uses the real figure, never an estimate.
+    // select: false (with razorpayTax and financials) — platform-internal money: Razorpay's
+    // cut and Yulo's margin. Never returned by any query unless the code asks for it
+    // (.select('+razorpayFee …')); only the ledger, refund and admin-breakdown code does.
+    razorpayFee: { type: Number, default: null, select: false },
+    razorpayTax: { type: Number, default: null, select: false },
+    // Why paymentStatus went to 'failed' when we refused a payment (amount/currency/order
+    // mismatch), or the gateway's own failure description for a declined one.
+    paymentFailureReason: { type: String, default: null },
     // Razorpay order id (created up front, before payment) — set when the Razorpay order
     // is created (controllers/order.controller.js's createRazorpayOrderIfNeeded), read
     // back by POST /api/orders/:id/payment/verify and the webhook to confirm a payment
@@ -272,6 +318,10 @@ const orderSchema = new mongoose.Schema(
       // comment on getOrder in controllers/order.controller.js.
       pickupOtp: { type: String, default: null },
       pickupOtpVerifiedAt: { type: Date, default: null },
+      // When this delivery was added to the rider's totalDeliveries — set once, atomically, so
+      // a delivery confirmed from both the rider app and the kitchen is counted once
+      // (deliveryAssignment.service.js countCompletedDelivery).
+      countedAt: { type: Date, default: null },
       // Self-reported at delivery time (CodCollection.jsx has no real payment-gateway/QR
       // verification today) — codDiscrepancy is set instead of hard-failing the delivery when
       // it doesn't match `subtotal`; see the comment on deliverOrder for why.
@@ -293,6 +343,10 @@ const orderSchema = new mongoose.Schema(
         surgePay: { type: Number, default: 0 },
         tip: { type: Number, default: 0 },
         penalty: { type: Number, default: 0 },
+        // When this breakdown was worked out — at assignment since B4 (rider accepts / admin
+        // reassigns), from Finance Settings' rider rates and the order's tip. Null on orders
+        // whose breakdown predates that; deliverOrder fills those in at delivery.
+        computedAt: { type: Date, default: null },
       },
       history: [deliveryAssignmentHistorySchema],
     },
@@ -308,5 +362,27 @@ orderSchema.index({ restaurantId: 1, tableId: 1, createdAt: -1 });
 orderSchema.index({ userId: 1, createdAt: -1 });
 orderSchema.index({ status: 1, restaurantId: 1 });
 orderSchema.index({ paymentIntentId: 1 }, { sparse: true });
+orderSchema.index({ paymentIntentHistory: 1 });
+orderSchema.index({ 'refund.status': 1, updatedAt: -1 });
+orderSchema.index({ 'refund.razorpayRefundId': 1 }, { sparse: true });
+// Refund webhooks fall back to finding the order by its captured payment id.
+orderSchema.index({ razorpayPaymentId: 1 }, { partialFilterExpression: { razorpayPaymentId: { $type: 'string' } } });
+
+// paidAt: stamped the first time a write sets paymentStatus to 'paid' — whether through
+// save() or an update query ($set or a plain field). A write that sets paidAt itself wins. A
+// document created already paid (an import, a fixture) is left as given: there is no moment of
+// payment to record, and readers fall back to createdAt.
+orderSchema.pre('save', function stampPaidAt() {
+  if (this.isNew) return;
+  if (this.isModified('paymentStatus') && this.paymentStatus === 'paid' && !this.paidAt) this.paidAt = new Date();
+});
+orderSchema.pre(['findOneAndUpdate', 'updateOne', 'updateMany'], function stampPaidAt() {
+  const update = this.getUpdate();
+  if (!update || Array.isArray(update)) return;
+  const set = update.$set ?? {};
+  const setsPaid = set.paymentStatus === 'paid' || update.paymentStatus === 'paid';
+  const setsPaidAt = 'paidAt' in set || 'paidAt' in update;
+  if (setsPaid && !setsPaidAt) this.setUpdate({ ...update, $set: { ...set, paidAt: new Date() } });
+});
 
 export default mongoose.model('Order', orderSchema);

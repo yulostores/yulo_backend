@@ -3,7 +3,10 @@ import DeliveryPartner from '../models/DeliveryPartner.js';
 import Restaurant from '../models/Restaurant.js';
 import User from '../models/User.js';
 import { redis } from '../config/redis.js';
-import { maxConcurrentOrdersPerPartner, perDeliveryRate, offerWindowSeconds } from '../config/finance.config.js';
+import { maxConcurrentOrdersPerPartner, offerWindowSeconds } from '../config/finance.config.js';
+import { getActiveSettings } from './financeSettings.service.js';
+import { toPaise, toRupees } from '../utils/money.js';
+import { computeRiderPay } from './settlementMath.service.js';
 import { PARTNER_PICKUP_SEARCH_RADIUS_KM } from '../config/delivery.config.js';
 import { getIO } from '../socket.js';
 import { notifyService } from './notify.service.js';
@@ -84,6 +87,50 @@ const rankCandidates = async (restaurant, { requireFleetType } = {}) => {
 // for field, since IncomingOrder.jsx will eventually consume this directly. Exported so
 // GET /api/partner/orders/current (controllers/partner/order.controller.js) can return the exact
 // same shape for an app that was backgrounded mid-offer, not just the live socket push.
+/**
+ * The rider's pay for this delivery, in the rupee shape Order.deliveryAssignment.earningsBreakdown
+ * stores: Finance Settings' base pay for the first riderBaseKm of the restaurant → customer
+ * distance, riderPerKmRate for every km beyond, and the customer's tip in full. Worked out when a
+ * rider is assigned, so the offer, the delivery summary and the payout all agree.
+ */
+/**
+ * Adds a completed delivery to its rider's totalDeliveries (shown to admins and customers, and
+ * used to order riders for dispatch). Claims the order's countedAt first, so however many paths
+ * report the same delivery — the rider's deliver, the kitchen marking it delivered — it is
+ * counted exactly once. A delivery with no rider assigned is not counted.
+ */
+export const countCompletedDelivery = async (orderId) => {
+  const claimed = await Order.findOneAndUpdate(
+    {
+      _id: orderId,
+      'deliveryAssignment.status': 'delivered',
+      'deliveryAssignment.partnerId': { $ne: null },
+      'deliveryAssignment.countedAt': null,
+    },
+    { $set: { 'deliveryAssignment.countedAt': new Date() } },
+    { new: true, projection: { 'deliveryAssignment.partnerId': 1 } }
+  ).lean();
+  if (!claimed) return false;
+  await DeliveryPartner.updateOne({ _id: claimed.deliveryAssignment.partnerId }, { $inc: { totalDeliveries: 1 } });
+  return true;
+};
+
+export const computeRiderEarningsBreakdown = async (order) => {
+  const restaurant = await Restaurant.findById(order.restaurantId).select('location').lean();
+  const distanceKm = computeDropKm(restaurant, order);
+  const tipPaise = order.charges?.tip ?? toPaise(order.tip ?? 0);
+  const pay = computeRiderPay({ distanceKm, tipPaise, settings: await getActiveSettings() });
+  return {
+    basePay: toRupees(pay.basePay),
+    distanceKm,
+    distancePay: toRupees(pay.distancePay),
+    surgePay: 0,
+    tip: toRupees(pay.tip),
+    penalty: 0,
+    computedAt: new Date(),
+  };
+};
+
 export const buildOfferPayload = async (order, candidate) => {
   // The account lookup is only a fallback for orders placed before Order.customerName/
   // customerPhone were snapshotted — a current order carries its own, and the address
@@ -139,12 +186,15 @@ export const buildOfferPayload = async (order, candidate) => {
     pickupKm,
     dropKm,
     totalKm: pickupKm != null && dropKm != null ? Number((pickupKm + dropKm).toFixed(1)) : null,
-    // Flat-rate estimate, same rate the admin payout system already uses — becomes the real
-    // itemized basePay/distancePay/surge/tip breakdown once the itemized-earnings step exists;
-    // not fabricating a distance-based fare formula ahead of that.
-    fare: perDeliveryRate,
+    // What this delivery pays the rider — the same figure frozen onto the order when they
+    // accept (computeRiderEarningsBreakdown), tip included.
+    fare: await (async () => {
+      const e = await computeRiderEarningsBreakdown(order);
+      return Number((e.basePay + e.distancePay + e.tip).toFixed(2));
+    })(),
     payment: order.paymentMethod === 'cash' ? 'cod' : 'prepaid',
-    codAmount: order.paymentMethod === 'cash' ? order.subtotal : undefined,
+    // Everything the customer owes — food, fees, GST and tip — not just the food subtotal.
+    codAmount: order.paymentMethod === 'cash' ? (order.grandTotal ?? order.subtotal) : undefined,
     items: order.items.map((i) => ({ name: i.name, qty: i.quantity })),
     // Who is at the door, and how to reach them. The partner had a name (which was always
     // null, since nothing ever set User.name) and no number whatsoever — so the one thing
@@ -187,7 +237,16 @@ export const autoAssign = async (order) => {
     alreadyTried.add(order.deliveryAssignment.partnerId.toString());
   }
 
-  const onlinePartnerIds = new Set(await redis.smembers('live:active_partners'));
+  // Presence lives in Redis (socket.js's join_partner). Without it — REDIS_URL unset, or Redis
+  // unreachable — no rider can be known to be online, so nobody is offered the order now; the
+  // 5-second sweep and an admin reassign still work. Throwing here used to fail the
+  // restaurant's "accept" with a 500 after the acceptance itself had already been saved.
+  let onlinePartnerIds = new Set();
+  try {
+    onlinePartnerIds = new Set(redis ? await redis.smembers('live:active_partners') : []);
+  } catch (err) {
+    logger.warn({ err, orderId: order._id }, 'Rider presence unavailable (Redis) — no auto-offer this time');
+  }
 
   const restaurant = await Restaurant.findById(order.restaurantId).select('location delivery.radiusKm').lean();
 
@@ -219,8 +278,10 @@ export const autoAssign = async (order) => {
     if (busyWithAnotherOffer) continue;
 
     const offerExpiresAt = new Date(Date.now() + offerWindowSeconds * 1000);
-    await Order.updateOne(
-      { _id: order._id },
+    // Only while the order can still take a rider: a cancellation landing during the search
+    // must not be followed by a fresh offer for food nobody is cooking.
+    const offered = await Order.updateOne(
+      { _id: order._id, status: { $in: ASSIGNABLE_STATUSES } },
       {
         $set: {
           'deliveryAssignment.offeredTo': candidate._id,
@@ -229,6 +290,8 @@ export const autoAssign = async (order) => {
         },
       }
     );
+
+    if (!offered.modifiedCount) return null;
 
     const payload = await buildOfferPayload(order, candidate);
     try {
@@ -248,6 +311,95 @@ export const autoAssign = async (order) => {
   // back in here on its normal cadence for as long as vegFleetSearchDeadline hasn't
   // passed — see sweepExpiredVegFleetSearches below for what happens once it does.
   return null;
+};
+
+// A cancelled order (by the customer, the kitchen, the owner, an admin or the approval
+// timeout) must leave the rider's hands: a pending offer is withdrawn, and an accepted one is
+// released — 'unassigned' if the rider hadn't collected the food yet, 'failed' if they had
+// (the record of who holds it stays). Without this the order stayed on the rider's screen and
+// they could still pick it up and "deliver" it — flipping it to delivered and crediting the
+// restaurant on top of the customer's refund. The rider is told over their socket room
+// (`order_cancelled`), freed from 'busy' if this was holding them at their limit, and the
+// customer/restaurant/kitchen rooms get the usual delivery_assignment_updated.
+//
+// Each write is conditional on the state just read, so a rider accepting or picking up at the
+// same instant is either released here or refused there (the partner endpoints refuse a
+// cancelled order). Never throws — the cancellation itself has already happened.
+export const releaseAssignmentForCancelledOrder = async (orderId) => {
+  try {
+    const order = await Order.findById(orderId)
+      .select('status restaurantId deliveryAssignment.partnerId deliveryAssignment.status deliveryAssignment.offeredTo deliveryAssignment.offerStatus deliveryAssignment.assignedAt deliveryAssignment.assignedBy')
+      .lean();
+    if (!order || order.status !== 'cancelled') return [];
+    const da = order.deliveryAssignment ?? {};
+    const now = new Date();
+    const released = [];
+
+    if (da.offerStatus === 'offered' && da.offeredTo) {
+      const res = await Order.updateOne(
+        { _id: order._id, 'deliveryAssignment.offerStatus': 'offered', 'deliveryAssignment.offeredTo': da.offeredTo },
+        {
+          $set: { 'deliveryAssignment.offerStatus': 'expired', 'deliveryAssignment.offerExpiresAt': now },
+          $push: {
+            'deliveryAssignment.history': {
+              partnerId: da.offeredTo,
+              assignedAt: now,
+              assignedBy: 'auto',
+              unassignedAt: now,
+              reason: 'order_cancelled',
+            },
+          },
+        }
+      );
+      if (res.modifiedCount) released.push(String(da.offeredTo));
+    }
+
+    if (['assigned', 'picked_up'].includes(da.status) && da.partnerId) {
+      const pickedUp = da.status === 'picked_up';
+      const res = await Order.updateOne(
+        { _id: order._id, 'deliveryAssignment.status': da.status, 'deliveryAssignment.partnerId': da.partnerId },
+        {
+          $set: pickedUp
+            ? { 'deliveryAssignment.status': 'failed' }
+            : {
+                'deliveryAssignment.status': 'unassigned',
+                'deliveryAssignment.partnerId': null,
+                'deliveryAssignment.pickupOtp': null,
+              },
+          $push: {
+            'deliveryAssignment.history': {
+              partnerId: da.partnerId,
+              assignedAt: da.assignedAt,
+              assignedBy: da.assignedBy,
+              unassignedAt: now,
+              reason: 'order_cancelled',
+            },
+          },
+        }
+      );
+      if (res.modifiedCount) released.push(String(da.partnerId));
+    }
+
+    for (const partnerId of new Set(released)) {
+      try {
+        getIO().to(`partner:${partnerId}`).emit('order_cancelled', { orderId: order._id });
+      } catch (err) {
+        logger.error({ err, orderId: order._id, partnerId }, 'Failed to emit order_cancelled');
+      }
+      // Mirrors deliverOrder: free a rider this order was holding at their concurrency limit.
+      if ((await countActiveAssignments(partnerId)) < maxConcurrentOrdersPerPartner) {
+        await DeliveryPartner.updateOne({ _id: partnerId, status: 'busy' }, { $set: { status: 'active' } });
+      }
+    }
+    if (released.length) {
+      const fresh = await Order.findById(order._id).select('restaurantId deliveryAssignment updatedAt').lean();
+      notifyService.deliveryAssignmentUpdated(fresh, null);
+    }
+    return released;
+  } catch (err) {
+    logger.error({ err, orderId }, 'Failed to release the rider from a cancelled order');
+    return [];
+  }
 };
 
 // Timeout strategy: no cron/job-queue dependency exists anywhere in this codebase, and

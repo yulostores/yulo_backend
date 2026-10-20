@@ -5,7 +5,10 @@ import Restaurant from '../models/Restaurant.js';
 import Discount from '../models/Discount.js';
 import { computeItemPrice } from './pricing.service.js';
 import * as discountService from './discount.service.js';
-import { cartPlatformFee, cartTaxPercent } from '../config/finance.config.js';
+import User from '../models/User.js';
+import { getActiveSettings } from './financeSettings.service.js';
+import { computeCustomerCharges, resolveDeliveryDistance, toLegacyTotals } from './charges.service.js';
+import { toPaise } from '../utils/money.js';
 import { ApiError } from '../utils/ApiError.js';
 
 const getOrCreateCart = (userId) =>
@@ -15,14 +18,15 @@ const getOrCreateCart = (userId) =>
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 
-// Exported — services/order.service.js's checkout re-validation recomputes the same fee
-// from fresh restaurant data at order-placement time, rather than trusting whatever the
-// cart displayed while browsing.
-export const computeDeliveryFee = (itemTotal, delivery) => {
-  const baseCharge = delivery?.baseCharge ?? 0;
-  const freeThreshold = delivery?.freeThreshold;
-  if (freeThreshold != null && itemTotal >= freeThreshold) return 0;
-  return baseCharge;
+// The point the cart is priced against: the customer's default saved address (else their
+// first) — the same one checkout opens with (services/checkout.service.js), so the cart and
+// the checkout summary quote the same delivery fee. null when there is no address yet or it
+// was never placed on the map; the delivery fee then reads "calculated at checkout".
+const defaultDropCoordinates = async (userId) => {
+  if (!userId) return null;
+  const user = await User.findById(userId).select('savedAddresses').lean();
+  const address = user?.savedAddresses?.find((a) => a.isDefault) || user?.savedAddresses?.[0] || null;
+  return address?.location?.coordinates ?? null;
 };
 
 // Bridges Cart's stored { optionId, qty } selections to the { groupId, optionId, qty }
@@ -95,8 +99,16 @@ const resolveSelectedOptions = async (items) => {
 
 // `restaurant` is passed in by buildCartResponse (which already loads it for the
 // cart's storefront summary) so the bill doesn't re-query the same document; it
-// falls back to its own lookup for any other caller.
-export const computeBill = async (cart, restaurant) => {
+// falls back to its own lookup for any other caller. It needs `delivery`, `location` and
+// `gstRegistered`.
+//
+// Priced by the one pricing engine (services/charges.service.js) — the same one checkout
+// freezes onto the order — against `dropCoordinates` when the caller has an address in hand
+// (the checkout summary), else the customer's default address. The rupee fields are what the
+// apps already render; `charges` is the full paise breakdown with display lines;
+// `deliveryIssue` says why the delivery fee isn't known yet ('ADDRESS_NOT_LOCATED',
+// 'OUT_OF_DELIVERY_RANGE', …) — checkout will refuse the order for the same reason.
+export const computeBill = async (cart, restaurant, { dropCoordinates } = {}) => {
   if (cart.items.length === 0) {
     return {
       itemTotal: 0,
@@ -107,6 +119,8 @@ export const computeBill = async (cart, restaurant) => {
       tax: 0,
       discountAmount: 0,
       grandTotal: 0,
+      charges: null,
+      deliveryIssue: null,
     };
   }
 
@@ -120,10 +134,8 @@ export const computeBill = async (cart, restaurant) => {
   const itemDiscountAmount = Math.max(0, mrpTotal - itemTotal);
 
   const restaurantDoc =
-    restaurant ?? (await Restaurant.findById(cart.restaurantId).select('delivery').lean());
-  const deliveryFee = computeDeliveryFee(itemTotal, restaurantDoc?.delivery);
-  const platformFee = cartPlatformFee;
-  const tax = itemTotal * (cartTaxPercent / 100);
+    restaurant ??
+    (await Restaurant.findById(cart.restaurantId).select('delivery location gstRegistered').lean());
 
   let discountAmount = 0;
   if (cart.appliedDiscountId) {
@@ -141,8 +153,31 @@ export const computeBill = async (cart, restaurant) => {
     }
   }
 
-  const grandTotal = itemTotal + deliveryFee + platformFee + tax - discountAmount;
-  return { itemTotal, mrpTotal, itemDiscountAmount, deliveryFee, platformFee, tax, discountAmount, grandTotal };
+  const drop = dropCoordinates !== undefined ? dropCoordinates : await defaultDropCoordinates(cart.userId);
+  const { distanceKm, issue } = resolveDeliveryDistance(restaurantDoc, drop);
+  const charges = computeCustomerCharges({
+    orderType: 'delivery',
+    foodSubtotalPaise: toPaise(itemTotal),
+    discountPaise: toPaise(discountAmount),
+    restaurant: restaurantDoc,
+    // An address the restaurant won't deliver to has no meaningful fee — shown as pending.
+    distanceKm: issue ? null : distanceKm,
+    settings: await getActiveSettings(),
+  });
+
+  const legacy = toLegacyTotals(charges);
+  return {
+    itemTotal,
+    mrpTotal,
+    itemDiscountAmount,
+    deliveryFee: legacy.deliveryFee,
+    platformFee: legacy.platformFee,
+    tax: legacy.tax,
+    discountAmount: legacy.discountAmount,
+    grandTotal: legacy.grandTotal,
+    charges,
+    deliveryIssue: issue,
+  };
 };
 
 // Fills in `foodType` / `mrpUnitPrice` on any line that predates those fields being
@@ -193,7 +228,7 @@ const attachLineImages = async (items) => {
 const loadRestaurantSummary = async (restaurantId) => {
   if (!restaurantId) return null;
   const r = await Restaurant.findById(restaurantId)
-    .select('name logo coverImage bannerImage isPureVeg delivery')
+    .select('name logo coverImage bannerImage isPureVeg delivery location gstRegistered')
     .lean();
   if (!r) return null;
   return {
@@ -201,8 +236,10 @@ const loadRestaurantSummary = async (restaurantId) => {
     name: r.name,
     image: r.logo || r.coverImage || r.bannerImage || null,
     isPureVeg: Boolean(r.isPureVeg),
-    // kept on the object only so computeBill can reuse it; stripped before response
+    // kept on the object only so computeBill can reuse them; stripped before response
     delivery: r.delivery,
+    location: r.location,
+    gstRegistered: r.gstRegistered,
   };
 };
 
@@ -217,8 +254,17 @@ const buildCartResponse = async (cart) => {
     backfillFoodTypes(plainCart.items),
     attachLineImages(plainCart.items),
   ]);
-  const bill = await computeBill(plainCart, restaurant ? { delivery: restaurant.delivery } : undefined);
-  if (restaurant) delete restaurant.delivery;
+  const bill = await computeBill(
+    plainCart,
+    restaurant
+      ? { delivery: restaurant.delivery, location: restaurant.location, gstRegistered: restaurant.gstRegistered }
+      : undefined
+  );
+  if (restaurant) {
+    delete restaurant.delivery;
+    delete restaurant.location;
+    delete restaurant.gstRegistered;
+  }
   plainCart.restaurant = restaurant;
   return { cart: plainCart, bill };
 };

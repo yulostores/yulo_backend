@@ -5,6 +5,8 @@ import { env } from '../config/env.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { publicSessionView } from '../utils/publicMask.js';
+import { withoutInternalMoney } from '../services/ledger.service.js';
 
 // Public, table-scoped guest ordering — the QR self-order flow (yulo_menu). Mounted
 // alongside controllers/request.controller.js's guest-assistance routes: optionalAuthenticate
@@ -70,7 +72,8 @@ export const getSession = asyncHandler(async (req, res) => {
         : null,
   }));
 
-  sendSuccess(res, 200, 'Session', { session: { ...session, orders } });
+  // Masked: anyone with the table's QR link can read this (utils/publicMask.js).
+  sendSuccess(res, 200, 'Session', { session: publicSessionView({ ...session, orders }) });
 });
 
 // POST /api/restaurants/:id/tables/:tableId/orders — place a dine-in order with no login.
@@ -107,5 +110,5 @@ export const placeOrder = asyncHandler(async (req, res) => {
     return sendSuccess(res, 200, 'Duplicate — existing order returned', { order: { orderId: order.orderId } });
   }
 
-  sendSuccess(res, 201, 'Order placed', { order, tableSessionId });
+  sendSuccess(res, 201, 'Order placed', { order: withoutInternalMoney(order), tableSessionId });
 });

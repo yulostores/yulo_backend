@@ -2,9 +2,10 @@ import Order from '../models/Order.js';
 import Restaurant from '../models/Restaurant.js';
 import DeliveryPartner from '../models/DeliveryPartner.js';
 import { ApiError } from '../utils/ApiError.js';
-import { env } from '../config/env.js';
 import { haversineKm, estimateEtaMinutes, isLocationFresh } from './geo.service.js';
+import { customerRefundView } from './refund.service.js';
 import { getRoute, getTwoLegEta } from './routing.service.js';
+import { approvalExpiresAt as approvalDeadline } from './orderApproval.service.js';
 
 // Order.statusHistory now records every accepted transition with its own timestamp, so a
 // completed stage can carry a real time rather than a null. Where it's missing — orders
@@ -194,10 +195,8 @@ export const getOrderTracking = async (orderId, userId) => {
       ? { etaMinutes: null, route: null, etaSource: null }
       : await buildEtaAndRoute(order, restaurant, partner);
 
-  const approvalExpiresAt =
-    order.status === 'placed' && order.createdAt
-      ? new Date(new Date(order.createdAt).getTime() + env.ORDER_APPROVAL_TIMEOUT_MINUTES * 60 * 1000)
-      : null;
+  // From payment for an online order (orderApproval.service.js), from creation otherwise.
+  const approvalExpiresAt = approvalDeadline(order);
 
   return {
     orderId: String(order._id),
@@ -218,6 +217,8 @@ export const getOrderTracking = async (orderId, userId) => {
     // 'pending' when a paid order was cancelled and the money is owed back — see
     // services/refund.service.js. 'none' otherwise.
     refundStatus: order.refundStatus ?? 'none',
+    // Status, amount and a plain-language timeline (null when no refund applies).
+    refund: customerRefundView(order),
     // Set when the restaurant rejected the order (or it was cancelled later) — the
     // customer-facing reason.
     cancellation:

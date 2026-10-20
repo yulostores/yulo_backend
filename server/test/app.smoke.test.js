@@ -1,17 +1,22 @@
-// Smoke coverage for the routes that need no datastore: the health probe, the public
-// app-config payload the customer app boots from, the legal documents, and the 404 shape.
-// A one-word path typo or a broken config assembly (audit C5, M8) fails this.
+// Smoke coverage for the public, unauthenticated basics: the health probe, the app-config
+// payload the customer app boots from, the legal documents, and the 404 shape. A one-word
+// path typo or a broken config assembly (audit C5, M8) fails this. App config carries the
+// COD switch from Finance Settings, so an in-memory MongoDB backs it (never a real one).
 
 import { startTestServer } from '../test-utils/appHarness.mjs';
+import { startMemoryMongo } from '../test-utils/memoryMongo.mjs';
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 
 let srv;
+let mongo;
 before(async () => {
+  mongo = await startMemoryMongo();
   srv = await startTestServer();
 });
 after(async () => {
   await srv?.close();
+  await mongo?.stop();
 });
 
 test('GET /health → 200 ok', async () => {

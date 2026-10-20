@@ -169,8 +169,13 @@ const aggregateItems = (batches) => {
 };
 
 const buildOne = (rawBill, ctx) => {
-  const bill = plainBill(rawBill);
-  if (!bill) return null;
+  const plain = plainBill(rawBill);
+  if (!plain) return null;
+  // Platform-internal money never reaches a bill screen, whichever portal: Razorpay's fee and
+  // the settlement snapshot. select:false keeps them out of queries, but a document a service
+  // has just written (or selected them on) can still carry them.
+  // eslint-disable-next-line no-unused-vars
+  const { financials, razorpayFee, razorpayTax, ...bill } = plain;
 
   const session = ctx.sessionById.get(idStr(bill.tableSessionId)) ?? null;
   const table = ctx.tableById.get(idStr(bill.tableId ?? session?.tableId)) ?? null;
@@ -293,8 +298,14 @@ const buildOne = (rawBill, ctx) => {
       deliveryFee: round2(bill.deliveryFee),
       platformFee: round2(bill.platformFee),
       tip: round2(bill.tip),
+      // The rupee adjustment that rounded the payable total (0 on bills from before B3).
+      roundOff: bill.charges ? round2(bill.charges.roundOff / 100) : 0,
       grandTotal: round2(bill.grandTotal),
     },
+    // The pricing engine's full breakdown in PAISE, with ready-to-render display lines
+    // (services/charges.service.js). Under its own key because `charges` above is the older
+    // rupee summary every portal already reads. Null on bills from before B3.
+    chargeBreakdown: bill.charges ?? null,
     discountsApplied: (bill.discountsApplied ?? []).map((d) => ({
       ...d,
       amount: round2(d.amount),

@@ -4,6 +4,8 @@ import { sendSuccess } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import Order from '../../models/Order.js';
+import { withoutInternalMoney } from '../../services/ledger.service.js';
+import { enrichOrder } from '../../services/orderView.service.js';
 
 // No 'confirmed': accepting an order ('placed' -> 'confirmed') is the restaurant's
 // approval step (services/orderApproval.service.js). The kitchen only ever sees orders that
@@ -49,7 +51,9 @@ export const updateStatus = asyncHandler(async (req, res) => {
     actor: { staffId: req.staff._id, staffName: req.staff.name, role: 'chef' },
   });
 
-  sendSuccess(res, 200, 'Order status updated', { order });
+  // Shaped like the queue's tickets — incl. the restaurant's view of the delivery (the rider
+  // pickup OTP while awaiting pickup; never the rider's pay or the offer bookkeeping).
+  sendSuccess(res, 200, 'Order status updated', { order: await enrichOrder(withoutInternalMoney(order)) });
 });
 
 export const getOrderDetail = asyncHandler(async (req, res) => {
@@ -62,5 +66,5 @@ export const getOrderDetail = asyncHandler(async (req, res) => {
   }).lean();
 
   if (!order) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
-  sendSuccess(res, 200, 'Order detail', { order });
+  sendSuccess(res, 200, 'Order detail', { order: await enrichOrder(withoutInternalMoney(order)) });
 });

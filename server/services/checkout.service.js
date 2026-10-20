@@ -4,6 +4,10 @@ import * as cartService from './cart.service.js';
 import * as menuService from './menu.service.js';
 import { ensureAddressLocated } from './user.service.js';
 import { tipPresets } from '../config/finance.config.js';
+import { DELIVERY_ISSUE_MESSAGES, computeCustomerCharges, toLegacyTotals } from './charges.service.js';
+import { getActiveSettings } from './financeSettings.service.js';
+import { ApiError } from '../utils/ApiError.js';
+import { toPaise } from '../utils/money.js';
 
 const MEAL_SECTION_ITEM_LIMIT = 8;
 
@@ -68,15 +72,45 @@ const getCompleteYourMealSections = async (restaurantId, excludeMenuItemIds) => 
   return sections;
 };
 
+// The summary bill with the customer's tip in it — the tip moves the round-off, so a client
+// adding it on its own can show a total a paisa-rounding away from what is charged. Same
+// engine and inputs as order placement (services/order.service.js's priceAppOrder); the
+// delivery distance is the already-rounded one, which rounds up to itself.
+const withTip = async (bill, tip, restaurantId) => {
+  if (!tip || !bill.charges) return bill;
+  const restaurant = await Restaurant.findById(restaurantId).select('delivery location gstRegistered').lean();
+  const delivery = bill.charges.delivery;
+  const charges = computeCustomerCharges({
+    orderType: 'delivery',
+    foodSubtotalPaise: bill.charges.food.subtotal,
+    discountPaise: bill.charges.food.discount,
+    restaurant,
+    distanceKm: delivery && !delivery.pending ? delivery.distanceKm : null,
+    tipPaise: toPaise(tip),
+    settings: await getActiveSettings(),
+  });
+  return { ...bill, ...toLegacyTotals(charges), charges };
+};
+
 // `cartId` (if the caller passes one — there's only ever one cart per user, see Prompt 9)
 // is accepted but unused; this always reads the caller's own current cart.
-export const getCheckoutSummary = async (userId) => {
-  const [{ cart, bill }, user] = await Promise.all([
+//
+// `addressId` prices the summary against the address the customer picked — the same one
+// order placement is then sent — instead of the default; `tip` (rupees) is included in the
+// total. Both optional.
+export const getCheckoutSummary = async (userId, { addressId, tip = 0 } = {}) => {
+  const [{ cart, bill: previewBill }, user] = await Promise.all([
     cartService.getCart(userId),
     User.findById(userId).select('savedAddresses preferences').lean(),
   ]);
 
-  const address = user.savedAddresses.find((a) => a.isDefault) || user.savedAddresses[0] || null;
+  let address;
+  if (addressId) {
+    address = user.savedAddresses.find((a) => String(a._id) === String(addressId));
+    if (!address) throw new ApiError(404, 'ADDRESS_NOT_FOUND', 'Address not found');
+  } else {
+    address = user.savedAddresses.find((a) => a.isDefault) || user.savedAddresses[0] || null;
+  }
 
   // Retry the geocode for an address that has never been placed on the map, here rather than
   // only at placement, for two reasons: the resolved point is written back to the address, so
@@ -93,6 +127,21 @@ export const getCheckoutSummary = async (userId) => {
     else delete address.location;
   }
 
+  // Priced against exactly the address returned below — including a point the geocode retry
+  // above only just recovered — by the same engine order placement uses, so the total shown
+  // here is the total charged — tip included when the client sends it.
+  // `deliveryIssue` warns before payment when placement would refuse this address.
+  const bill =
+    cart.items.length > 0
+      ? await withTip(
+          await cartService.computeBill(cart, undefined, {
+            dropCoordinates: address?.location?.coordinates ?? null,
+          }),
+          tip,
+          cart.restaurantId
+        )
+      : previewBill;
+
   let mealSections = [];
   let vegFleetEligible = false;
 
@@ -105,5 +154,14 @@ export const getCheckoutSummary = async (userId) => {
     );
   }
 
-  return { address, cart, bill, mealSections, vegFleetEligible, tipPresets };
+  return {
+    address,
+    cart,
+    bill,
+    deliveryIssue: bill.deliveryIssue ?? null,
+    deliveryIssueMessage: bill.deliveryIssue ? DELIVERY_ISSUE_MESSAGES[bill.deliveryIssue] : null,
+    mealSections,
+    vegFleetEligible,
+    tipPresets,
+  };
 };

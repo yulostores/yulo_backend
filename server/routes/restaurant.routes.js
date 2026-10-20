@@ -16,6 +16,7 @@ import {
   simulateBillPayment,
   verifyBillPaymentHandler,
   cancelBillPayment,
+  getBillPaymentStatus,
 } from '../controllers/publicBill.controller.js';
 import { optionalAuthenticate } from '../middleware/optionalAuthenticate.js';
 import { loadPublicRestaurant } from '../middleware/loadPublicRestaurant.js';
@@ -61,7 +62,9 @@ router.post(
 // can still open/settle the same bill in cash from their side at any point up to payment.
 router.get('/:id/tables/:tableId/bill', loadPublicRestaurant, getBill);
 router.post('/:id/tables/:tableId/bill/pay', guestOrderLimiter, loadPublicRestaurant, payBill);
+router.post('/:id/tables/:tableId/bill/pay/retry', guestOrderLimiter, loadPublicRestaurant, payBill);
 router.post('/:id/tables/:tableId/bill/pay/simulate', loadPublicRestaurant, simulateBillPayment);
+router.get('/:id/tables/:tableId/bill/payment', loadPublicRestaurant, getBillPaymentStatus);
 router.post('/:id/tables/:tableId/bill/verify', loadPublicRestaurant, verifyBillPaymentHandler);
 router.post('/:id/tables/:tableId/bill/cancel', loadPublicRestaurant, cancelBillPayment);
 

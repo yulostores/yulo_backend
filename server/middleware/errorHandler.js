@@ -2,12 +2,34 @@ import { MulterError } from 'multer';
 import { ApiError } from '../utils/ApiError.js';
 import logger from '../utils/logger.js';
 
+// body-parser's own client errors: malformed JSON, a body over the size limit, an unsupported
+// charset or encoding. They carry `expose: true` and a 4xx `status`; they were answered 500
+// (and logged with a stack as if the server had failed — and a 500 to Razorpay's webhook makes
+// it redeliver a body that can never parse).
+const BODY_PARSER_ERRORS = {
+  'entity.parse.failed': { code: 'INVALID_JSON', message: 'The request body is not valid JSON' },
+  'entity.too.large': { code: 'PAYLOAD_TOO_LARGE', message: 'The request body is too large' },
+};
+const isClientHttpError = (err) =>
+  Boolean(err?.expose) && Number.isInteger(err.status) && err.status >= 400 && err.status < 500;
+
 // eslint-disable-next-line no-unused-vars
 export const errorHandler = (err, req, res, next) => {
   // Expected, deliberate failures (a wrong OTP, an expired token, a validation miss) were
   // logged at error level with a full stack, which buried the ones that actually need
   // attention — an upstream provider failing, a 500 — in noise. Anything the app threw on
   // purpose is logged as a single structured warn line; everything else keeps the stack.
+  if (!(err instanceof ApiError) && isClientHttpError(err)) {
+    logger.warn({ status: err.status, type: err.type, url: req.url, method: req.method }, err.message);
+    if (res.headersSent) return next(err);
+    const known = BODY_PARSER_ERRORS[err.type];
+    return res.status(err.status).json({
+      status: 'error',
+      code: known?.code ?? 'BAD_REQUEST',
+      message: known?.message ?? err.message,
+    });
+  }
+
   if (err instanceof ApiError) {
     const context = {
       code: err.code,

@@ -17,6 +17,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import logger from '../../utils/logger.js';
+import { OPEN_REQUEST_STATUSES } from '../../services/payoutAccount.service.js';
 
 // Must stay in step with the `type` enum on restaurantDocumentSchema (models/Restaurant.js)
 // and with STORE_DOCUMENT_TYPES in the super admin portal (src/lib/constants.js) — the
@@ -30,6 +31,8 @@ export const DOCUMENT_TYPES = [
   'pan_card',
   'address_proof',
   'bank_statement',
+  // Only while a change of a verified bank account is open (see uploadDocument).
+  'bank_statement_change',
 ];
 
 export const listDocuments = asyncHandler(async (req, res) => {
@@ -51,6 +54,13 @@ export const uploadDocument = asyncHandler(async (req, res) => {
   // rewrite, and the copy authorizeRestaurant loaded may be a request or two stale.
   const restaurant = await Restaurant.findById(req.restaurant._id);
   if (!restaurant) throw new ApiError(404, 'NOT_FOUND', 'Restaurant not found');
+
+  // The proof for a requested bank-account change: the verified account's own proof stays
+  // untouched (and verified) until an admin verifies the change.
+  const changeRequest = restaurant.payoutAccount?.pendingChange;
+  if (type === 'bank_statement_change' && !OPEN_REQUEST_STATUSES.includes(changeRequest?.status)) {
+    throw new ApiError(409, 'NO_OPEN_REQUEST', 'Request a bank account change before uploading its proof');
+  }
 
   const existing = restaurant.documents.find((d) => d.type === type);
   // A verified document is settled evidence — admin has already checked it, and the
@@ -134,6 +144,11 @@ export const uploadDocument = asyncHandler(async (req, res) => {
       status: 'pending',
       uploadedAt: new Date(),
     });
+
+  if (type === 'bank_statement_change') {
+    const proof = restaurant.documents.find((d) => d.type === 'bank_statement_change');
+    restaurant.set('payoutAccount.pendingChange.proofDocumentId', proof._id);
+  }
 
   try {
     await restaurant.save();

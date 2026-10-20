@@ -1,3 +1,5 @@
+import Restaurant from '../models/Restaurant.js';
+
 // The one visibility rule every customer-facing restaurant surface applies.
 //
 // `isActive` alone was never enough. It defaults to true on Restaurant, so a store that
@@ -25,11 +27,27 @@ export const isPubliclyVisible = (restaurant) =>
 // default — and `documents` now holds the URLs of the owner's scanned FSSAI licence, PAN
 // card and bank statement (see controllers/owner/document.controller.js), which no
 // customer has any business fetching. `adminNotes` is the platform's internal review
-// commentary about the store, for the same reason.
+// commentary about the store, for the same reason. `payoutAccount` is the restaurant's bank
+// account (holder, IFSC, last 4 digits and the encrypted number) — `select: false` on parts of
+// it does nothing inside an aggregation, so it is listed here explicitly.
 //
 // Applied with `.select()` on the queries that return full documents; the surfaces that
 // already project a narrow field list (search typeahead) don't need it. Aggregation
 // pipelines (the nearby query) can't take the `.select()` string, so the field list is kept
 // here once and both forms are derived from it.
-export const PUBLIC_RESTAURANT_HIDDEN_FIELDS = Object.freeze(['documents', 'adminNotes']);
-export const PUBLIC_RESTAURANT_PROJECTION = PUBLIC_RESTAURANT_HIDDEN_FIELDS.map((f) => `-${f}`).join(' ');
+export const PUBLIC_RESTAURANT_HIDDEN_FIELDS = Object.freeze(['documents', 'adminNotes', 'payoutAccount']);
+
+// The `.select()` form. A field with a `select: false` child (payoutAccount.accountNumberEncrypted)
+// can't be excluded whole — Mongoose adds its own exclusion of that child and the two collide
+// ("Path collision at payoutAccount.accountNumberEncrypted") — so such a field is excluded child
+// by child instead, read off the schema so a sub-field added later is hidden too. The aggregation
+// `$unset` above has no such problem and removes the whole field.
+const hasHiddenChild = (field) =>
+  Object.values(Restaurant.schema.paths).some((p) => p.path.startsWith(`${field}.`) && p.options?.select === false);
+const exclusionsFor = (field) =>
+  hasHiddenChild(field)
+    ? Object.values(Restaurant.schema.paths)
+        .filter((p) => p.path.startsWith(`${field}.`) && p.options?.select !== false)
+        .map((p) => `-${p.path}`)
+    : [`-${field}`];
+export const PUBLIC_RESTAURANT_PROJECTION = PUBLIC_RESTAURANT_HIDDEN_FIELDS.flatMap(exclusionsFor).join(' ');

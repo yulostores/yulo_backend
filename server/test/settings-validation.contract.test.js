@@ -9,7 +9,7 @@
 //
 // Skips loudly when the restaurant repo isn't checked out beside this one.
 
-import { validateField } from '../config/storeSettings.config.js';
+import { validateField, effectiveField, getStoreSettingsField } from '../config/storeSettings.config.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { access } from 'node:fs/promises';
@@ -21,9 +21,10 @@ const TWIN_PATH =
   resolve(import.meta.dirname, '../../../yulo_restaurant/src/lib/fieldRules.js');
 
 let fieldError = null;
+let twinEffectiveField = null;
 try {
   await access(TWIN_PATH);
-  ({ fieldError } = await import(pathToFileURL(TWIN_PATH).href));
+  ({ fieldError, effectiveField: twinEffectiveField } = await import(pathToFileURL(TWIN_PATH).href));
 } catch {
   /* twin not present — test skips below */
 }
@@ -75,3 +76,39 @@ test(
     }
   },
 );
+
+// Conditional rules (`requiredWhen`): the GST number becomes mandatory and GSTIN-checked once
+// the restaurant is GST-registered. Both sides must resolve the same effective field for the
+// same values, and then validate it identically.
+const GST_FIELD = getStoreSettingsField('settings.gstNumber');
+const CONDITIONAL_CASES = [
+  ['not registered + empty', { gstRegistered: false, settings: { gstNumber: '' } }],
+  ['not registered + legacy junk value', { gstRegistered: false, settings: { gstNumber: 'OLD-123' } }],
+  ['registered + empty', { gstRegistered: true, settings: { gstNumber: '' } }],
+  ['registered + malformed', { gstRegistered: true, settings: { gstNumber: '27AACR1234F1Z1' } }],
+  ['registered + valid GSTIN', { gstRegistered: true, settings: { gstNumber: '27AAPFU0939F1ZV' } }],
+  ['flag missing entirely', { settings: { gstNumber: '' } }],
+];
+
+test(
+  'requiredWhen: fieldRules.js effectiveField() twins storeSettings.config.js effectiveField()',
+  { skip: twinEffectiveField ? false : `restaurant repo (with effectiveField) not found at ${TWIN_PATH}` },
+  () => {
+    for (const [desc, values] of CONDITIONAL_CASES) {
+      const server = effectiveField(GST_FIELD, values);
+      const twin = twinEffectiveField(GST_FIELD, values);
+      assert.deepEqual(twin, server, `effective field differs on: ${desc}`);
+      const value = values.settings.gstNumber;
+      assert.equal(fieldError(twin, value), validateField(server, value), `messages differ on: ${desc}`);
+    }
+  },
+);
+
+test('requiredWhen: GST number rules switch on only for a GST-registered restaurant', () => {
+  const check = (values) => validateField(effectiveField(GST_FIELD, values), values.settings.gstNumber);
+  assert.equal(check({ gstRegistered: false, settings: { gstNumber: '' } }), null);
+  assert.equal(check({ gstRegistered: false, settings: { gstNumber: 'OLD-123' } }), null);
+  assert.match(check({ gstRegistered: true, settings: { gstNumber: '' } }), /required/);
+  assert.match(check({ gstRegistered: true, settings: { gstNumber: '27AACR1234F1Z1' } }), /valid 15-character GSTIN/);
+  assert.equal(check({ gstRegistered: true, settings: { gstNumber: '27AAPFU0939F1ZV' } }), null);
+});

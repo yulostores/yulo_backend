@@ -16,7 +16,8 @@ export const getKPIs = async (restaurantId) => {
       { $match: { restaurantId: rid, paymentStatus: 'paid', status: { $ne: 'cancelled' }, createdAt: { $gte: today } } },
       { $group: { _id: null, total: { $sum: '$subtotal' } } },
     ]),
-    redis.get(`live:count:${restaurantId}`),
+    // Live visitors are Redis-only; without Redis they read as 0 rather than failing the KPIs.
+    redis ? redis.get(`live:count:${restaurantId}`) : null,
     Restaurant.findById(restaurantId).select('avgRating totalRatings').lean(),
   ]);
 

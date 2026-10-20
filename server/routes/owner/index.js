@@ -9,6 +9,10 @@ import ownerAuthRoutes from './auth.routes.js';
 import dashboardRoutes from './dashboard.routes.js';
 import restaurantRoutes from './restaurant.routes.js';
 import settingsRoutes from './settings.routes.js';
+import { getLedger } from '../../controllers/owner/ledger.controller.js';
+import { getPayoutAccount, savePayoutAccount } from '../../controllers/owner/payoutAccount.controller.js';
+import * as ownerSettlements from '../../controllers/owner/settlement.controller.js';
+import * as ownerPdfs from '../../controllers/owner/pdf.controller.js';
 import documentRoutes from './document.routes.js';
 import categoryRoutes from './category.routes.js';
 import menuItemRoutes from './menuItem.routes.js';
@@ -20,6 +24,8 @@ import loyaltyRoutes from './loyalty.routes.js';
 import liveMonitorRoutes from './liveMonitor.routes.js';
 import staffRoutes from './staff.routes.js';
 import requestRoutes from './request.routes.js';
+import paymentIssueRoutes from './paymentIssue.routes.js';
+import paymentsRoutes from './payments.routes.js';
 
 const ownerRouter = Router();
 
@@ -55,6 +61,10 @@ restaurantScopedRouter.use('/settings', settingsRoutes);
 // Compliance documents belong to the same open set: uploading them is how a pending
 // restaurant gets approved, and how a rejected one answers what admin asked for.
 restaurantScopedRouter.use('/documents', documentRoutes);
+// Where settlements are paid. Open before approval, like documents: adding it is part of
+// getting a restaurant ready to be paid.
+restaurantScopedRouter.get('/payout-account', getPayoutAccount);
+restaurantScopedRouter.put('/payout-account', savePayoutAccount);
 
 restaurantScopedRouter.use(requireRestaurantApproved);
 
@@ -69,6 +79,22 @@ restaurantScopedRouter.use('/loyalty', loyaltyRoutes);
 restaurantScopedRouter.use('/live-monitor', liveMonitorRoutes);
 restaurantScopedRouter.use('/staff', staffRoutes);
 restaurantScopedRouter.use('/requests', requestRoutes);
+// The restaurant's account with Yulo (credits/debits that settle weekly) — read-only.
+// The restaurant's money (ledger, settlements, statements) is never cached by a browser or proxy.
+const noStore = (_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+};
+restaurantScopedRouter.get('/ledger', noStore, getLedger);
+// Its weekly settlements (what it was paid, row by row) — read-only.
+restaurantScopedRouter.get('/settlements', noStore, ownerSettlements.list);
+restaurantScopedRouter.get('/settlements/:settlementId', noStore, ownerSettlements.detail);
+restaurantScopedRouter.get('/settlements/:settlementId/export', noStore, ownerSettlements.exportOne);
+restaurantScopedRouter.get('/settlements/:settlementId/pdf', noStore, ownerPdfs.statementPdf);
+// Payment issues the restaurant reports about a payout, an order or a bill (B12 task 5).
+restaurantScopedRouter.use('/payment-issues', paymentIssueRoutes);
+// The Payments & Payouts screens: overview, payout history, statements, order payment detail (B12 task 6).
+restaurantScopedRouter.use('/payments', paymentsRoutes);
 
 ownerRouter.use('/:restaurantId', restaurantScopedRouter);
 

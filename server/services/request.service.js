@@ -18,7 +18,7 @@ export const createRequest = async ({ restaurantId, tableId, type, note, userId 
   const table = await Table.findOne({ _id: tableId, restaurantId, isActive: true }).lean();
   if (!table) throw new ApiError(404, 'NOT_FOUND', 'Table not found');
 
-  const session = await TableSession.findOne({ tableId, status: 'open' }).select('_id').lean();
+  const session = await TableSession.findOne({ tableId, status: { $in: ['open', 'bill_requested'] } }).select('_id').lean();
 
   const request = await Request.create({
     restaurantId,

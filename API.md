@@ -37,6 +37,15 @@ Frontend integration guide for all REST endpoints and WebSocket events.
 29. [Kitchen — KDS](#kitchen--kds)
 30. [Partner — Authentication](#partner--authentication)
 31. [WebSocket Events](#websocket-events)
+32. [Payments & Pricing (2026-10)](#payments--pricing-2026-10)
+33. [Refunds & Cancellations](#refunds--cancellations)
+34. [Owner — Bank Account, Ledger & Settlements](#owner--bank-account-ledger--settlements)
+35. [Admin — Finance (settings, money views, refunds, settlements, payouts)](#admin--finance-settings-money-views-refunds-settlements-payouts)
+36. [Partner — Earnings & Config](#partner--earnings--config)
+37. [Razorpay Webhooks](#razorpay-webhooks)
+
+> **Payments update (Oct 2026).** Sections 32–37 describe the payment, refund and settlement
+> system. Where an older section below disagrees with them, sections 32–37 are current.
 
 ---
 
@@ -177,6 +186,45 @@ The `restaurantId` in the URL must match the staff member's assigned restaurant,
 | 400 | `INVALID_FILE_TYPE` | Uploaded file is not one of the accepted image types |
 | 400 | `LIMIT_FILE_SIZE` | Uploaded file exceeds the endpoint's size limit — `details.field` names the input |
 | 400 | `LIMIT_UNEXPECTED_FILE` | A file was sent under a field name the endpoint doesn't accept |
+| 400 | `COD_UNAVAILABLE` | Cash on delivery is switched off (Finance Settings → `codEnabled`) — pay online |
+| 400 | `ADDRESS_NOT_LOCATED` | The delivery address has no map point, so it can't be priced or delivered — re-pick it on the map |
+| 400 | `OUT_OF_DELIVERY_RANGE` | The restaurant doesn't deliver to this address |
+| 400 | `RESTAURANT_NOT_LOCATED` | The restaurant has no map point — it can't take delivery orders |
+| 400 | `PAYMENT_VERIFICATION_FAILED` | Bad signature, or the payment's amount / currency / order didn't match — not counted |
+| 400 | `CONFIRMATION_REQUIRED` | The action needs an explicit confirmation flag (e.g. `confirmNoRefund`, `confirmNotUploaded`) |
+| 400 | `NOT_ONLINE_PAYMENT` | Payment retry on an order that isn't paid online |
+| 409 | `ALREADY_PAID` / `BILL_ALREADY_PAID` | The order / bill is already settled |
+| 409 | `PAYMENT_ALREADY_RECEIVED` / `PAYMENT_IN_PROGRESS` / `PAID_ONLINE` | A Razorpay payment for it is authorized or captured — poll the payment-status endpoint instead |
+| 409 | `ORDER_CANCELLED` / `ORDER_NOT_CANCELLABLE` | Cancelled order / order already on its way |
+| 409 | `IDEMPOTENCY_IN_PROGRESS` | A request with the same `Idempotency-Key` is still being processed |
+| 409 | `REFUND_NOT_RETRYABLE` | Nothing to retry on this refund |
+| 409 | `NO_CHANGES` | A Finance Settings save that changes nothing |
+| 409 | `NOT_APPROVABLE` / `NOTHING_TO_PAY` / `NOT_PAYABLE` / `NOT_HOLDABLE` / `NOT_MANUALLY_HELD` / `NOT_RETRYABLE` / `NOT_CARRYABLE` | Settlement action not allowed in its current status |
+| 409 | `PAYOUT_ACCOUNT_NOT_VERIFIED` / `NO_PAYOUT_ACCOUNT` / `NOT_PENDING_VERIFICATION` | Bank-account state doesn't allow the action |
+| 409 | `BATCH_CLOSED` / `NOT_CANCELLABLE` | Payout-batch action not allowed in its current status |
+| 409 | `PAYOUT_FROZEN` | A paid rider payout can't be changed |
+| 409 | `DUPLICATE_KEY` | Unique constraint violated (the server's actual code; older text says `DUPLICATE`) |
+| 501 | `PAYOUT_PROVIDER_UNAVAILABLE` | RazorpayX / Route payouts aren't available yet |
+| 502 | `PAYMENT_GATEWAY_ERROR` | Razorpay couldn't be reached — retry; a payment may still settle by webhook |
+| 503 | `PAYMENT_GATEWAY_UNAVAILABLE` | No payment gateway configured — online payment refused, nothing created |
+| 503 | `ENCRYPTION_NOT_CONFIGURED` | `DATA_ENCRYPTION_KEY` missing — bank details can't be stored |
+| 400 | `TIP_TOO_HIGH` | Tip above the ₹500 cap |
+| 404 | `ADDRESS_NOT_FOUND` | `addressId` isn't one of the customer's saved addresses |
+| 409 | `BILL_TOTAL_CHANGED` | The bill was re-priced while it was being paid — the payment is recorded as owed back; fetch the bill and pay again |
+| 409 | `REFUND_AMOUNT_UNKNOWN` | No refund amount recorded — decide it and refund from the Razorpay dashboard |
+| 409 | `WEEK_NOT_STARTED` / `WEEK_NOT_ENDED` | Settlement generate for a future week / approve before the week is over |
+| 409 | `SETTLEMENT_BUSY` | The settlement is being re-calculated — retry in a moment |
+| 409 | `ACCOUNT_CHANGED` | The owner changed the bank account after the admin opened it — re-check before verifying |
+| 409 | `BENEFICIARY_CHANGED` | A batched restaurant's bank account changed after batching — cancel the batch and create a new one (`details.changed`) |
+| 409 | `PRICE_CHANGED` | Checkout `expectedTotalPaise` no longer matches — `details.charges` has the new total; nothing created |
+| 409 | `ORDER_CANCELLED` / `ORDER_UNAVAILABLE` | Rider action on an order that was cancelled / reassigned |
+| 400 | `INVALID_JSON` | Request body isn't valid JSON |
+| 413 | `PAYLOAD_TOO_LARGE` | Request body too large |
+| 409 | `NOT_SCHEDULED` / `NOT_PROCESSING` / `AMOUNT_CHANGED` | Payout action not allowed in its transfer state / amount changed since the admin looked |
+| 409 | `NOT_PAID` | A payout receipt PDF before the payout is recorded as paid |
+| 409 | `NO_OPEN_REQUEST` | No open bank change request |
+| 400 | `MESSAGE_REQUIRED` | Asking a restaurant for information needs a message |
+| 409 | `CONCURRENT_UPDATE` (finance) | A settlement / settings record changed under the request — refresh and retry |
 
 ---
 
@@ -758,6 +806,9 @@ POST /api/restaurants/:id/tables/:tableId/orders
 Public, table-scoped self-ordering. Optionally authenticated: the same QR link serves a
 walk-in guest with no account and a signed-in customer who happens to be at the table.
 
+While the table's bill is being paid online (session `bill_requested`) a new round is refused with
+`409 PAYMENT_IN_PROGRESS` — no second sitting is opened; wait for the payment or ask staff to release it.
+
 **Headers**
 
 | Header | Required | Notes |
@@ -828,10 +879,15 @@ waiter can still settle the same bill in cash at any point up to payment.
 
 | Endpoint | Body | Notes |
 | --- | --- | --- |
-| `.../bill/pay` | — | Creates a Razorpay order for the bill's `grandTotal` and locks the session against new orders (`bill_requested`). Returns `data: { bill, razorpayOrder }`. `409 ORDERS_PENDING` while any round is still unserved — the same rule the waiter's bill endpoints enforce, checked here (before any money moves) rather than at verify. |
-| `.../bill/verify` | `{ razorpay_payment_id, razorpay_order_id, razorpay_signature }` | Verifies the signature, then settles the bill and frees the table. Returns `data: { bill }`. A failed signature reopens the session. |
-| `.../bill/pay/simulate` | — | Local/dev only — `400 NOT_SIMULATED` when a real Razorpay key is configured. Settles the bill as a real verify would. |
-| `.../bill/cancel` | — | The guest closed the Razorpay checkout without paying. Reopens the session; a no-op if the payment already landed. |
+| `.../bill/pay` (alias `.../bill/pay/retry`) | — | Starts or resumes paying: **reuses** the bill's Razorpay order while Razorpay still accepts payments on it for the same amount, else creates one; locks the session (`bill_requested`). Returns `data: { bill, razorpayOrder, reused, paymentSimulated }`. `409 ORDERS_PENDING` while a round is unserved; `409 PAYMENT_ALREADY_RECEIVED` if a payment already went through; `503 PAYMENT_GATEWAY_UNAVAILABLE` / `502 PAYMENT_GATEWAY_ERROR` **without** locking the table. |
+| `.../bill/verify` | `{ razorpay_payment_id, razorpay_order_id, razorpay_signature }` | Verifies the signature **and** the payment itself with Razorpay (amount in paise, currency, order), then settles the bill (`paymentChannel: "online"`). Already settled by the webhook with this payment → `200`. Signature/amount mismatch → `400 PAYMENT_VERIFICATION_FAILED` and the session reopens; gateway unreachable → `502`, session stays locked. |
+| `.../bill/payment[?razorpayOrderId=]` (GET) | — | Status of a bill payment: `{ bill: {…} | null }` — poll this when verify failed or never returned. Pass the `razorpayOrderId` being paid to get that bill; without it, only the current sitting's bill (or one closed in the last 15 min) — never an earlier party's. Status only: no names, raw refund or failure internals. |
+| `.../bill/pay/simulate` | — | Exists only when `ALLOW_PAYMENT_SIMULATION=true` **and** `NODE_ENV` isn't production — otherwise `404`. |
+| `.../bill/cancel` | — | The guest closed checkout. Reopens the session — but **`409 PAYMENT_IN_PROGRESS`** (table stays locked) while a payment on the bill is authorized/captured. |
+
+All bill payloads on these public routes are **masked**: names reduced to an initial, phone
+numbers to their last four digits, internal ids removed. The bill carries `chargeBreakdown`
+(see [Payments & Pricing](#payments--pricing-2026-10)).
 
 ---
 
@@ -906,6 +962,10 @@ than duplicating it.
 ---
 
 ## Public — App Config
+
+> `config.payments` also carries two runtime switches (Oct 2026): `codEnabled` — hide "Pay on
+> delivery" when `false`; `paymentSimulationEnabled` — dev builds settle online payments through
+> `…/payment/simulate` instead of Razorpay (never `true` in production).
 
 Backs the customer app's **Settings** screen and its **bottom tab bar**. Everything they
 render — the languages the app can be switched to, the payment-method catalogue, the
@@ -1372,6 +1432,14 @@ At least one field is required (`400 VALIDATION_ERROR` otherwise).
 
 Requires `Authorization: Bearer <accessToken>` with role `customer`.
 
+> **Current behaviour (Oct 2026):** every app order — `POST /api/orders` and
+> `POST /api/orders/checkout` — is priced by one pricing engine and frozen as `order.charges`
+> (paise, with display lines); delivery orders need an address with a map point inside the
+> restaurant's delivery zone (`ADDRESS_NOT_LOCATED` / `OUT_OF_DELIVERY_RANGE`); `cod` is refused
+> while COD is off (`COD_UNAVAILABLE`); online payment is verified against Razorpay's own record,
+> can be retried and polled. See [Payments & Pricing](#payments--pricing-2026-10) and
+> [Refunds & Cancellations](#refunds--cancellations).
+
 ### Create Delivery Order
 
 ```
@@ -1511,6 +1579,10 @@ restaurant has since been removed. `rating` is `null` until the order is reviewe
 ```
 GET /api/orders/:id
 ```
+
+`deliveryAssignment` (delivery orders): `{ partnerId, status, assignedAt, pickupOtpVerifiedAt }`.
+The customer does **not** receive the rider pickup OTP (the restaurant hands it to the rider);
+order history, cancel and payment-verify responses use the same shape.
 
 **Response** `200`
 
@@ -2496,23 +2568,17 @@ Sockets:
 |---|---|---|
 | `PATCH …/orders/:id/accept` | owner | `confirmed` |
 | `PATCH …/orders/:id/reject` | owner | `cancelled`, `cancelledBy: "restaurant"` |
-| `POST /api/orders/:id/cancel` | the customer who placed it | `cancelled`, `cancelledBy: "customer"`, reason `"Cancelled by you"` |
+| `POST /api/orders/:id/cancel` | the customer who placed it | `cancelled`, `cancelledBy: "customer"`, reason `"Cancelled by you"` — the customer may also cancel later, see [Refunds & Cancellations](#refunds--cancellations) |
 | Nobody answers within `ORDER_APPROVAL_TIMEOUT_MINUTES` (env, default 15) | system sweep, every minute | `cancelled`, `cancelledBy: "system"`, reason `"The restaurant didn't respond in time"` |
 
 These rules are enforced inside `updateOrderStatus` itself, so no caller can bypass them.
 Only these roles can leave `placed`, and an online order can only be confirmed once it is
 paid; the check runs atomically with the status change.
 
-**Refunds.** An order that ends up both `cancelled` and `paid` gets
-`refundStatus: "pending"`. That covers two cases:
-
-- a paid order that was rejected, cancelled or timed out;
-- a payment captured after the order was already cancelled.
-
-No refund integration exists yet; finance works from this flag. Such orders are excluded
-from the owner dashboard's revenue. A late `payment.failed` webhook never downgrades a
-captured payment. `POST /api/orders/:id/payment/simulate` answers `409 ORDER_CANCELLED` for
-a cancelled, unpaid order.
+**Refunds.** Paid online orders that are rejected, time out or are cancelled are now
+**refunded automatically through Razorpay** — see [Refunds & Cancellations](#refunds--cancellations).
+`refundStatus` (`none | pending | refunded`) is kept in step with the new `refund` object.
+A late `payment.failed` webhook never downgrades a captured payment.
 
 #### Pending orders (the inbox)
 
@@ -2746,6 +2812,13 @@ GET /api/owner/:restaurantId/orders/:orderId
 
 Returns one order in the same enriched shape as the list above.
 
+`deliveryAssignment` on delivery orders is the restaurant's view of the rider: `{ status:
+unassigned|assigned|picked_up|delivered|failed, partnerId, partner { name, maskedPhone,
+vehicleType, vehicleNumber } | null, assignedAt, pickupOtp, pickedUpAt }`. **`pickupOtp`** — the
+4-digit code staff read to the rider at handover (the rider enters it to confirm pickup) — is set
+only while `status` is `assigned` and the rider hasn't picked up; `null` otherwise. Never the
+rider's pay or the offer bookkeeping.
+
 **Response** `200`
 
 ---
@@ -2924,6 +2997,20 @@ which is the normal state for a sitting whose bill has never been opened or sett
 `404` only when the order itself doesn't exist under this restaurant.
 
 **Response** `200` — `{ "data": { "bill": { /* bill payload */ } | null } }`
+
+### Mark a Bill Paid / Release a Stuck Payment
+
+```
+POST /api/owner/:restaurantId/bills/:billId/mark-paid          { method: "cash"|"upi"|"card" }
+POST /api/owner/:restaurantId/bills/:billId/release-payment    → data: { bill }
+POST /api/staff/:restaurantId/waiter/sessions/:sessionId/bill/release-payment   → data: { bill }
+```
+
+When a guest starts paying online the bill's total is held. If they abandon it, the hold
+lapses on its own after 30 minutes with no live payment; **release-payment** lets staff
+reopen it straight away. `409 PAYMENT_IN_PROGRESS` while a Razorpay payment for it is
+authorized/captured (wait for it to settle), `409 BILL_ALREADY_PAID`. Pending-orders rows
+(`GET …/orders/pending`) carry `approvalExpiresAt` — online orders count from payment.
 
 ---
 
@@ -4485,7 +4572,7 @@ The QR URL has the form: `https://yourdomain.com/menu?restaurantId=<id>&tableId=
 GET /api/staff/:restaurantId/waiter/tables
 ```
 
-Returns all active tables with their current open session (if any).
+Returns all active tables with their current session (if any) — `open`, or `bill_requested` while a guest is paying online (the waiter can still release that payment or settle at the counter). A table never has two live sessions.
 
 **Response** `200`
 
@@ -4648,7 +4735,7 @@ waiter rooms.
 GET /api/staff/:restaurantId/waiter/sessions
 ```
 
-Returns all open table sessions with their orders and a running total. The session carries
+Returns all open table sessions — including `bill_requested` ones whose guest is paying online — with their orders and a running total. The session carries
 its resolved `tableNumber`, and each order is enriched (see *Owner — List Orders*) and
 numbered with its `round`, oldest first. `runningTotal` excludes cancelled orders.
 
@@ -4749,13 +4836,18 @@ unserved. A table cannot be closed out and freed while the kitchen still owes it
 
 ```json
 {
-  "paymentMethod": "upi"
+  "method": "cash"
 }
 ```
 
-| `paymentMethod` | Values |
+| `method` | Values |
 | --- | --- |
-| Accepted values | `"cash"`, `"upi"`, `"card"`, `"online"` |
+| Accepted values | `"cash"`, `"upi"`, `"card"` — money paid to the restaurant at the table. (`paymentMethod` is still read for older clients.) `"online"` is **rejected (400)**: online payments are the guest's own, via the QR menu. |
+
+The bill is recorded as `paymentChannel: "counter"`; the restaurant's ledger takes the
+platform-fee debit for it (₹12 + 3.5 % = ₹12.42 at default settings).
+`409 PAID_ONLINE` while the guest's online payment for it is authorized/captured;
+`409 BILL_ALREADY_PAID` once it is settled.
 
 **Response** `200` — `data: { bill }`, the same payload, now with
 `status: "paid"`, `payment.method`, `payment.paidAt` and `closedAt` set.
@@ -4767,6 +4859,10 @@ A `table_status_changed` Socket.IO event is emitted to the restaurant room.
 ## Kitchen — KDS
 
 All kitchen routes require `Authorization: Bearer <staffToken>` with role `chef`.
+
+Queue, board, order detail and status-update responses carry the same restaurant view of
+`deliveryAssignment` as the owner's orders — incl. **`pickupOtp`** while a rider is assigned and
+hasn't picked up (see Owner — Orders → Get Order).
 
 Base path: `/api/staff/:restaurantId/kitchen`
 
@@ -5328,3 +5424,599 @@ async function updateOrderStatus(orderId, currentStatus, newStatus) {
   }
 }
 ```
+---
+
+## Payments & Pricing (2026-10)
+
+### Money conventions
+
+- **Legacy fields stay in rupees** (`subtotal`, `deliveryFee`, `platformFee`, `tax`, `tip`,
+  `grandTotal`, bill `charges.*`). Every **new** money field is integer **paise** and says so
+  (`…Paise`, `charges`, `chargeBreakdown`, ledger `amountPaise`, settlement `totals`).
+- All rates come from **Finance Settings** (admin-editable, versioned — see
+  [Admin — Finance](#admin--finance-settings-money-views-refunds-settlements-payouts)).
+  Defaults: food GST 5 % (GST-registered restaurants only), services GST 18 %, platform fee
+  ₹12 incl. GST, delivery ₹8/km + GST (distance rounded up to 0.1 km), settlement charge
+  3.5 % incl. GST, COD off.
+- The payable total is rounded to the rupee; the difference is a `round_off` line.
+
+### The `charges` breakdown
+
+Returned on the cart preview (`bill.charges`), the checkout summary (`bill.charges`), every
+order placed since Oct 2026 (`order.charges`, frozen) and every bill (`bill.chargeBreakdown` in
+bill payloads, frozen once paid). Paise throughout.
+
+```json
+{
+  "orderType": "delivery",
+  "food":        { "subtotal": 30000, "discount": 0, "base": 30000, "gstPercent": 5, "gst": 1500, "total": 31500 },
+  "delivery":    { "pending": false, "distanceKm": 1, "base": 2542, "gst": 458, "total": 3000, "paidBy": "customer", "customerPays": 3000 },
+  "serviceCharge": 0,
+  "platformFee": { "count": 1, "base": 1017, "gst": 183, "total": 1200 },
+  "tip": 0,
+  "subtotalBeforeRoundOff": 35700,
+  "roundOff": 0,
+  "grandTotal": 35700,
+  "settingsVersionId": "6ac9…",
+  "settingsVersion": 3,
+  "lines": [
+    { "key": "item_total",   "label": "Item total",   "amountPaise": 30000, "sublabel": null },
+    { "key": "food_gst",     "label": "GST on food",  "amountPaise": 1500,  "sublabel": "5% of ₹300.00" },
+    { "key": "delivery_fee", "label": "Delivery fee", "amountPaise": 3000,  "sublabel": "1 km · incl. ₹4.58 GST" },
+    { "key": "platform_fee", "label": "Platform fee", "amountPaise": 1200,  "sublabel": "incl. ₹1.83 GST" },
+    { "key": "grand_total",  "label": "To pay",       "amountPaise": 35700, "sublabel": null }
+  ]
+}
+```
+
+- **Render `lines` in order** — never recompute totals on the device. Possible keys:
+  `item_total`, `discount` (negative), `food_gst`, `delivery_fee`, `service_charge`,
+  `platform_fee`, `tip`, `round_off`, `grand_total`.
+- `delivery.paidBy: "restaurant"` → free delivery for the customer (`customerPays: 0`,
+  sublabel `"Free delivery"`); the restaurant bears `delivery.total`.
+- `delivery.pending: true` (cart preview only) → the address can't be measured yet; the line's
+  `amountPaise` is `null`, sublabel `"Calculated at checkout"`, and it is not in the total.
+- `delivery` is `null` for dine-in and takeaway.
+
+### Cart & checkout summary
+
+```
+GET /api/cart                    → data: { cart, bill }
+GET /api/checkout/summary[?addressId=<saved address id>&tip=<rupees>]
+                                 → data: { address, cart, bill, deliveryIssue, deliveryIssueMessage, mealSections, vegFleetEligible, tipPresets }
+```
+
+`bill` keeps its rupee fields (`itemTotal`, `deliveryFee`, `platformFee`, `tax`,
+`discountAmount`, `grandTotal` — **without tip**) and adds `charges` and `deliveryIssue`.
+The cart is priced against the customer's default address; the summary against `addressId` when
+given (else the default) — the same address `POST /api/orders/checkout` must then send, so the
+total shown is the total charged. With `tip`, the summary's `charges` include it (and the
+round-off after it): show `charges.grandTotal`, don't add the tip on the client. Tip cap ₹500
+(`400 TIP_TOO_HIGH`); unknown `addressId` → `404 ADDRESS_NOT_FOUND`. `deliveryIssue`: `null | "ADDRESS_NOT_LOCATED" | "OUT_OF_DELIVERY_RANGE" | "RESTAURANT_NOT_LOCATED"`
+— placing the order will be refused with the same code, so warn before payment.
+
+### Placing an order
+
+```
+POST /api/orders/checkout
+Headers: Idempotency-Key: <stable per attempt — reuse it when retrying the same checkout>
+Body:    { addressId?, deliveryInstructions?, cookingRequests?, extraCutlery?, tip?, vegFleetOptIn?, paymentMethod: "online" | "cod" }
+```
+
+**201** `data: { orderId, restaurantName, status, vegFleetOptIn, order, clientSecret, razorpayOrder, paymentSimulated?, paymentError? }`
+
+| Outcome | What the app does |
+| --- | --- |
+| `razorpayOrder: { id, amount, currency, keyId }` | open Razorpay Checkout with it |
+| `paymentSimulated: true` | dev only: `POST /api/orders/:id/payment/simulate` |
+| `paymentError` set (order exists, unpaid) | offer **Retry payment** (below) |
+| `200 "Duplicate — existing order returned"` `{ order: { orderId } }` | same `Idempotency-Key` already placed it |
+| `400 COD_UNAVAILABLE` / `ADDRESS_NOT_LOCATED` / `OUT_OF_DELIVERY_RANGE` | nothing was created |
+| `503 PAYMENT_GATEWAY_UNAVAILABLE` | nothing was created; online payment is down |
+| `409 IDEMPOTENCY_IN_PROGRESS` | the first request with this key is still running — wait and poll |
+
+The order is frozen with `charges` and the rupee fields derived from it; `tip` (whole rupees
+recommended) is part of `grandTotal`. `POST /api/orders` (raw items) is priced the same way and
+needs `deliveryAddress.coordinates` for delivery.
+
+### Paying, retrying, polling (customer)
+
+```
+POST /api/orders/:id/payment/verify   { razorpay_payment_id, razorpay_order_id, razorpay_signature }
+POST /api/orders/:id/payment/retry
+GET  /api/orders/:id/payment
+POST /api/orders/:id/payment/simulate     (dev only — 404 unless simulation is on)
+```
+
+- **verify** checks the signature **and** fetches the payment from Razorpay: it must be for this
+  order's Razorpay order (current or an earlier one from a retry), in INR, for exactly the frozen
+  amount, and captured (an `authorized` one is captured here). `200 { order }` (now
+  `paymentStatus: "paid"`, `paymentChannel: "online"`). Mismatch → `400 PAYMENT_VERIFICATION_FAILED`
+  (the money, if taken, is flagged for return). `502 PAYMENT_GATEWAY_ERROR` → **don't treat as
+  failed**: poll the status endpoint; the webhook usually settles it.
+- **retry** → same shape as checkout's payment fields: `{ orderId, clientSecret, razorpayOrder, reused }`
+  (or `paymentSimulated: true`). Reuses the Razorpay order while it can still be paid at the same
+  amount. `409 ALREADY_PAID`, `409 ORDER_CANCELLED`, `409 PAYMENT_ALREADY_RECEIVED` (a payment is
+  settling — poll instead), `400 NOT_ONLINE_PAYMENT`.
+- **status** → `{ orderId, paymentMethod, paymentStatus, paid, confirmedVia: "verify"|"webhook"|"simulation"|null, failureReason, amount, canRetry, refund }`.
+
+### Hosted checkout page
+
+`GET /checkout.html?key=&order_id=&amount=&currency=INR&name=&redirect=yulostores://…` — the
+Razorpay bridge page for the mobile app's in-app browser. Its script is `/checkout.js` (strict
+CSP). Redirects back with `status=success|cancelled|failed` and the three Razorpay fields.
+
+### Dine-in bills
+
+Bills are priced by the same engine: food GST per the platform rate (GST-registered restaurants
+only), the restaurant's own service charge as before, and the platform fee **once per bill**
+(Finance Settings `dineInPlatformFeeUnit` can make it once per round; none on an empty bill).
+Bill payloads keep `charges.*` (rupees, now with `roundOff`) and add `chargeBreakdown` (paise).
+Guest payment: see "Pay the Table's Bill (guest)" above. Counter payment:
+`POST /api/staff/:rid/waiter/sessions/:sessionId/bill/mark-paid { method }` (waiter) or
+`POST /api/owner/:rid/bills/:billId/mark-paid { method }` (owner) — `method: "cash"|"upi"|"card"`.
+
+### Fields every client may now see
+
+| On | Field | Meaning |
+| --- | --- | --- |
+| Order, Bill | `paymentChannel` | `online` (paid to Yulo via Razorpay) · `counter` (paid to the restaurant at the table) · `cod` (cash to the rider) |
+| Order, Bill | `paymentConfirmedVia` | `verify` · `webhook` · `simulation` |
+| Order, Bill | `paymentIntentHistory` | every Razorpay order id it has had |
+| Order, Bill | `paymentFailureReason` | why a payment was refused / failed |
+| Order | `charges` | frozen breakdown (above) |
+
+**Never returned to customers, owners, riders or the public:** `financials`, `razorpayFee`,
+`razorpayTax` (platform-internal; admin breakdown endpoints only).
+
+---
+
+## Refunds & Cancellations
+
+### Customer cancel
+
+```
+POST /api/orders/:id/cancel      { confirmNoRefund?: boolean }
+```
+
+| Order status | Result |
+| --- | --- |
+| `placed`, `confirmed` | cancelled; an online payment is **refunded in full** automatically |
+| `preparing`, `ready` | `400 CONFIRMATION_REQUIRED` (`details: { refundPercent: 0 }`) unless `confirmNoRefund: true` — then cancelled with **no refund**; the restaurant is paid |
+| `out_for_delivery` / picked up / finished | `409 ORDER_NOT_CANCELLABLE` |
+
+**200** `data: { order }` with `order.refund` = the customer view below (or `null`).
+
+### Automatic refunds
+
+| Who cancels | Refund | Razorpay fee borne by (Finance Settings `refundFeeBorneBy`) |
+| --- | --- | --- |
+| Restaurant rejects | full | `restaurant_reject` → restaurant (default) |
+| Nobody answered in time | full | `approval_timeout` → restaurant |
+| Customer before cooking | full | `customer_cancel_before_accept` → restaurant |
+| Kitchen / floor / admin after accepting | full | `restaurant_cancel_after_accept` → restaurant |
+| A payment lands on an already-cancelled order | full | per the original cancel's cause |
+
+Refunds go through Razorpay (`speed: "normal"`), one per order (idempotent). When the restaurant
+bears the fee, a `refund_gateway_fee` debit (Razorpay's fee incl. its GST) lands on its ledger.
+Only orders actually paid online are refunded.
+
+### `order.refund` (customer view)
+
+```json
+{ "status": "processing", "amount": 357, "amountPaise": 35700, "initiatedAt": "…", "processedAt": null,
+  "timeline": "Refund of ₹357.00 started — it usually reaches your original payment method in 5–7 business days." }
+```
+
+`status`: `pending | processing | processed | failed` (failed: "Your refund is delayed — our team
+has been alerted…"). Also on `GET /api/orders`, `GET /api/orders/:id`, `GET /api/orders/:id/tracking`
+(`refund`) and the payment-status endpoint. Order `paymentStatus` becomes `refunded` once processed;
+`refundStatus` (legacy) mirrors it.
+
+---
+
+## Owner — Bank Account, Ledger & Settlements
+
+All under `/api/owner/:restaurantId/…` with the owner's token (`403 NOT_OWNER` for another
+restaurant). Amounts in **paise**.
+
+### Bank account (where settlements are paid) — available before approval
+
+```
+GET /api/owner/:restaurantId/payout-account   → data: { account }
+PUT /api/owner/:restaurantId/payout-account   { accountHolderName, accountNumber, confirmAccountNumber, ifsc, bankName?, branch?, accountType: "savings"|"current" }
+                                              → data: { account, changed }
+```
+
+`account`: `{ status: "not_added"|"pending_verification"|"verified"|"rejected", accountHolderName,
+accountNumberLast4, accountNumberMasked: "XXXXXX9012", ifsc, bankName, branch, accountType,
+rejectionReason, submittedAt, verifiedAt, proofDocument: { _id, status, uploadedAt } | null }`.
+The full number is never returned. Validation: IFSC `^[A-Z]{4}0[A-Z0-9]{6}$` (upper-cased),
+9–18 digits, confirmation must match. Before verification a change replaces the account (→ `pending_verification`;
+identical re-save is a no-op). Once **verified**, a change becomes a *change request* (`pendingChange`, see
+*Bank account change requests*) and the verified account stays live. Proof: upload a cancelled cheque / statement
+as document type `bank_statement` (`POST /api/owner/:restaurantId/documents`, field `document`); for a change
+request upload the new account's proof as type **`bank_statement_change`** (only while a request is open —
+else `409 NO_OPEN_REQUEST`); it becomes the verified `bank_statement` when the admin verifies the change.
+`503 ENCRYPTION_NOT_CONFIGURED` if the server has no encryption key.
+
+### Ledger
+
+```
+GET /api/owner/:restaurantId/ledger?page&limit(≤100)&type&week=<any date in the week>&from&to
+→ data: { entries, total, page, limit, totals: { creditsPaise, debitsPaise, netPaise }, range }
+```
+
+`entry`: `{ _id, type, direction: "credit"|"debit", amountPaise, orderId?, billId?, eligibleAt,
+settlementId, note, breakdown }`. Types: `order_earning`, `dine_in_earning`,
+`counter_platform_fee`, `refund_gateway_fee`, `adjustment`, `carry_forward`.
+`breakdown` (owner view): `{ paymentChannel, customerPaid, yuloMoney: { platformFee, deliveryCharge },
+settlementCharge: { base, gst, total, percent }, restaurantBorneDelivery, planCharge, adCharge,
+penalty, restaurantNet, tip, settingsVersionId }` — Razorpay's fee, Yulo's margin and rider pay
+are removed.
+
+### Settlements
+
+```
+GET /api/owner/:restaurantId/settlements?status&page&limit
+GET /api/owner/:restaurantId/settlements/:settlementId          → data: { settlement, entries }
+GET /api/owner/:restaurantId/settlements/:settlementId/export   → text/csv (the per-order statement)
+```
+
+`settlement`: `{ _id, restaurantId, periodStart, periodEnd, status, totals, entryCount, payout,
+holdReason, holdNote, approvedAt }`. `status`: `draft | approved | processing | paid | failed |
+on_hold | carried_forward`. `holdReason`: `NEGATIVE_BALANCE_CARRIED_FORWARD | NEGATIVE_BALANCE |
+PAYOUT_ACCOUNT_NOT_VERIFIED | MANUAL`. `totals` (paise): `grossCustomerPaid, yuloMoneyPlatformFee,
+yuloMoneyDelivery, restaurantBorneDelivery, settlementCharge { base, gst, total },
+counterPlatformFees, refundGatewayFees, adjustments, penalties, carryForwardIn, carryForwardOut,
+planCharges, adCharges, failedPayoutsCarriedIn, tips, netPayable` (`tips` are passed to riders — listed so the statement adds up; not in the restaurant's net) (`failedPayoutsCarriedIn` ≥ 0 — a
+failed payout carried into this week, separate from negative-balance `carryForwardIn`). `payout`: `{ provider, reference, utr, initiatedAt, paidAt,
+failureReason }`. Weeks run Monday 00:00 → Sunday 23:59 IST.
+
+---
+
+## Admin — Finance (settings, money views, refunds, settlements, payouts)
+
+All under `/api/admin/finance/…` (and `/api/admin/stores/:id/payout-account…`), admin token.
+Every mutation is written to the admin activity log.
+
+### Finance Settings (versioned)
+
+```
+GET  /api/admin/finance/settings   → data: { active, upcoming, history, units }
+POST /api/admin/finance/settings   { settings: { <any subset> }, effectiveFrom?: ISO datetime, note? }
+                                   → 201 data: { version, changes: [{ field, from, to }],
+                                                 reappliedTo: [{ scheduledVersion, effectiveFrom, version|null, fields, skippedFields }] }
+```
+
+Fields (money in paise, percents as numbers): `foodGstPercent`, `serviceGstPercent`,
+`customerPlatformFee`, `dineInPlatformFeeUnit` (`bill|order`), `deliveryPerKmRate`,
+`deliveryMinCharge`, `deliveryDistanceRounding`, `settlementChargePercent`,
+`settlementChargeBase` (`customer_total|restaurant_share`), `codEnabled`, `riderBasePay`,
+`riderBaseKm`, `riderPerKmRate`, `settlementCycle { weekStartsOn, timezone }`, `payoutDayOfWeek`,
+`carryForwardNegative`, `payoutProvider` (`manual|bank_file|razorpayx|route`),
+`payoutBankFileFormat`, `refundFeeBorneBy { restaurant_reject, approval_timeout,
+customer_cancel_before_accept, restaurant_cancel_after_accept }` (`restaurant|platform`),
+`customerCancelAfterPreparationRefundPercent` (must be 0 for now).
+A save creates a new version (never edits one); `effectiveFrom` may be future, never past. The
+change is merged onto the version in force at `effectiveFrom`, and copied onto any version already
+scheduled after it (`reappliedTo`) so a later scheduled change can't silently undo it.
+`400 VALIDATION_ERROR`, `400 NO_CHANGES`.
+
+### Store GST flag & bank account
+
+`PATCH /api/admin/stores/:id { gstRegistered: boolean }` (a GST-registered store needs a valid GSTIN).
+
+```
+GET   /api/admin/stores/:id/payout-account           → data: { account }   (masked, as the owner sees it)
+POST  /api/admin/stores/:id/payout-account/reveal    → data: { accountNumber, account }   (audit-logged; Cache-Control: no-store)
+PATCH /api/admin/stores/:id/payout-account/verify    { submittedAt }                 → data: { account }
+PATCH /api/admin/stores/:id/payout-account/reject    { reason (3–300), submittedAt } → data: { account }
+```
+
+`submittedAt` (required) is the `account.submittedAt` the admin checked. If the owner has changed
+the account since, the decision is refused with `409 ACCOUNT_CHANGED` — reload and check again.
+
+### Per-order / per-bill money view
+
+```
+GET /api/admin/finance/orders/:orderId/breakdown
+GET /api/admin/finance/bills/:billId/breakdown
+→ data: { order|bill: {…summary}, charges, financials, projected, riderEarnings?, ledgerEntries }
+```
+
+`financials` (frozen when it became settlement-eligible): the owner fields plus
+`gateway { fee, tax, total }` (Razorpay's actual cut), `yuloSettlementMargin`, `riderPay`.
+`projected` is a preview from today's settings while `financials` is still `null`.
+
+### Refunds
+
+```
+GET  /api/admin/finance/refunds?status=pending|processing|processed|failed&source=order|bill|stray_payment&page&limit
+POST /api/admin/finance/refunds/:id/retry      → data: { source, refund, refundStatus }
+PATCH /api/admin/orders/:id/cancel             { reason (3–300) } → data: { order }   (full refund, rider released, audit-logged)
+```
+
+Rows come from orders, bills and stray payments; each has `source: "order"|"bill"|"stray_payment"`
+(filter accepts `stray` as a short form), `restaurantName`, and
+`:id` is that document's id. A stray payment is captured money Yulo holds that can't count
+towards its order/bill (`kind`: `duplicate_payment`, `bill_already_settled`, `bill_total_changed`,
+`refused_payment`, `dine_in_round_cancelled`). `pending` with no `razorpayRefundId` = owed back,
+not yet sent; a `dine_in_round_cancelled` row has `amountPaise: null` (admin decides — retry
+answers `409 REFUND_AMOUNT_UNKNOWN`). A refund stuck in `processing` without a Razorpay refund id
+is retryable.
+
+### Settlements
+
+```
+GET   /api/admin/finance/settlements?restaurantId&status&weekStart&page&limit
+POST  /api/admin/finance/settlements/generate            { weekStart }   → data: { periodStart, periodEnd, count, settlements }
+GET   /api/admin/finance/settlements/:id                  → data: { settlement, entries, platformTotals: { gatewayFees, yuloSettlementMargin, riderPay } }
+PATCH /api/admin/finance/settlements/:id/approve
+PATCH /api/admin/finance/settlements/:id/hold             { note }
+PATCH /api/admin/finance/settlements/:id/unhold
+PATCH /api/admin/finance/settlements/:id/mark-paid        { utr }        (paid outside the system)
+PATCH /api/admin/finance/settlements/:id/retry-payout     (failed → approved, next batch)
+PATCH /api/admin/finance/settlements/:id/carry-forward    (failed → closed; amount credited to next week)
+POST  /api/admin/finance/settlements/adjustments          { restaurantId, amountPaise, direction: "credit"|"debit", kind: "correction"|"penalty", note }
+GET   /api/admin/finance/settlements/export?weekStart     → text/csv, one row per restaurant
+GET   /api/admin/finance/settlements/:id/export           → text/csv, the settlement's rows (admin columns)
+```
+
+Generation is idempotent and runs automatically on Mondays 03:00 IST (needs Redis). A week that
+hasn't started can't be generated (`409 WEEK_NOT_STARTED`); a running week can be generated as a
+preview but not approved until it is over (`409 WEEK_NOT_ENDED`). Concurrent generations are
+serialised per settlement (`409 SETTLEMENT_BUSY` for actions during one). A negative week is
+carried forward once; if later credits make it positive again, the carry is reversed and it
+returns to `draft`. Approve needs a draft with `netPayable > 0` and a verified bank account. A penalty must be a
+debit (no GST).
+
+### Payout batches (bank bulk upload)
+
+```
+GET  /api/admin/finance/payout-batches?status&page&limit
+POST /api/admin/finance/payout-batches          { settlementIds?, note? }   → 201 data: { batch, skipped }
+GET  /api/admin/finance/payout-batches/:id      → data: { batch, settlements }
+GET  /api/admin/finance/payout-batches/:id/file → the bank's bulk-payment file (full account numbers; audit-logged; no-store)
+POST /api/admin/finance/payout-batches/:id/reconcile   { rows: [{ reference, status: "paid"|"failed"|"returned", utr?, reason? }] }  or  { csv: "<bank response file>" }
+                                                        → data: { batch, summary: { paid, failed, returned, unchanged, conflicts, unmatched } }
+POST /api/admin/finance/payout-batches/:id/cancel      { confirmNotUploaded: true }
+```
+
+`batch.status`: `created | downloaded | partially_reconciled | reconciled | cancelled`.
+Creating claims approved settlements (`→ processing`) and snapshots each beneficiary bank account;
+the file is refused (`409 BENEFICIARY_CHANGED`) if any account changed since — even if re-verified.
+Payment references are `YULO-<full settlement id>-<attempt>`. A `returned` result never reopens a
+settlement an admin marked paid by hand. CSV cells that a spreadsheet would run as a formula are
+prefixed with `'`; account-holder names are limited to letters, digits, spaces and `. , & ' ( ) / -`.
+One batch per settlement, ever. File
+layout: Finance Settings `payoutBankFileFormat` (`generic_csv` until the bank's preset is added).
+
+### Rider payouts (changed)
+
+`GET /api/admin/delivery-partners/:id/payouts?period=weekly|monthly` rows now carry `basePay`,
+`distancePay`, `tips`, `grossEarnings`, `netPayable` (= gross + tips + incentives − deductions)
+and `payable`. `POST /api/admin/delivery-partners/payouts/mark-paid { payoutIds }` →
+`{ modifiedCount, skipped: [{ payoutId, reason }] }` — only **weekly** payouts whose week has
+**ended** are paid; paid payouts are frozen (`409 PAYOUT_FROZEN` on adjust); monthly rows are
+statements.
+
+### Finance overview — Yulo money (F6)
+
+`GET /api/admin/finance/overview?from&to` adds `yulo` (rupees, from the ledger's settled lines,
+by settlement-eligible date): `{ yuloRevenue (= platformFees + deliveryCharges + settlementMargin),
+platformFees, deliveryCharges (customer-paid + restaurant-borne free delivery), settlementCharges,
+settlementMargin, gatewayFees, gatewayGst, gst { foodRestaurantLiability, yuloLiability,
+yuloOnPlatformFees, yuloOnDelivery, yuloOnSettlementCharges }, ledgerRows }`. The older fields
+(`grossRevenue`, `commissionRevenue` = settlement charge on GMV, …) are unchanged.
+
+### Restaurant payouts — lifecycle (B12, manual release)
+
+Two status axes on every payout (settlement): **eligibility** `pending` (still clearing) ·
+`eligible` · `on_hold`, and **transfer** `not_scheduled` · `scheduled` · `processing`
+(progress step "Released") · `paid` · `failed`. Views return `eligibility`, `transfer
+{ status, label, scheduledFor, paidAt, bankReference, lastFailure }`, `nextAction` and
+`ownerView { status, message }` (the sentence the restaurant sees). Nothing turns Paid on its
+own — a person records it with the bank reference.
+
+```
+GET   /api/admin/finance/payouts/weekly?weekStart          (default: last ended week)
+GET   /api/admin/finance/payouts/clearance?restaurantId&page&limit
+GET   /api/admin/finance/payouts/history?restaurantId&transferStatus&from&to&page&limit
+GET   /api/admin/finance/payouts/history/export?…          → text/csv (the filtered set)
+GET   /api/admin/finance/payouts/options                    → { holdReasons, failureReasons, payoutDayOfWeek, defaultReleaseDate }
+GET   /api/admin/finance/payouts/:id                        → payout detail
+PATCH /api/admin/finance/payouts/:id/schedule        { scheduledFor? }        not scheduled → scheduled
+PATCH /api/admin/finance/payouts/:id/schedule-date   { scheduledFor }         change date (re-confirms the destination)
+PATCH /api/admin/finance/payouts/:id/release         { expectedNetPaise? }    scheduled → processing (attempt ref YULO-ATT-<yyyymmdd>-<seq>)
+PATCH /api/admin/finance/payouts/:id/mark-paid       { bankReference (4–40), creditedAt? }   processing → paid
+PATCH /api/admin/finance/payouts/:id/mark-failed     { reason, note? }        processing → failed (stays eligible, same statement)
+PATCH /api/admin/finance/payouts/:id/reschedule      { scheduledFor? }        failed → scheduled (keeps lastFailure)
+PATCH /api/admin/finance/payouts/:id/hold            { reason, note? }        from not scheduled / scheduled / failed; clears the date
+PATCH /api/admin/finance/payouts/:id/hold-reason     { reason, note? }
+PATCH /api/admin/finance/payouts/:id/release-hold                              → eligible, not scheduled
+                                                     every PATCH → { settlement }
+```
+
+- **Weekly batch** → `{ periodStart, periodEnd, kpis { batchTotal { amountPaise, restaurants, orders },
+  readyToRelease, onHold { …, reasons }, awaitingClearance { amountPaise, orders } }, rows [{ settlementId,
+  restaurant { name, gstRegistered }, foodInclGstPaise, deductionsPaise, netPayablePaise, eligibility,
+  transfer, holdLabel, nextAction, counts }], tabCounts { clearanceQueue, bankRequests, paymentIssues } }`.
+- **Clearance queue** — one row per order/bill not yet cleared: `kind, id, displayNo, restaurant, placedAt,
+  customerPaidPaise, expectedPayoutPaise, clearsAt, stage: awaiting_delivery|clearing`; `totals`.
+- **History** — `kpis { paid, scheduled { …, nextDate }, notYetScheduled }`; rows with `transferDate`
+  (paid date when paid, else scheduled date) and `bankReference`.
+- **Detail** — `settlement` (incl. `hold.internalNote`, admin only), `restaurant`, `destination { last4,
+  verified, changeRequested }`, `calculation { lines, netPayoutPaise }` — lines Food incl. GST ("Food"
+  when not GST-registered), Free delivery, Settlement fees, Dine-in dues, Refund adjustment, Adjustments /
+  Carried forward (when non-zero) — `counts`, `records`, `progress`, `linkedTickets`, `ownerView`.
+- Reasons — hold: `dispute_review | bank_details_review | compliance_review | other`; failure:
+  `bank_rejected_credit | account_closed_or_frozen | name_mismatch | invalid_ifsc | other` (`other`
+  needs a note). The hold note is staff-only (never in an owner response).
+- Errors: `409 NOT_SCHEDULED`, `NOT_PROCESSING`, `AMOUNT_CHANGED`, `BENEFICIARY_CHANGED`,
+  `WEEK_NOT_ENDED`, `NOT_APPROVABLE`, `PAYOUT_ACCOUNT_NOT_VERIFIED`, `CONCURRENT_UPDATE`.
+- **Clearing:** online money is eligible at max(delivered / bill paid, payment + 2 working days IST,
+  Sat/Sun skipped) — it joins the statement of the week it clears in. Counter rows are eligible at once.
+- **Older endpoints:** `settlements/:id/approve` = schedule (default date: next `payoutDayOfWeek`);
+  `retry-payout` = reschedule to the next payout day; `mark-paid { utr }` still works; payout-batch
+  reconcile accepts `preview: true` (dry run) and records `creditedAt` / `lastFailure`.
+
+### Bank account change requests (B12)
+
+Once an account is **verified**, an owner's `PUT …/payout-account` creates a change request; the
+verified account stays live (payouts keep going to it) until an admin verifies the new one. A
+not-added / pending / rejected account is still replaced directly. `account` gains
+`pendingChange { status: in_review|awaiting_restaurant|rejected, accountHolderName, accountNumberLast4,
+accountNumberMasked, ifsc, bankName, branch, accountType, requestedAt, infoRequest { message, at },
+rejectionReason, proofDocument } | null` and `hasPendingChange`. PUT → `{ account, changed,
+changeRequested }`.
+
+```
+GET   /api/admin/bank-requests?status=open|in_review|awaiting_restaurant|rejected|all&page&limit
+      → { requests [{ restaurantId, restaurantName, receivedAt, currentAccountLast4, requestedAccountLast4,
+          requestStatus, affects { settlementId, periodStart, periodEnd, netPayablePaise, eligibility,
+          transferStatus, scheduledFor }, request }], total, counts { open, awaitingRestaurant } }
+PATCH /api/admin/stores/:id/payout-account/change/verify        { requestedAt }
+PATCH /api/admin/stores/:id/payout-account/change/reject        { reason (3–300), requestedAt }
+PATCH /api/admin/stores/:id/payout-account/change/request-info  { message (3–500), requestedAt }
+POST  /api/admin/stores/:id/payout-account/reveal               { which?: "current"|"requested" } → { accountNumber, which, account }
+```
+
+`409 ACCOUNT_CHANGED` (stale `requestedAt`), `409 NO_OPEN_REQUEST`. All audit-logged, `no-store`.
+
+### Owner — Payments & Payouts (B12)
+
+All `GET` under `/api/owner/:restaurantId/payments`, approved restaurants, `no-store`. Never
+Razorpay's fee, Yulo's margin, rider pay, the staff hold note or admin ids.
+
+```
+/overview?statementId|weekStart&status&page&limit
+   → { isEmpty, period, selectedStatementId, nextPayout { statementId, period, netPaise, eligibility,
+       transferStatus, scheduledFor, holdLabel, ownerView } | null, nextPayoutReason,
+       stillClearing { amountPaise, orderCount }, yuloMoney { amountPaise, periodStart, periodEnd },
+       payoutDestination { last4, status, holderName, frequency: "weekly", hasPendingChange },
+       statements [{ statementId, period, transferStatus, netPaise }],
+       recentOrders { rows [{ kind: order|bill, id, displayNo, date,
+         paymentType: online|dine_in_online|dine_in_counter|counter|cod, counterMethod,
+         customerPaidPaise|null, youReceivePaise (signed), status: pending|eligible|on_hold|settled|refunded,
+         statementId }], total, page, limit } }
+/history?transferStatus&from&to&page&limit
+   → { kpis { totalPaidPaise, upcomingEligible { statementId, netPaise, scheduledFor } | null,
+       availableStatements }, rows [{ statementId, period, transferDate, netPayoutPaise, transferStatus,
+       eligibility, ownerView }], total, page, limit }
+/statements/:statementId
+   → { statement { statementId, period, eligibility, transfer, holdLabel, destinationLast4, bankReference,
+       transferDate, netPayoutPaise, clearedAt, entryCount }, ownerView, timeline [prepared, eligible,
+       on_hold?, scheduled, released, failed { reasonLabel }?, paid], yuloMoneyPaise,
+       calculation { lines, netPayoutPaise }, otherFeeCategories, orders [ …row ], hasEntries }
+/orders/:orderId     /bills/:billId
+   → { kind, id, displayNo, tableNumber, orderType, date, paymentType, status,
+       customerBill { paidAtTable, counterMethod?, lines, paidAmountPaise },
+       restaurantSettlement { projected, lines, receivedPaise }, otherFeeCategories,
+       clearance { stage: awaiting_delivery|clearing|eligible|in_statement|settled|refunded|counter,
+         paidAt, clearsAt, eligibleAt, scheduledFor },
+       linkedStatement { statementId, period, netPayoutPaise, contributionPaise } | null,
+       yuloMoneyPaise, refund | null, ownerView }
+/settings
+   → { account { status, accountHolderName, accountNumberLast4, accountNumberMasked, rejectionReason,
+       verifiedAt, proofDocument, pendingChange { status, accountNumberLast4, requestedAt, infoRequest,
+       rejectionReason } | null, hasPendingChange }, frequency: "weekly",
+       nextScheduledPayout { statementId, period, netPaise, scheduledFor, destinationLast4 } | null }
+```
+
+`yuloMoney` = customer-paid platform fee + delivery on online money only (a counter dine-in
+platform fee is a restaurant debit). `nextPayout` is the money actually on its way: weeks owing nothing (carried forward /
+net ≤ 0) are skipped, then the furthest along wins — processing, then scheduled (soonest date), then failed,
+then not scheduled / held — oldest week first. A status-filtered recent-orders list searches the latest
+500 orders and 500 bills. CSV statement export: `GET /api/owner/:rid/settlements/:id/export`.
+
+### PDF downloads (decided 2026-10-20)
+
+Server-generated PDFs, built from the same views as the screens (never re-computed). A4,
+Noto Sans (has ₹), "Generated … IST" + page numbers. All: `Content-Type: application/pdf`,
+`Content-Disposition: attachment; filename="…"`, `Cache-Control: no-store`, same auth and scoping
+as the JSON endpoints.
+
+```
+Owner
+GET /api/owner/:restaurantId/settlements/:settlementId/pdf        weekly statement (yulo-statement-<restaurant>-<yyyy-mm-dd>.pdf)
+GET /api/owner/:restaurantId/payments/orders/:orderId/pdf          order payment statement (yulo-order-<no>-<date>.pdf)
+GET /api/owner/:restaurantId/payments/bills/:billId/pdf            bill payment statement (yulo-bill-<no>-<date>.pdf)
+Admin (audit-logged: payout.statement_pdf / payout.receipt_pdf)
+GET /api/admin/finance/payouts/:id/pdf                             statement + platform figures (Razorpay fees, Yulo margin, rider pay, hold internal note)
+GET /api/admin/finance/payouts/:id/receipt.pdf                     payout receipt — paid payouts only (409 NOT_PAID before)
+```
+
+Owner PDFs never contain Razorpay's fee, Yulo's margin, rider pay or the staff hold note. A
+foreign statement/order/bill id answers `404`; another owner's restaurant `403`.
+
+### Payment issues (B12 — on SupportTicket)
+
+Ticket number `YP-YYYYMMDD-NNN`; `kind: payment`; `issueType: payout_not_received | wrong_deduction |
+missing_order`; statuses `open · in_review · awaiting_restaurant · resolved` (old `in_progress` /
+`closed` accepted on input; customer and rider apps still receive the old values). A ticket never
+changes a payout. Account/card numbers and OTPs in text are masked before storing (`redacted: true`).
+Attachments: PDF / JPG / PNG ≤ 5 MB per message, streamed through the API (no storage URL).
+
+```
+Owner  /api/owner/:restaurantId/payment-issues
+  POST /                         { issueType, description (10–4000), contactEmail, contactPhone?, settlementId?|orderId?|billId? } (+ multipart attachment) → 201 { ticket }
+  GET  /?status&page&limit       → { tickets, total, page, pages, counts }
+  GET  /:ticketId                → { ticket }   (progress, awaitingInformation, linkedRecord, messages[{ from: support|restaurant, … }])
+  POST /:ticketId/messages       { text } (+ attachment)
+  GET  /:ticketId/attachments/:attachmentId
+Admin  /api/admin/tickets
+  GET  /?kind=payment|general&issueType&restaurantId&status   (+ counts)
+  GET  /counts?kind=
+  POST /:id/request-information  { text }      → awaiting_restaurant (400 MESSAGE_REQUIRED without text)
+  PATCH /:id                     { status, resolutionNote? }   (awaiting_restaurant only via request-information)
+  POST /:id/messages             { text } (+ attachment)
+  GET  /:id/attachments/:attachmentId
+```
+
+`linkedRecord`: payout `{ kind: payout, settlementId, period, amountPaise, transferStatus, eligibility,
+scheduledFor, paidAt, last4, bankReference }` or order/bill `{ kind, displayNo, date, amountPaise,
+transferStatus, statement }`.
+
+---
+
+## Partner — Earnings & Config
+
+```
+GET /api/partner/config                          → data: { config: { codEnabled } }
+GET /api/partner/earnings?period=today|weekly|monthly
+```
+
+Earnings now adds `period { start, end }` (IST), real `tips`, and `deliveries[]`:
+`{ orderId, restaurantName, deliveredAt, distanceKm, basePay, distancePay, surgePay, tip, penalty, total }`
+(rupees, newest first, up to 100). Rider pay is fixed when the rider accepts the order: base
+₹20 for the first 2 km, ₹5/km beyond (Finance Settings), plus the customer's tip — the offer's
+`fare` shows the same figure. COD offers carry `codAmount` = the order's `grandTotal`.
+
+`GET /api/partner/orders/:orderId/summary` → `{ totalKm, payout: { basePay, distancePay, surge, tip, penalty, total } }`
+(rupees; frozen at acceptance; missing parts of a legacy breakdown are 0; `total` = base + distance + surge + tip − penalty,
+the same sum as the earnings lines). Rider socket event **`order_cancelled { orderId }`** — the order was cancelled;
+accept / verify-pickup / deliver on it answer `409 ORDER_CANCELLED` (`ORDER_UNAVAILABLE` if reassigned).
+
+---
+
+## Razorpay Webhooks
+
+```
+POST /api/webhooks/razorpay        (raw JSON body; X-Razorpay-Signature, X-Razorpay-Event-Id)
+```
+
+Each event id is processed once (stored in `webhookevents`). `400 INVALID_SIGNATURE` for a bad
+signature; `502/500` for a transient failure (Razorpay retries); `200` otherwise (including
+unknown orders and permanently failed events, which are recorded).
+
+| Event | Effect |
+| --- | --- |
+| `payment.captured`, `order.paid` | Settles the order or bill whose Razorpay order (current or earlier) it is for — after the same amount/currency checks as verify |
+| `payment.failed` | Marks a not-yet-paid order `failed` (never downgrades a paid one) |
+| `refund.processed` | Refund → `processed`; order `paymentStatus: refunded` |
+| `refund.failed` | Refund → `failed` (logged as an alert; admin retry) |
+| `refund.created` | Acknowledged |
+
+Enable exactly these in the Razorpay dashboard → Settings → Webhooks, pointing at
+`https://<api-host>/api/webhooks/razorpay` with the `RAZORPAY_WEBHOOK_SECRET`.

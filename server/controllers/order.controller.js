@@ -8,7 +8,10 @@ import * as deliveryAssignmentService from '../services/deliveryAssignment.servi
 import * as paymentService from '../services/payment.service.js';
 import * as trackingService from '../services/tracking.service.js';
 import * as orderApprovalService from '../services/orderApproval.service.js';
-import { env } from '../config/env.js';
+import { customerRefundView } from '../services/refund.service.js';
+import { withoutInternalMoney } from '../services/ledger.service.js';
+import { toPaise } from '../utils/money.js';
+import { isCodEnabled, paymentSimulationEnabled } from '../config/payments.config.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -104,38 +107,56 @@ const checkoutSchema = z.object({
   tip: z.number().min(0).optional().default(0),
   vegFleetOptIn: z.boolean().optional().default(false),
   paymentMethod: z.enum(['cod', 'online']).default('cod'),
+  // Optional: the charges.grandTotal (paise) the checkout summary showed — 409 PRICE_CHANGED if
+  // the order would now cost something else.
+  expectedTotalPaise: z.number().int().min(0).optional(),
 });
 
-// Shared by createOrder and checkout below — same Razorpay-order-creation block, one
-// place to change if/when a real webhook-verified flow replaces this placeholder.
+// Runs BEFORE an order is created, so a refused payment choice never leaves an order behind.
+// Online needs a configured gateway (or dev simulation); anything else on a delivery is cash
+// on delivery, which the business can switch off. Takeaway cash is paid at the counter on
+// pickup and isn't COD.
+const assertPaymentChoiceAllowed = async ({ paymentMethod, type }) => {
+  if (paymentMethod === 'online') {
+    paymentService.assertOnlinePaymentAvailable();
+    return;
+  }
+  if (type === 'delivery' && !(await isCodEnabled())) {
+    throw new ApiError(400, 'COD_UNAVAILABLE', 'Cash on delivery is not available right now — please pay online');
+  }
+};
+
+// Shared by createOrder and checkout below. Creates the Razorpay order for an order that
+// has just been placed for online payment and stamps its id (paymentIntentId) and the exact
+// paise amount (paymentAmountPaise) onto the order — verify and the webhook check a
+// payment against both.
 //
-// Persists the Razorpay order id onto Order.paymentIntentId — without this, neither
-// POST /api/orders/:id/payment/verify nor the /api/webhooks/razorpay handler would have
-// anything to confirm a submitted payment actually belongs to this order (this was
-// created and returned to the client, but never actually saved anywhere, before this step).
+// Outcomes the client can tell apart:
+//   razorpayOrder set           → open Razorpay Checkout with it
+//   paymentSimulated: true      → dev simulation is on; use POST .../payment/simulate
+//   paymentError set            → the gateway failed just now; the order exists but is unpaid
+//                                 (it can't be accepted by the restaurant until paid)
 const createRazorpayOrderIfNeeded = async (order) => {
   try {
-    // razorpayOrder carries everything the client needs to open the hosted Checkout page
-    // (see public/checkout.html) without it having to recompute the amount itself —
-    // keyId is Razorpay's publishable key, safe to hand to the client. null when no
-    // gateway key is configured (paymentService.createRazorpayOrder's own signal).
+    // keyId is Razorpay's publishable key, safe to hand to the client.
     const razorpayOrder = await paymentService.createRazorpayOrder({
       amountRupees: order.grandTotal ?? order.subtotal,
       receipt: order._id,
+      notes: { orderId: String(order._id) },
     });
-    if (!razorpayOrder) return { clientSecret: null };
+    if (!razorpayOrder) return { clientSecret: null, razorpayOrder: null, paymentSimulated: true };
 
-    order.paymentIntentId = razorpayOrder.id;
+    paymentService.adoptRazorpayOrder(order, razorpayOrder);
     await order.save();
     return { clientSecret: razorpayOrder.id, razorpayOrder };
   } catch (err) {
-    // Previously swallowed entirely — a broken key, a network blip, or a Razorpay
-    // outage looked identical to "no gateway configured" (env.RAZORPAY_KEY_ID unset),
-    // with zero trace in the logs. Still returns clientSecret: null either way (the
-    // order is placed either way; the customer just can't pay online this attempt),
-    // but now the two cases are distinguishable after the fact.
+    // The order is already placed by the time this runs, so this reports rather than throws.
     logger.error({ err, orderId: order._id }, 'Razorpay order creation failed');
-    return { clientSecret: null };
+    return {
+      clientSecret: null,
+      razorpayOrder: null,
+      paymentError: err instanceof ApiError ? err.code : 'PAYMENT_GATEWAY_ERROR',
+    };
   }
 };
 
@@ -147,6 +168,8 @@ export const createOrder = asyncHandler(async (req, res) => {
 
   const { restaurantId, items, type, deliveryAddress, paymentMethod, specialInstructions } = result.data;
   const idempotencyKey = req.headers['idempotency-key'] || null;
+
+  await assertPaymentChoiceAllowed({ paymentMethod, type });
 
   const order = await orderService.createOrder({
     restaurantId,
@@ -163,10 +186,10 @@ export const createOrder = asyncHandler(async (req, res) => {
     return sendSuccess(res, 200, 'Duplicate — existing order returned', { order: { orderId: order.orderId } });
   }
 
-  const responseData = { order };
-  if (paymentMethod === 'online') {
-    Object.assign(responseData, await createRazorpayOrderIfNeeded(order));
-  }
+  // The Razorpay order first — it records the payment intent on the order — then the response.
+  // The fresh document carries the internal money keys (empty at this point) — not for the app.
+  const payment = paymentMethod === 'online' ? await createRazorpayOrderIfNeeded(order) : {};
+  const responseData = { order: withoutInternalMoney(order), ...payment };
 
   sendSuccess(res, 201, 'Order placed', responseData);
 });
@@ -190,8 +213,11 @@ export const checkout = asyncHandler(async (req, res) => {
     tip,
     vegFleetOptIn,
     paymentMethod,
+    expectedTotalPaise,
   } = result.data;
   const idempotencyKey = req.headers['idempotency-key'] || null;
+
+  await assertPaymentChoiceAllowed({ paymentMethod, type: 'delivery' });
 
   const order = await orderService.createOrderFromCart({
     userId: req.user._id,
@@ -202,6 +228,7 @@ export const checkout = asyncHandler(async (req, res) => {
     tip,
     vegFleetOptIn,
     paymentMethod,
+    expectedTotalPaise,
     idempotencyKey,
   });
 
@@ -210,6 +237,8 @@ export const checkout = asyncHandler(async (req, res) => {
   }
 
   const restaurant = await Restaurant.findById(order.restaurantId).select('name').lean();
+  // The Razorpay order first — it records the payment intent on the order — then the response.
+  const payment = paymentMethod === 'online' ? await createRazorpayOrderIfNeeded(order) : {};
 
   // Screen 22/22v need enough to render immediately, no extra round-trip — orderId/
   // restaurantName/status/vegFleetOptIn at the top level, plus the full order for anything else.
@@ -218,23 +247,40 @@ export const checkout = asyncHandler(async (req, res) => {
     restaurantName: restaurant?.name ?? null,
     status: order.status,
     vegFleetOptIn: order.vegFleetOptIn,
-    order,
+    order: withoutInternalMoney(order),
+    ...payment,
   };
-  if (paymentMethod === 'online') {
-    Object.assign(responseData, await createRazorpayOrderIfNeeded(order));
-  }
 
   sendSuccess(res, 201, 'Order placed', responseData);
 });
 
-// Stand-in for the real Razorpay Checkout + verify round trip while no gateway SDK is
-// bundled client-side (see Payment.jsx). Gated on the exact same signal
-// createRazorpayOrderIfNeeded already uses for "no gateway wired in" — once
-// RAZORPAY_KEY_ID is configured, this route stops working rather than silently
-// bypassing a real payment.
+// The order as the customer may see it after a payment call: re-read from the database (so
+// nothing a service set in memory — Razorpay's fee, settlement figures — rides along; those are
+// select:false) with the refund in plain words.
+// The delivery as the customer may see it: who is assigned and when the pickup happened.
+// Never the pickup OTP — the restaurant reads that to the rider at handover (owner and kitchen
+// order views, services/orderView.service.js) — nor the offer bookkeeping (offeredTo /
+// offerStatus / offerExpiresAt / history: other riders' rejections) or the rider's pay.
+const withCustomerDelivery = (order) => {
+  if (order?.deliveryAssignment) {
+    const { partnerId, status, assignedAt, pickupOtpVerifiedAt } = order.deliveryAssignment;
+    order.deliveryAssignment = { partnerId, status, assignedAt, pickupOtpVerifiedAt };
+  }
+  return order;
+};
+
+const customerOrderView = async (orderId) => {
+  const order = await Order.findById(orderId).lean();
+  if (order) order.refund = customerRefundView(order);
+  return withCustomerDelivery(order);
+};
+
+// Dev/local stand-in for the Razorpay Checkout + verify round trip. Only exists when
+// payment simulation is on (config/payments.config.js) — never in production, whatever the
+// flag says. Otherwise it answers exactly like an unknown route, so nothing can probe it.
 export const simulatePayment = asyncHandler(async (req, res) => {
-  if (env.RAZORPAY_KEY_ID) {
-    throw new ApiError(400, 'NOT_SIMULATED', 'A real payment gateway is configured; simulation is unavailable');
+  if (!paymentSimulationEnabled) {
+    throw new ApiError(404, 'NOT_FOUND', `Route ${req.method} ${req.originalUrl} not found`);
   }
 
   const order = await Order.findOne({ _id: req.params.id, userId: req.user._id });
@@ -252,10 +298,93 @@ export const simulatePayment = asyncHandler(async (req, res) => {
   // Idempotent: a retry after a dropped response re-confirms the same simulated payment
   // rather than minting a second fake payment id.
   if (order.paymentStatus !== 'paid') {
-    await paymentService.recordCapturedPayment(order, `sim_${crypto.randomBytes(12).toString('hex')}`);
+    await paymentService.recordCapturedPayment(order, `sim_${crypto.randomBytes(12).toString('hex')}`, null, 'simulation');
   }
 
-  sendSuccess(res, 200, 'Payment simulated', { order });
+  sendSuccess(res, 200, 'Payment simulated', { order: await customerOrderView(order._id) });
+});
+
+// Paise the order's payment is for — frozen when its first Razorpay order was created, else
+// its grand total.
+const orderAmountPaise = (order) => order.paymentAmountPaise ?? toPaise(order.grandTotal ?? order.subtotal);
+
+const canRetryPayment = (order) =>
+  order.paymentMethod === 'online' &&
+  !['paid', 'refunded'].includes(order.paymentStatus) &&
+  order.status !== 'cancelled';
+
+// POST /api/orders/:id/payment/retry — pay for an online order whose payment didn't go
+// through (dismissed, failed, app killed). Returns the Razorpay order to open Checkout with,
+// for the SAME frozen amount: the existing one when Razorpay still accepts payments on it,
+// else a new one. 409 PAYMENT_ALREADY_RECEIVED when a payment already went through and is
+// settling — poll GET .../payment instead. Same response shape as checkout.
+export const retryPayment = asyncHandler(async (req, res) => {
+  const order = await Order.findOne({ _id: req.params.id, userId: req.user._id });
+  if (!order) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
+  if (order.paymentMethod !== 'online') {
+    throw new ApiError(400, 'NOT_ONLINE_PAYMENT', 'This order is not paid online');
+  }
+  if (order.paymentStatus === 'paid') throw new ApiError(409, 'ALREADY_PAID', 'This order is already paid');
+  if (!canRetryPayment(order)) {
+    throw new ApiError(409, 'ORDER_CANCELLED', 'This order was cancelled — there is nothing to pay');
+  }
+
+  const result = await paymentService.ensureRazorpayOrder(order, {
+    amountPaise: orderAmountPaise(order),
+    receipt: order._id,
+    notes: { orderId: String(order._id) },
+  });
+  if (!result) {
+    return sendSuccess(res, 200, 'Use simulated payment', {
+      orderId: order._id,
+      clientSecret: null,
+      razorpayOrder: null,
+      paymentSimulated: true,
+    });
+  }
+
+  // Conditional: a payment may have landed (webhook) while Razorpay was being asked — a paid
+  // order must never be put back to 'pending'.
+  const intent = result.razorpayOrder;
+  const updated = await Order.findOneAndUpdate(
+    { _id: order._id, paymentStatus: { $nin: ['paid', 'refunded'] }, status: { $ne: 'cancelled' } },
+    {
+      $set: {
+        paymentStatus: 'pending',
+        paymentFailureReason: null,
+        ...(result.reused ? {} : { paymentIntentId: intent.id, paymentAmountPaise: intent.amount }),
+      },
+      ...(result.reused ? {} : { $addToSet: { paymentIntentHistory: intent.id } }),
+    },
+    { new: true }
+  );
+  if (!updated) throw new ApiError(409, 'ALREADY_PAID', 'This order was just paid or cancelled — refresh to see it');
+
+  sendSuccess(res, 200, result.reused ? 'Payment ready' : 'New payment created', {
+    orderId: order._id,
+    clientSecret: result.razorpayOrder.id,
+    razorpayOrder: result.razorpayOrder,
+    reused: result.reused,
+  });
+});
+
+// GET /api/orders/:id/payment — where the payment stands. An app whose verify call failed or
+// never returned polls this instead of assuming the worst: a webhook may already have settled
+// the payment (confirmedVia: 'webhook').
+export const getPaymentStatus = asyncHandler(async (req, res) => {
+  const order = await Order.findOne({ _id: req.params.id, userId: req.user._id }).lean();
+  if (!order) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
+  sendSuccess(res, 200, 'Payment status', {
+    orderId: order._id,
+    paymentMethod: order.paymentMethod ?? null,
+    paymentStatus: order.paymentStatus,
+    paid: order.paymentStatus === 'paid',
+    confirmedVia: order.paymentConfirmedVia ?? null,
+    failureReason: order.paymentFailureReason ?? null,
+    amount: orderAmountPaise(order) / 100,
+    canRetry: canRetryPayment(order),
+    refund: customerRefundView(order),
+  });
 });
 
 export const verifyPayment = asyncHandler(async (req, res) => {
@@ -269,7 +398,7 @@ export const verifyPayment = asyncHandler(async (req, res) => {
 
   await paymentService.verifyOrderPayment(order, result.data);
 
-  sendSuccess(res, 200, 'Payment verified', { order });
+  sendSuccess(res, 200, 'Payment verified', { order: await customerOrderView(order._id) });
 });
 
 export const getVegFleetStatus = asyncHandler(async (req, res) => {
@@ -360,6 +489,10 @@ export const listOrders = asyncHandler(async (req, res) => {
   // still has to be joined in — both mutate `orders` in place and touch different fields,
   // so they run together.
   await Promise.all([attachRatings(orders), attachRestaurants(orders)]);
+  for (const order of orders) {
+    order.refund = customerRefundView(order);
+    withCustomerDelivery(order);
+  }
 
   sendSuccess(res, 200, 'Orders', { orders, total, page: parsedPage });
 });
@@ -369,24 +502,10 @@ export const getOrder = asyncHandler(async (req, res) => {
   if (!order) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
 
   await attachRatings([order]);
+  // { status, amount, timeline } in plain words, or null — never the internal refund record.
+  order.refund = customerRefundView(order);
 
-  // pickupOtp's only surface to the customer: no SMS/push channel exists anywhere in this
-  // codebase (notify.service.js is Socket.IO-room-only), so this tracking-screen response is
-  // where they read the code to hand to their delivery partner. Only shown while it's still
-  // useful (assigned, not yet verified) — and the rest of deliveryAssignment's internal
-  // offer-routing bookkeeping (offeredTo/offerStatus/offerExpiresAt/history — other partners'
-  // rejection reasons, etc.) is deliberately NOT passed through here, unlike the fields that
-  // were already exposed before this change.
-  if (order.deliveryAssignment) {
-    const { partnerId, status, assignedAt, pickupOtp, pickupOtpVerifiedAt } = order.deliveryAssignment;
-    order.deliveryAssignment = {
-      partnerId,
-      status,
-      assignedAt,
-      pickupOtpVerifiedAt,
-      pickupOtp: status === 'assigned' && !pickupOtpVerifiedAt ? pickupOtp : undefined,
-    };
-  }
+  withCustomerDelivery(order);
 
   sendSuccess(res, 200, 'Order', { order });
 });
@@ -401,13 +520,24 @@ export const reorder = asyncHandler(async (req, res) => {
   sendSuccess(res, 200, 'Items added to cart', { cart, bill, removedItems });
 });
 
-// POST /api/orders/:id/cancel — the customer cancelling while the restaurant hasn't
-// accepted the order yet. Refused once it's accepted (the kitchen may be cooking). A paid
-// online order is flagged refundStatus 'pending' — see services/refund.service.js.
+const cancelSchema = z.object({ confirmNoRefund: z.boolean().optional().default(false) }).default({});
+
+// POST /api/orders/:id/cancel — body { confirmNoRefund?: boolean }.
+// Before the kitchen starts: cancelled, and an online payment is refunded in full.
+// Once it has started ('preparing'/'ready'): 400 CONFIRMATION_REQUIRED unless
+// confirmNoRefund is true — then cancelled with no refund (the restaurant is paid).
+// Once the food is on its way: 409 ORDER_NOT_CANCELLABLE. See services/refund.service.js.
 export const cancelOrder = asyncHandler(async (req, res) => {
-  const order = await orderApprovalService.cancelByCustomer({
+  const parsed = cancelSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid cancel request', parsed.error.flatten());
+  }
+  const cancelled = await orderApprovalService.cancelByCustomer({
     userId: req.user._id,
     orderId: req.params.id,
+    confirmNoRefund: parsed.data.confirmNoRefund,
   });
-  sendSuccess(res, 200, 'Order cancelled', { order });
+  const order = (await Order.findById(cancelled._id).lean()) ?? cancelled.toObject?.() ?? cancelled;
+  order.refund = customerRefundView(order);
+  sendSuccess(res, 200, 'Order cancelled', { order: withCustomerDelivery(order) });
 });

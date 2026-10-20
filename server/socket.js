@@ -11,6 +11,22 @@ import { sweepExpiredOffers, sweepExpiredVegFleetSearches } from './services/del
 import { expireUnansweredOrders } from './services/orderApproval.service.js';
 import logger from './utils/logger.js';
 
+
+// Presence sets live in Redis, which is optional (config/redis.js exports null without
+// REDIS_URL). Without it — or with it unreachable — presence is simply not recorded: no rider
+// can be offered an order automatically (deliveryAssignment.service.js) and the live-visitor
+// push is skipped, but the server keeps running. A bare `redis.sadd` on null used to throw
+// inside these handlers, and the 30-second live-stats interval crashed the process.
+const presence = async (op, key, ...args) => {
+  if (!redis) return op === 'smembers' ? [] : null;
+  try {
+    return await redis[op](key, ...args);
+  } catch (err) {
+    logger.warn({ err, op, key }, 'Redis presence update failed');
+    return op === 'smembers' ? [] : null;
+  }
+};
+
 let io;
 
 const verifyUserToken = (token) => {
@@ -82,7 +98,10 @@ const verifyPartnerToken = (token) => {
   }
 };
 
-export function initSocket(httpServer) {
+// `backgroundJobs: false` is for the test harness only (test-utils/appHarness.mjs): it needs
+// a live Socket.IO server so services can emit, but not the recurring sweeps below, which
+// would keep a test process alive forever and touch Redis/Mongo on their own schedule.
+export function initSocket(httpServer, { backgroundJobs = true } = {}) {
   // Same fix as app.js's cors() call: ALLOWED_ORIGINS=* must become `true` (dynamic reflection),
   // not the literal array ['*'], which Socket.IO's own engine.io CORS layer would never match
   // against a real browser's Origin header either.
@@ -94,17 +113,23 @@ export function initSocket(httpServer) {
   io.on('connection', (socket) => {
     logger.debug({ socketId: socket.id }, 'socket connected');
 
-    socket.on('join_restaurant', async ({ restaurantId, token }) => {
-      const decoded = verifyUserToken(token);
-      if (!decoded || decoded.role !== 'restaurant_owner') return socket.disconnect();
-      const owns = await Restaurant.exists({ _id: restaurantId, ownerId: decoded.userId });
-      if (!owns) return socket.disconnect();
-      socket.join(`restaurant:${restaurantId}`);
-      // Owner-only room: orders awaiting the restaurant's approval are emitted here and
-      // nowhere else, since `restaurant:` is shared with waiter sockets.
-      socket.join(`owner:${restaurantId}`);
-      socket.data.restaurantId = restaurantId;
-      await redis.sadd('live:active_restaurants', restaurantId);
+    socket.on('join_restaurant', async (payload) => {
+      try {
+        const { restaurantId, token } = payload ?? {};
+        const decoded = verifyUserToken(token);
+        if (!decoded || decoded.role !== 'restaurant_owner') return socket.disconnect();
+        const owns = await Restaurant.exists({ _id: restaurantId, ownerId: decoded.userId });
+        if (!owns) return socket.disconnect();
+        socket.join(`restaurant:${restaurantId}`);
+        // Owner-only room: orders awaiting the restaurant's approval are emitted here and
+        // nowhere else, since `restaurant:` is shared with waiter sockets.
+        socket.join(`owner:${restaurantId}`);
+        socket.data.restaurantId = restaurantId;
+        await presence('sadd', 'live:active_restaurants', restaurantId);
+      } catch (err) {
+        logger.error({ err }, 'join_restaurant failed');
+        socket.disconnect();
+      }
     });
 
     // The try/catch matters: these handlers are async, so a throw (a bad payload, a
@@ -143,16 +168,22 @@ export function initSocket(httpServer) {
       }
     });
 
-    socket.on('join_order', async ({ orderId, token }) => {
-      const decoded = verifyUserToken(token);
-      if (!decoded) return socket.disconnect();
-      const order = await Order.findOne({ _id: orderId, userId: decoded.userId }).lean();
-      if (!order) return socket.disconnect();
-      socket.join(`order:${orderId}`);
+    socket.on('join_order', async (payload) => {
+      try {
+        const { orderId, token } = payload ?? {};
+        const decoded = verifyUserToken(token);
+        if (!decoded) return socket.disconnect();
+        const order = await Order.findOne({ _id: orderId, userId: decoded.userId }).select('_id').lean();
+        if (!order) return socket.disconnect();
+        socket.join(`order:${orderId}`);
+      } catch (err) {
+        logger.error({ err }, 'join_order failed');
+        socket.disconnect();
+      }
     });
 
-    socket.on('join_partner', async ({ token }) => {
-      const decoded = verifyPartnerToken(token);
+    socket.on('join_partner', async (payload) => {
+      const decoded = verifyPartnerToken(payload?.token);
       if (!decoded) return socket.disconnect();
       socket.join(`partner:${decoded.partnerId}`);
       socket.data.partnerId = decoded.partnerId;
@@ -161,7 +192,7 @@ export function initSocket(httpServer) {
       // live:active_restaurants pattern below. deliveryAssignment.service.js (a later step)
       // reads this set to filter candidates, and emits offers into this same
       // `partner:{partnerId}` room.
-      await redis.sadd('live:active_partners', decoded.partnerId);
+      await presence('sadd', 'live:active_partners', decoded.partnerId);
     });
 
     socket.on('disconnect', async (reason) => {
@@ -170,23 +201,30 @@ export function initSocket(httpServer) {
       if (socket.data.restaurantId) {
         const room = io.sockets.adapter.rooms.get(`restaurant:${socket.data.restaurantId}`);
         if (!room || room.size === 0) {
-          await redis.srem('live:active_restaurants', socket.data.restaurantId);
+          await presence('srem', 'live:active_restaurants', socket.data.restaurantId);
         }
       }
       if (socket.data.partnerId) {
         const room = io.sockets.adapter.rooms.get(`partner:${socket.data.partnerId}`);
         if (!room || room.size === 0) {
-          await redis.srem('live:active_partners', socket.data.partnerId);
+          await presence('srem', 'live:active_partners', socket.data.partnerId);
         }
       }
     });
   });
 
+  if (!backgroundJobs) return io;
+
   setInterval(async () => {
-    const ids = await redis.smembers('live:active_restaurants');
-    for (const restaurantId of ids) {
-      const stats = await liveMonitorService.getStats(restaurantId);
-      io.to(`restaurant:${restaurantId}`).emit('live_visitor_update', stats);
+    if (!redis) return;
+    try {
+      const ids = await presence('smembers', 'live:active_restaurants');
+      for (const restaurantId of ids) {
+        const stats = await liveMonitorService.getStats(restaurantId);
+        io.to(`restaurant:${restaurantId}`).emit('live_visitor_update', stats);
+      }
+    } catch (err) {
+      logger.error({ err }, 'live_visitor_update failed');
     }
   }, 30_000);
 
@@ -209,6 +247,9 @@ export function initSocket(httpServer) {
   setInterval(() => {
     expireUnansweredOrders().catch((err) => logger.error({ err }, 'expireUnansweredOrders failed'));
   }, 60_000);
+
+  // index.js closes this on shutdown.
+  return io;
 }
 
 export const getIO = () => {

@@ -6,14 +6,17 @@ import Restaurant from '../../models/Restaurant.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { maxConcurrentOrdersPerPartner, perDeliveryRate, perKmRate } from '../../config/finance.config.js';
+import { maxConcurrentOrdersPerPartner } from '../../config/finance.config.js';
+import { onOrderDelivered, withoutInternalMoney } from '../../services/ledger.service.js';
 import { createOrderBill } from '../../services/billing.service.js';
 import { notifyService } from '../../services/notify.service.js';
 import {
   autoAssign,
   expireIfStale,
   buildOfferPayload,
+  computeRiderEarningsBreakdown,
   countActiveAssignments,
+  countCompletedDelivery,
   ASSIGNABLE_STATUSES,
 } from '../../services/deliveryAssignment.service.js';
 import { computeDropKm, computePickupKm, isLocationFresh } from '../../services/geo.service.js';
@@ -44,6 +47,30 @@ const otpMatches = (submitted, stored) => {
   return crypto.timingSafeEqual(Buffer.from(submitted), Buffer.from(stored));
 };
 
+// A cancelled order is out of the rider's hands (its assignment is released when it is
+// cancelled); refuse anything a stale screen still tries to do with it.
+const assertNotCancelled = (order, partnerId = null) => {
+  // Told only to a rider who held (or was offered) it — anyone else just isn't its rider.
+  const involved =
+    !partnerId ||
+    order.deliveryAssignment?.partnerId?.toString() === partnerId.toString() ||
+    (order.deliveryAssignment?.history ?? []).some((h) => h.partnerId?.toString() === partnerId.toString());
+  if (order.status === 'cancelled' && involved) {
+    throw new ApiError(409, 'ORDER_CANCELLED', 'This order was cancelled — do not collect or deliver it');
+  }
+};
+
+// A conditional write matched nothing: say why, from the order as it is now.
+const refuseChangedOrder = async (orderId) => {
+  const current = await Order.findById(orderId).select('status deliveryAssignment.status').lean();
+  if (current?.status === 'cancelled') assertNotCancelled(current);
+  throw new ApiError(
+    409,
+    'CONCURRENT_UPDATE',
+    `This delivery was just updated (now '${current?.deliveryAssignment?.status ?? 'unknown'}') — please refresh`
+  );
+};
+
 export const acceptOrder = asyncHandler(async (req, res) => {
   const order = await Order.findById(req.params.orderId);
   if (!order) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
@@ -51,42 +78,65 @@ export const acceptOrder = asyncHandler(async (req, res) => {
   if (await expireIfStale(order)) {
     throw new ApiError(409, 'OFFER_EXPIRED', 'This offer has expired');
   }
+  // An offer withdrawn because the order was cancelled: say so to the rider it was offered to.
+  if (!ASSIGNABLE_STATUSES.includes(order.status) && order.deliveryAssignment.offeredTo?.toString() === req.partner._id.toString()) {
+    throw new ApiError(409, 'ORDER_UNAVAILABLE', 'This order is no longer available');
+  }
   assertOfferBelongsToPartner(order, req.partner._id);
 
   // The offer can outlive the order: the kitchen may cancel it (or, for an order offered
   // before the restaurant-approval step existed, the restaurant may reject it) while the
   // offer is still on the rider's screen. Close the offer out instead of assigning a rider
   // to food nobody is cooking.
-  if (!ASSIGNABLE_STATUSES.includes(order.status)) {
-    order.deliveryAssignment.offerStatus = 'expired';
-    await order.save();
+  const closeOffer = async () => {
+    await Order.updateOne(
+      { _id: order._id, 'deliveryAssignment.offerStatus': 'offered', 'deliveryAssignment.offeredTo': req.partner._id },
+      { $set: { 'deliveryAssignment.offerStatus': 'expired' } }
+    );
     throw new ApiError(409, 'ORDER_UNAVAILABLE', 'This order is no longer available');
-  }
+  };
+  if (!ASSIGNABLE_STATUSES.includes(order.status)) await closeOffer();
 
   const now = new Date();
-  order.deliveryAssignment.status = 'assigned';
-  order.deliveryAssignment.partnerId = req.partner._id;
-  order.deliveryAssignment.assignedAt = now;
-  order.deliveryAssignment.assignedBy = 'auto';
-  order.deliveryAssignment.offerStatus = 'accepted';
-  order.deliveryAssignment.pickupOtp = generatePickupOtp();
-  order.deliveryAssignment.history.push({
-    partnerId: req.partner._id,
-    assignedAt: now,
-    assignedBy: 'auto',
-  });
+  // The rider's pay is fixed now, at acceptance — the figure the offer showed them.
+  const earningsBreakdown = await computeRiderEarningsBreakdown(order);
   // A partner only ever reaches this point on a vegFleetOptIn order because
   // rankCandidates' requireFleetType already restricted the offer to a veg-fleet partner
   // (or the customer explicitly relaxed that via fallback) — either way, an actual
   // assignment now exists, so the countdown/decision UI (screen 23) is done.
   const wasSearchingVegFleet = order.vegFleetOptIn && order.vegFleetAssignmentStatus !== 'not_requested';
-  if (wasSearchingVegFleet) {
-    order.vegFleetAssignmentStatus = 'assigned';
-    order.vegFleetSearchDeadline = null;
+  // One conditional write: the offer must still be this rider's and the order still able to take
+  // a rider. A cancellation at the same instant either lands first (this matches nothing) or
+  // second (and releases this assignment — services/deliveryAssignment.service.js).
+  const accepted = await Order.findOneAndUpdate(
+    {
+      _id: order._id,
+      status: { $in: ASSIGNABLE_STATUSES },
+      'deliveryAssignment.offerStatus': 'offered',
+      'deliveryAssignment.offeredTo': req.partner._id,
+    },
+    {
+      $set: {
+        'deliveryAssignment.status': 'assigned',
+        'deliveryAssignment.partnerId': req.partner._id,
+        'deliveryAssignment.assignedAt': now,
+        'deliveryAssignment.assignedBy': 'auto',
+        'deliveryAssignment.offerStatus': 'accepted',
+        'deliveryAssignment.pickupOtp': generatePickupOtp(),
+        'deliveryAssignment.earningsBreakdown': earningsBreakdown,
+        ...(wasSearchingVegFleet ? { vegFleetAssignmentStatus: 'assigned', vegFleetSearchDeadline: null } : {}),
+      },
+      $push: { 'deliveryAssignment.history': { partnerId: req.partner._id, assignedAt: now, assignedBy: 'auto' } },
+    },
+    { new: true }
+  );
+  if (!accepted) {
+    const current = await Order.findById(order._id).select('status').lean();
+    if (!ASSIGNABLE_STATUSES.includes(current?.status)) await closeOffer();
+    throw new ApiError(409, 'OFFER_EXPIRED', 'This offer is no longer yours');
   }
-  await order.save();
-  if (wasSearchingVegFleet) notifyService.vegFleetStatusUpdated(order);
-  notifyService.deliveryAssignmentUpdated(order, req.partner);
+  if (wasSearchingVegFleet) notifyService.vegFleetStatusUpdated(accepted);
+  notifyService.deliveryAssignmentUpdated(accepted, req.partner);
 
   // Mirrors the old synchronous autoAssign's behavior: mark the partner busy once this
   // acceptance pushes them to their concurrency limit, so they're skipped for further offers.
@@ -95,7 +145,7 @@ export const acceptOrder = asyncHandler(async (req, res) => {
     await DeliveryPartner.updateOne({ _id: req.partner._id }, { $set: { status: 'busy' } });
   }
 
-  sendSuccess(res, 200, 'Order accepted', { order });
+  sendSuccess(res, 200, 'Order accepted', { order: withoutInternalMoney(accepted) });
 });
 
 // Must stay in sync with Delivery-Partner/src/mocks/fixtures.js's SKIP_REASONS.
@@ -202,6 +252,7 @@ export const verifyPickup = asyncHandler(async (req, res) => {
 
   const order = await Order.findById(req.params.orderId);
   if (!order) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
+  assertNotCancelled(order, req.partner._id);
   assertOrderBelongsToPartner(order, req.partner._id);
 
   if (order.deliveryAssignment.status !== 'assigned') {
@@ -229,15 +280,36 @@ export const verifyPickup = asyncHandler(async (req, res) => {
     }
   }
 
+  // Conditional, so a cancellation landing between the read above and now wins.
+  const pickedUpAt = new Date();
+  const picked = await Order.updateOne(
+    {
+      _id: order._id,
+      status: { $ne: 'cancelled' },
+      'deliveryAssignment.status': 'assigned',
+      'deliveryAssignment.partnerId': req.partner._id,
+    },
+    { $set: { 'deliveryAssignment.status': 'picked_up', 'deliveryAssignment.pickupOtpVerifiedAt': pickedUpAt } }
+  );
+  if (!picked.modifiedCount) await refuseChangedOrder(order._id);
   order.deliveryAssignment.status = 'picked_up';
-  order.deliveryAssignment.pickupOtpVerifiedAt = new Date();
-  await order.save();
+  order.deliveryAssignment.pickupOtpVerifiedAt = pickedUpAt;
   notifyService.deliveryAssignmentUpdated(order, req.partner);
 
-  sendSuccess(res, 200, 'Pickup confirmed', { order });
+  sendSuccess(res, 200, 'Pickup confirmed', { order: withoutInternalMoney(order) });
 });
 
-const deliverSchema = z.object({ codCollected: z.number().min(0).optional() });
+// Cash the rider says they collected, in rupees — at most two decimals, and capped so a
+// slip of the finger (or a crafted request) can't put an absurd figure into cash-in-hand.
+const MAX_COD_COLLECTED = 100_000;
+const deliverSchema = z.object({
+  codCollected: z
+    .number()
+    .min(0)
+    .max(MAX_COD_COLLECTED)
+    .refine((v) => Math.abs(v * 100 - Math.round(v * 100)) < 1e-6, 'At most two decimal places')
+    .optional(),
+});
 
 export const deliverOrder = asyncHandler(async (req, res) => {
   const result = deliverSchema.safeParse(req.body);
@@ -246,51 +318,62 @@ export const deliverOrder = asyncHandler(async (req, res) => {
   }
   const { codCollected } = result.data;
 
-  const order = await Order.findById(req.params.orderId);
-  if (!order) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
-  assertOrderBelongsToPartner(order, req.partner._id);
+  const found = await Order.findById(req.params.orderId);
+  if (!found) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
+  assertNotCancelled(found, req.partner._id);
+  assertOrderBelongsToPartner(found, req.partner._id);
 
-  if (order.deliveryAssignment.status !== 'picked_up') {
+  if (found.deliveryAssignment.status !== 'picked_up') {
     throw new ApiError(
       400,
       'INVALID_STATE',
-      `Cannot deliver from status '${order.deliveryAssignment.status}'`
+      `Cannot deliver from status '${found.deliveryAssignment.status}'`
     );
   }
+  const isCod = found.paymentMethod === 'cash';
+  if (isCod && codCollected === undefined) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'codCollected is required for COD orders');
+  }
+  // The rider's pay was frozen when they accepted the order (computeRiderEarningsBreakdown).
+  // Only an order assigned before that existed lacks it — worked out now, once, before the
+  // handover is claimed so nothing after the claim can fail.
+  const legacyBreakdown = found.deliveryAssignment.earningsBreakdown?.computedAt
+    ? null
+    : await computeRiderEarningsBreakdown(found);
 
-  const isCod = order.paymentMethod === 'cash';
+  // Claim the handover atomically: only while the order isn't cancelled and this rider still
+  // holds it. A cancellation can't land after this (kitchen.service.js refuses to cancel a
+  // delivered assignment), so exactly one of the two wins.
+  const order = await Order.findOneAndUpdate(
+    {
+      _id: found._id,
+      status: { $ne: 'cancelled' },
+      'deliveryAssignment.status': 'picked_up',
+      'deliveryAssignment.partnerId': req.partner._id,
+    },
+    { $set: { 'deliveryAssignment.status': 'delivered' } },
+    { new: true }
+  );
+  if (!order) await refuseChangedOrder(found._id);
+
   if (isCod) {
-    if (codCollected === undefined) {
-      throw new ApiError(400, 'VALIDATION_ERROR', 'codCollected is required for COD orders');
-    }
     order.deliveryAssignment.codCollected = codCollected;
     // CodCollection.jsx today is a fully self-reported "Mark cash received" toggle with no real
     // payment-gateway/QR verification behind it — there is nothing to authoritatively check the
     // collected amount against. Hard-failing the delivery on a mismatch would block a legitimate,
-    // already-physically-completed handover over what might just be a rounding difference or a
-    // tip the rider folded in differently than `subtotal` — unlike a card/UPI charge, this money
-    // has already changed hands in person by this point. So: flag the discrepancy for later
-    // admin/payout review instead of blocking, and persist it (not just return it in this
-    // response) so it's actually reviewable once an admin view for it exists.
+    // already-physically-completed handover over what might just be a rounding difference —
+    // unlike a card/UPI charge, this money has already changed hands in person by this point.
+    // So: flag the discrepancy for later admin/payout review instead of blocking, and persist it.
+    // Measured against what the customer actually owes (grandTotal: food, fees, GST, tip) —
+    // it used to be the food `subtotal`, which flagged almost every COD order.
+    const owed = order.grandTotal ?? order.subtotal;
     order.deliveryAssignment.codDiscrepancy =
-      codCollected === order.subtotal ? null : codCollected - order.subtotal;
+      codCollected === owed ? null : Number((codCollected - owed).toFixed(2));
   }
 
-  // Computed once, here, and never recomputed later — see the schema comment on
-  // earningsBreakdown. basePay alone is the real, admin-funded rate (matches
-  // payout.service.js's grossEarnings exactly by construction); distancePay is a placeholder
-  // formula (perKmRate — see finance.config.js) using whatever real distance figure is
-  // available, 0 when it isn't; surgePay/tip/penalty stay 0 (no engine for any of them exists).
-  const restaurant = await Restaurant.findById(order.restaurantId).select('location').lean();
-  const distanceKm = computeDropKm(restaurant, order);
-  order.deliveryAssignment.earningsBreakdown = {
-    basePay: perDeliveryRate,
-    distanceKm,
-    distancePay: distanceKm ? Number((distanceKm * perKmRate).toFixed(2)) : 0,
-    surgePay: 0,
-    tip: 0,
-    penalty: 0,
-  };
+  if (legacyBreakdown && !order.deliveryAssignment.earningsBreakdown?.computedAt) {
+    order.deliveryAssignment.earningsBreakdown = legacyBreakdown;
+  }
 
   order.deliveryAssignment.status = 'delivered';
   order.deliveredAt = new Date();
@@ -298,7 +381,12 @@ export const deliverOrder = asyncHandler(async (req, res) => {
   // used to mean here for a cash order — cash collected in person, now confirmed by the
   // partner. Still covers plain 'pending' too, for the raw-items POST /api/orders path,
   // which never sets 'pending_cod'.
-  if (order.paymentStatus === 'pending' || order.paymentStatus === 'pending_cod') {
+  // Never an online order: its 'pending' means "Razorpay payment not confirmed", and handing the
+  // food over doesn't change that (same rule as kitchen.service.js's delivered transition).
+  if (
+    order.paymentStatus === 'pending_cod' ||
+    (order.paymentStatus === 'pending' && order.paymentMethod !== 'online')
+  ) {
     order.paymentStatus = 'paid';
   }
 
@@ -326,6 +414,11 @@ export const deliverOrder = asyncHandler(async (req, res) => {
   } else {
     await order.save();
   }
+  // The restaurant's credit for an order paid online. Idempotent, so it is safe whichever of
+  // the kitchen and the rider closed the order out first.
+  await onOrderDelivered(order);
+  // The rider's delivery count — once per order, however it was closed out.
+  await countCompletedDelivery(order._id);
   // deliveryAssignment.status just moved to 'delivered' in both branches above — the
   // customer's tracking screen and the restaurant's live views need this even when
   // kitchen already independently marked the order delivered first.
@@ -341,8 +434,22 @@ export const deliverOrder = asyncHandler(async (req, res) => {
     await DeliveryPartner.updateOne({ _id: req.partner._id, status: 'busy' }, { $set: { status: 'active' } });
   }
 
-  sendSuccess(res, 200, 'Order delivered', { order });
+  sendSuccess(res, 200, 'Order delivered', { order: withoutInternalMoney(order) });
 });
+
+// The rider's pay for one delivery as the summary shows it: every part present (0 when a
+// legacy breakdown lacks surge/penalty) and the total worked out here, not on the device —
+// the same sum the earnings endpoint's per-delivery lines use.
+const summaryPayout = (e = {}) => {
+  const p = {
+    basePay: e.basePay ?? 0,
+    distancePay: e.distancePay ?? 0,
+    surge: e.surgePay ?? 0,
+    tip: e.tip ?? 0,
+    penalty: e.penalty ?? 0,
+  };
+  return { ...p, total: Math.round((p.basePay + p.distancePay + p.surge + p.tip - p.penalty) * 100) / 100 };
+};
 
 export const getOrderSummary = asyncHandler(async (req, res) => {
   const order = await Order.findById(req.params.orderId).lean();
@@ -352,10 +459,10 @@ export const getOrderSummary = asyncHandler(async (req, res) => {
   // Once delivered, the breakdown is frozen (deliverOrder computes it exactly once) — return
   // those real numbers, not a re-estimate, so DeliverySummary.jsx shows what was actually earned.
   if (order.deliveryAssignment.status === 'delivered' && order.deliveryAssignment.earningsBreakdown) {
-    const { basePay, distanceKm, distancePay, surgePay, tip, penalty } = order.deliveryAssignment.earningsBreakdown;
+    const breakdown = order.deliveryAssignment.earningsBreakdown;
     return sendSuccess(res, 200, 'Order summary', {
-      totalKm: distanceKm,
-      payout: { basePay, distancePay, surge: surgePay, tip, penalty },
+      totalKm: breakdown.distanceKm,
+      payout: summaryPayout(breakdown),
     });
   }
 
@@ -374,6 +481,12 @@ export const getOrderSummary = asyncHandler(async (req, res) => {
 
   sendSuccess(res, 200, 'Order summary', {
     totalKm,
-    payout: { basePay: perDeliveryRate, distancePay: 0, surge: 0, tip: 0, penalty: 0 },
+    payout: await (async () => {
+      // The figure frozen at acceptance; worked out fresh only for an order assigned before that.
+      const e = order.deliveryAssignment.earningsBreakdown?.computedAt
+        ? order.deliveryAssignment.earningsBreakdown
+        : await computeRiderEarningsBreakdown(order);
+      return summaryPayout(e);
+    })(),
   });
 });

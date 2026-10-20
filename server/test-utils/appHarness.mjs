@@ -19,11 +19,23 @@ setDefault('JWT_REFRESH_SECRET', THROWAWAY_SECRET);
 setDefault('JWT_STAFF_SECRET', THROWAWAY_SECRET);
 setDefault('JWT_PARTNER_SECRET', THROWAWAY_SECRET);
 
+const parse = async (res) => {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+};
+
 /**
  * Boot the Express app on an ephemeral port and hand back a `fetch`-style client.
  * `await using` (or an explicit `await server.close()`) tears it down.
+ *
+ * `withSocket: true` also attaches Socket.IO (no background sweeps) — needed by any route
+ * that notifies over sockets, e.g. placing an order or recording a payment.
  */
-export async function startTestServer() {
+export async function startTestServer({ withSocket = false } = {}) {
   const { app } = await import('../app.js');
 
   const server = app.listen(0);
@@ -32,25 +44,41 @@ export async function startTestServer() {
     server.once('error', reject);
   });
 
+  let io = null;
+  if (withSocket) {
+    const { initSocket } = await import('../socket.js');
+    io = initSocket(server, { backgroundJobs: false });
+  }
+
   const { port } = server.address();
   const base = `http://127.0.0.1:${port}`;
 
   return {
     base,
     /** GET `path`, parse JSON, return { status, body }. */
-    async get(path) {
-      const res = await fetch(base + path);
-      const text = await res.text();
-      let body;
-      try {
-        body = JSON.parse(text);
-      } catch {
-        body = text;
+    async get(path, headers = {}) {
+      const res = await fetch(base + path, { headers });
+      return { status: res.status, body: await parse(res), headers: res.headers };
+    },
+    /**
+     * Any method. `body` is JSON-encoded unless `raw` (a string/Buffer sent as-is with
+     * content-type application/json — what a webhook needs for its signature).
+     */
+    async request(method, path, { body, raw, headers = {} } = {}) {
+      const init = { method, headers: { ...headers } };
+      if (raw !== undefined) {
+        init.body = raw;
+        init.headers['content-type'] = 'application/json';
+      } else if (body !== undefined) {
+        init.body = JSON.stringify(body);
+        init.headers['content-type'] = 'application/json';
       }
-      return { status: res.status, body };
+      const res = await fetch(base + path, init);
+      return { status: res.status, body: await parse(res), headers: res.headers };
     },
     async close() {
-      await new Promise((resolve) => server.close(resolve));
+      if (io) await new Promise((resolve) => io.close(() => resolve()));
+      else await new Promise((resolve) => server.close(resolve));
     },
   };
 }

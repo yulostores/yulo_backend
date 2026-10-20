@@ -4,6 +4,8 @@ import Table from '../models/Table.js';
 import TableSession from '../models/TableSession.js';
 import StaffMember from '../models/StaffMember.js';
 import User from '../models/User.js';
+import DeliveryPartner from '../models/DeliveryPartner.js';
+import { maskPhone } from './tracking.service.js';
 
 // Read-side shaping for orders. An Order row on its own answers "what was ordered" but
 // not the three questions every order screen actually asks first — WHICH TABLE is this
@@ -22,6 +24,34 @@ import User from '../models/User.js';
 const idStr = (v) => (v == null ? null : String(v));
 
 const uniqueIds = (values) => [...new Set(values.filter(Boolean).map(String))];
+
+/**
+ * The delivery as the restaurant sees it: who is coming and where they are in the handover —
+ * never the offer bookkeeping (other riders' offers and rejections) or the rider's pay.
+ *
+ * pickupOtp is the code staff read to the rider at handover; the rider enters it in their app
+ * to confirm the pickup. Shown only while a rider is assigned and hasn't picked up yet —
+ * before that there is no rider to give it to, after that it has been used.
+ */
+export const restaurantDeliveryView = (da, partner = null) => {
+  if (!da) return null;
+  const awaitingPickup = da.status === 'assigned' && !da.pickupOtpVerifiedAt;
+  return {
+    status: da.status ?? 'unassigned',
+    partnerId: da.partnerId ?? null,
+    partner: partner
+      ? {
+          name: partner.fullName ?? null,
+          maskedPhone: maskPhone(partner.phone),
+          vehicleType: partner.vehicle?.type ?? null,
+          vehicleNumber: partner.vehicle?.number ?? null,
+        }
+      : null,
+    assignedAt: da.assignedAt ?? null,
+    pickupOtp: awaitingPickup ? da.pickupOtp ?? null : null,
+    pickedUpAt: da.pickupOtpVerifiedAt ?? null,
+  };
+};
 
 /**
  * Attaches `table`, `customer`, `staff`, `waiter` and `session` to a list of lean order
@@ -68,6 +98,12 @@ export const enrichOrders = async (orders = []) => {
     ? await User.find({ _id: { $in: staleUserIds } }).select('name phone').lean()
     : [];
   const userById = new Map(users.map((u) => [idStr(u._id), u]));
+
+  const partnerIds = uniqueIds(orders.map((o) => o.deliveryAssignment?.partnerId));
+  const partners = partnerIds.length
+    ? await DeliveryPartner.find({ _id: { $in: partnerIds } }).select('fullName phone vehicle').lean()
+    : [];
+  const partnerById = new Map(partners.map((p) => [idStr(p._id), p]));
 
   const toStaff = (id) => {
     const m = staffById.get(idStr(id));
@@ -138,6 +174,9 @@ export const enrichOrders = async (orders = []) => {
             batchCount: session.batchCount,
           }
         : null,
+      deliveryAssignment: order.deliveryAssignment
+        ? restaurantDeliveryView(order.deliveryAssignment, partnerById.get(idStr(order.deliveryAssignment.partnerId)) ?? null)
+        : order.deliveryAssignment,
       statusHistory: (order.statusHistory ?? []).map((h) => ({
         ...h,
         staff: h.byStaffName ? { name: h.byStaffName, role: h.byRole } : toStaff(h.byStaffId),

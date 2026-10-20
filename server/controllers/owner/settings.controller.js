@@ -63,6 +63,16 @@ const SETTINGS_DEFAULTS = Object.fromEntries(
     .map(([path, type]) => [path.slice('settings.'.length), type.options.default])
 );
 
+// Multipart delivers booleans as the strings "true"/"false"; JSON callers send real ones.
+// Anything else is refused rather than guessed at — a GST flag read wrongly changes what
+// customers are charged.
+const parseBooleanField = (raw, field) => {
+  if (raw === undefined) return undefined;
+  if (raw === true || raw === 'true') return true;
+  if (raw === false || raw === 'false') return false;
+  throw new ApiError(400, 'VALIDATION_ERROR', `${field} must be true or false`);
+};
+
 export const getSettings = asyncHandler(async (req, res) => {
   sendSuccess(res, 200, 'Restaurant settings', { restaurant: req.restaurant });
 });
@@ -83,6 +93,7 @@ export const updateSettings = asyncHandler(async (req, res) => {
   const cuisineTypes = parseJsonField(req.body.cuisineTypes, 'cuisineTypes');
   const address = parseJsonField(req.body.address, 'address');
   const settings = parseJsonField(req.body.settings, 'settings');
+  const gstRegistered = parseBooleanField(req.body.gstRegistered, 'gstRegistered');
 
   // Decoding says nothing about shape — `address: "12 Main Road"` parses fine as a plain
   // string and would still be cast into the schema as one.
@@ -115,9 +126,16 @@ export const updateSettings = asyncHandler(async (req, res) => {
     ...(description !== undefined && { description }),
     ...(establishedYear !== undefined && { establishedYear }),
     ...(cuisineTypes !== undefined && { cuisineTypes }),
+    ...(gstRegistered !== undefined && { gstRegistered }),
     address: { ...existingAddress, ...address },
     settings: { ...existingSettings, ...settings },
   });
+  // The GST number's extra rules (required, real GSTIN) apply once the restaurant is
+  // GST-registered — but only to a save that touches the GST details. A registered restaurant
+  // holding a number captured in an older format must still be able to fix its phone number;
+  // the number is checked again the moment either GST field is edited.
+  const touchesGst = gstRegistered !== undefined || settings?.gstNumber !== undefined;
+  if (!touchesGst) delete fieldErrors['settings.gstNumber'];
   if (Object.keys(fieldErrors).length > 0) {
     throw new ApiError(
       400,
@@ -174,6 +192,8 @@ export const updateSettings = asyncHandler(async (req, res) => {
     logo: logoUrl,
     bannerImage: bannerUrl,
     ...(establishedYear !== undefined && { establishedYear: establishedYear || null }),
+    // Recorded as the owner's own decision, so scripts/backfillGstRegistered.js never revisits it.
+    ...(gstRegistered !== undefined && { gstRegistered, gstRegisteredSource: 'owner', gstRegisteredSetAt: new Date() }),
   };
 
   // Dot-notation for the same reason as `settings.*` below: the settings form edits only

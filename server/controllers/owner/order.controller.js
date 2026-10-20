@@ -79,6 +79,10 @@ export const listPendingOrders = asyncHandler(async (req, res) => {
     orders: enriched.map((o) => ({
       ...o,
       awaitingPayment: o.paymentMethod === 'online' && o.paymentStatus !== 'paid',
+      // When the sweep auto-cancels this one: an online order's clock starts at payment, not at
+      // placing (orderApproval.service.js approvalExpiresAt) — count down to this, not to
+      // createdAt + approvalTimeoutMinutes.
+      approvalExpiresAt: orderApprovalService.approvalExpiresAt(o),
     })),
     count,
     rejectionReasons: orderApprovalService.REJECTION_REASONS,

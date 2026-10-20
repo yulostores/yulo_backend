@@ -1,6 +1,11 @@
 import 'dotenv/config';
 import { z } from 'zod';
 
+// "true"/"false" from the environment as a real boolean. z.coerce.boolean() is not usable
+// here: it turns the string "false" into `true`.
+const envFlag = (defaultValue) =>
+  z.enum(['true', 'false']).default(defaultValue ? 'true' : 'false').transform((v) => v === 'true');
+
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(3000),
@@ -35,6 +40,23 @@ const schema = z.object({
   RAZORPAY_KEY_ID: z.string().optional(),
   RAZORPAY_KEY_SECRET: z.string().optional(),
   RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
+  // Dev/local only: lets the /payment/simulate endpoints mark an order or bill paid with no
+  // gateway involved. Ignored outright when NODE_ENV=production — see config/payments.config.js.
+  ALLOW_PAYMENT_SIMULATION: envFlag(false),
+  // SEED DEFAULT ONLY — cash on delivery now lives in Finance Settings (codEnabled), edited
+  // from the super admin portal. This value is read once, when the very first settings version
+  // is created on an empty database (services/financeSettings.service.js). Unset → false.
+  COD_ENABLED: z.enum(['true', 'false']).optional().transform((v) => (v === undefined ? undefined : v === 'true')),
+  // AES-256-GCM key for field-level encryption of sensitive stored data (restaurant bank
+  // account numbers — utils/fieldEncryption.js). 32 random bytes, base64. Required in production
+  // (checked below). Generate: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+  DATA_ENCRYPTION_KEY: z.preprocess(
+    (v) => (v === '' ? undefined : v), // an empty line copied from .env.example means "unset"
+    z
+      .string()
+      .refine((v) => Buffer.from(v, 'base64').length === 32, 'must be 32 bytes, base64-encoded')
+      .optional()
+  ),
   ALLOWED_ORIGINS: z.string().default('http://localhost:5173'),
   // Per-IP requests/minute across /api. A dashboard load costs ~25.
   RATE_LIMIT_MAX: z.coerce.number().default(600),
@@ -50,13 +72,17 @@ const schema = z.object({
   // Where table QR codes point — the yulo_menu guest-ordering app. Falls back to
   // CUSTOMER_APP_URL below so nothing breaks before this is set in each environment.
   MENU_APP_URL: z.string().url().optional(),
-  PLATFORM_COMMISSION_PERCENT: z.coerce.number().default(15),
-  DELIVERY_PARTNER_PER_DELIVERY_RATE: z.coerce.number().default(30),
+  // SEED DEFAULTS ONLY (rupees / percent, as before). Rates now live in Finance Settings and
+  // are edited from the super admin portal; these are read once, when the first settings
+  // version is created on an empty database, and ignored after that. Unset → the business
+  // defaults in services/financeSettings.service.js. PLATFORM_COMMISSION_PERCENT is gone:
+  // the flat commission was replaced by the settlement charge (settlementChargePercent).
+  DELIVERY_PARTNER_PER_DELIVERY_RATE: z.coerce.number().min(0).optional(), // → riderBasePay
+  DELIVERY_PARTNER_PER_KM_RATE: z.coerce.number().min(0).optional(), // → riderPerKmRate
+  CART_PLATFORM_FEE: z.coerce.number().min(0).optional(), // → customerPlatformFee
+  CART_TAX_PERCENT: z.coerce.number().min(0).max(100).optional(), // → foodGstPercent
   DELIVERY_PARTNER_MAX_CONCURRENT_ORDERS: z.coerce.number().default(1),
   DELIVERY_OFFER_WINDOW_SECONDS: z.coerce.number().default(20),
-  DELIVERY_PARTNER_PER_KM_RATE: z.coerce.number().default(5),
-  CART_PLATFORM_FEE: z.coerce.number().default(6),
-  CART_TAX_PERCENT: z.coerce.number().default(5),
   MESSAGECENTRAL_CUSTOMER_ID: z.string().optional(),
   MESSAGECENTRAL_KEY: z.string().optional(),
   MESSAGECENTRAL_EMAIL: z.string().email().optional(),
@@ -109,6 +135,12 @@ if (result.data.NODE_ENV === 'production') {
       'Refusing to start in production — these secrets still hold a development placeholder value:'
     );
     for (const key of placeholders) console.error(`  ${key}`);
+    process.exit(1);
+  }
+
+  // Without it, restaurants' bank account numbers can be neither stored nor read back.
+  if (!result.data.DATA_ENCRYPTION_KEY) {
+    console.error('Refusing to start in production — DATA_ENCRYPTION_KEY is not set (see DEPLOYMENT.md).');
     process.exit(1);
   }
 }

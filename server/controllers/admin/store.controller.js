@@ -11,6 +11,11 @@ import { streamDocument } from '../../services/restaurantDocument.service.js';
 import { hashPassword } from '../../services/auth.service.js';
 import { geocodeAddress, resolveRestaurantCoordinates } from '../../services/geocode.service.js';
 import { STORE_STATUSES, shapeCounts } from '../../services/adminStats.service.js';
+import {
+  effectiveField,
+  getStoreSettingsField,
+  validateField,
+} from '../../config/storeSettings.config.js';
 
 // `operatingHours` and the two image fields are here because the admin console edits them
 // (Business Hours card, banner URL field on the store profile) — without them those saves
@@ -33,6 +38,8 @@ const UPDATABLE_FIELDS = [
   'phone',
   'website',
   'establishedYear',
+  // Whether food GST is charged on this restaurant's orders — see Restaurant.gstRegistered.
+  'gstRegistered',
 ];
 
 export const list = asyncHandler(async (req, res) => {
@@ -303,6 +310,30 @@ export const update = asyncHandler(async (req, res) => {
     if (req.body[field] !== undefined) data[field] = req.body[field];
   }
 
+  // The same rule the owner's store-settings form is held to: a GST-registered restaurant
+  // must carry a valid GSTIN. Checked against the store as it would be after this update, so
+  // switching the flag on without a number (or clearing the number) is refused.
+  if (data.gstRegistered !== undefined && typeof data.gstRegistered !== 'boolean') {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'gstRegistered must be true or false');
+  }
+  if (data.settings !== undefined && (data.settings === null || typeof data.settings !== 'object' || Array.isArray(data.settings))) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'settings must be an object');
+  }
+  const sendsGstNumber = data.settings != null && Object.hasOwn(data.settings, 'gstNumber');
+  if (data.gstRegistered !== undefined || sendsGstNumber) {
+    const current = await Restaurant.findById(req.params.id).select('gstRegistered settings.gstNumber').lean();
+    if (!current) throw new ApiError(404, 'NOT_FOUND', 'Store not found');
+    const after = {
+      gstRegistered: data.gstRegistered ?? current.gstRegistered,
+      settings: { gstNumber: sendsGstNumber ? data.settings.gstNumber : current.settings?.gstNumber },
+    };
+    const field = effectiveField(getStoreSettingsField('settings.gstNumber'), after);
+    const message = validateField(field, after.settings.gstNumber);
+    if (message) {
+      throw new ApiError(400, 'VALIDATION_ERROR', message, { fieldErrors: { 'settings.gstNumber': message } });
+    }
+  }
+
   // Address changed — re-geocode so the map point follows it instead of staying on the old
   // premises (or on [0, 0] for a store created before creation geocoded). Best-effort, like
   // the owner portal's edit: a geocoder outage must not block an admin fixing a typo, and the
@@ -312,7 +343,21 @@ export const update = asyncHandler(async (req, res) => {
     if (coords) data.location = { type: 'Point', coordinates: coords };
   }
 
-  const store = await Restaurant.findByIdAndUpdate(req.params.id, { $set: data }, { new: true });
+  // `settings` is merged key by key, never replaced whole: an edit that sends only some
+  // settings must not wipe the rest (the GSTIN of a GST-registered store among them, which
+  // would slip past the check above).
+  const update = { ...data };
+  // Recorded as an explicit decision, so scripts/backfillGstRegistered.js never overrides it.
+  if (data.gstRegistered !== undefined) {
+    update.gstRegisteredSource = 'admin';
+    update.gstRegisteredSetAt = new Date();
+  }
+  if (data.settings) {
+    delete update.settings;
+    for (const [key, value] of Object.entries(data.settings)) update[`settings.${key}`] = value;
+  }
+
+  const store = await Restaurant.findByIdAndUpdate(req.params.id, { $set: update }, { new: true });
   if (!store) throw new ApiError(404, 'NOT_FOUND', 'Store not found');
   sendSuccess(res, 200, 'Store updated', { store });
 });

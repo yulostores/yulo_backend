@@ -7,8 +7,15 @@ import Cart from '../models/Cart.js';
 import Discount from '../models/Discount.js';
 import User from '../models/User.js';
 import Restaurant from '../models/Restaurant.js';
-import { redis } from '../config/redis.js';
-import { cartPlatformFee, cartTaxPercent } from '../config/finance.config.js';
+import { runOnce } from './idempotency.service.js';
+import { getActiveSettings } from './financeSettings.service.js';
+import {
+  computeCustomerCharges,
+  resolveDeliveryDistance,
+  toLegacyTotals,
+  DELIVERY_ISSUE_MESSAGES,
+} from './charges.service.js';
+import { toPaise } from '../utils/money.js';
 import * as cartService from './cart.service.js';
 import * as discountService from './discount.service.js';
 import { ensureAddressLocated } from './user.service.js';
@@ -40,7 +47,62 @@ const resolveOrderCustomer = async ({ userId, session }) => {
   };
 };
 
-export const createOrder = async ({
+// Prices a delivery/takeaway order with the one pricing engine (services/charges.service.js)
+// — the same one the cart preview and checkout summary show — and returns the breakdown to
+// freeze on Order.charges plus the legacy rupee fields derived from it. Shared by both doors
+// an app order comes through (the cart checkout and the raw-items POST /api/orders) so
+// neither can be placed at a price the other would not charge.
+//
+// A delivery the platform can't price is refused here, before anything is written: an
+// address never placed on the map (no distance → no delivery fee), or one outside the
+// restaurant's delivery zone.
+const priceAppOrder = async ({ type, restaurant, subtotal, discountAmount = 0, tip = 0, dropCoordinates }) => {
+  let distanceKm = null;
+  if (type === 'delivery') {
+    const resolved = resolveDeliveryDistance(restaurant, dropCoordinates);
+    if (resolved.issue) {
+      throw new ApiError(400, resolved.issue, DELIVERY_ISSUE_MESSAGES[resolved.issue]);
+    }
+    distanceKm = resolved.distanceKm;
+  }
+
+  const charges = computeCustomerCharges({
+    orderType: type,
+    foodSubtotalPaise: toPaise(subtotal),
+    discountPaise: toPaise(discountAmount),
+    restaurant,
+    distanceKm,
+    tipPaise: toPaise(tip),
+    settings: await getActiveSettings(),
+  });
+  return { charges, ...toLegacyTotals(charges) };
+};
+
+// Payment fields for a delivery/takeaway order. 'online' waits for Razorpay; anything else
+// on a delivery is cash collected by the rider (COD), on a takeaway cash paid at the counter
+// on pickup. pending_cod reads as "cash to be collected", not "payment attempt in progress".
+const paymentFieldsFor = ({ paymentMethod, type }) => {
+  if (paymentMethod === 'online') {
+    return { paymentMethod: 'online', paymentStatus: 'pending', paymentChannel: 'online' };
+  }
+  return {
+    paymentMethod: paymentMethod === 'card' ? 'card' : 'cash',
+    paymentStatus: type === 'delivery' ? 'pending_cod' : 'pending',
+    paymentChannel: type === 'delivery' ? 'cod' : 'counter',
+  };
+};
+
+// Idempotency-Key: the same key from the same orderer (signed-in customer, waiter, or guest
+// at this restaurant) creates one order, however often it is retried or raced — the repeat
+// gets { orderId, duplicate: true }. See services/idempotency.service.js.
+export const createOrder = (args) =>
+  runOnce({
+    scope: `order:${args.restaurantId}:${args.userId ?? args.staffId ?? 'guest'}`,
+    key: args.idempotencyKey,
+    create: () => createOrderOnce(args),
+  });
+
+const createOrderOnce = async ({
   restaurantId,
   tableSessionId,
   userId,
@@ -50,13 +112,7 @@ export const createOrder = async ({
   specialInstructions = '',
   paymentMethod,
   deliveryAddress,
-  idempotencyKey,
 }) => {
-  // Step 0 — Idempotency check
-  if (idempotencyKey) {
-    const cached = await redis.get(`idem:${idempotencyKey}:${restaurantId}`);
-    if (cached) return { orderId: cached, duplicate: true };
-  }
 
   // Step 1 — Validate restaurant
   const restaurant = await Restaurant.findById(restaurantId).lean();
@@ -156,15 +212,6 @@ export const createOrder = async ({
       $push: { orders: order._id },
     });
 
-    if (idempotencyKey) {
-      await redis.set(
-        `idem:${idempotencyKey}:${restaurantId}`,
-        order._id.toString(),
-        'EX',
-        86400
-      );
-    }
-
     notifyService.newOrder(order);
     return order;
   }
@@ -182,8 +229,12 @@ export const createOrder = async ({
     batchNumber: 1,
     items: snapshots,
     subtotal,
+    // Priced exactly like a cart checkout. This path used to freeze only the item subtotal
+    // and leave grandTotal null, so an online order placed through it was charged without
+    // its delivery fee, platform fee or tax.
+    ...(await priceAppOrder({ type, restaurant, subtotal, dropCoordinates: deliveryAddress?.coordinates })),
     specialInstructions,
-    paymentMethod,
+    ...paymentFieldsFor({ paymentMethod, type }),
     // The address the caller passed, with the account's own name/number filled in as the
     // door contact when it carries none — an order the restaurant can't get a person at
     // is the failure this whole field exists to prevent.
@@ -196,15 +247,6 @@ export const createOrder = async ({
       : deliveryAddress,
     statusHistory: [{ status: 'placed', at: new Date(), byRole: 'customer' }],
   });
-
-  if (idempotencyKey) {
-    await redis.set(
-      `idem:${idempotencyKey}:${restaurantId}`,
-      order._id.toString(),
-      'EX',
-      86400
-    );
-  }
 
   notifyService.newOrder(order);
   return order;
@@ -219,7 +261,17 @@ export const createOrder = async ({
 // Order.create, with no rollback if that create then fails) — if the cart-clear below
 // fails after the order was already created, the customer keeps a stale cart alongside a
 // real order, recoverable via DELETE /api/cart.
-export const createOrderFromCart = async ({
+// Idempotent per customer + Idempotency-Key: the claim is taken before the cart is read, so a
+// retry after the first attempt already emptied the cart gets that order back, not "Cart is
+// empty".
+export const createOrderFromCart = (args) =>
+  runOnce({
+    scope: `checkout:${args.userId}`,
+    key: args.idempotencyKey,
+    create: () => createOrderFromCartOnce(args),
+  });
+
+const createOrderFromCartOnce = async ({
   userId,
   addressId,
   deliveryInstructions = '',
@@ -228,17 +280,11 @@ export const createOrderFromCart = async ({
   tip = 0,
   vegFleetOptIn = false,
   paymentMethod,
-  idempotencyKey,
+  expectedTotalPaise = null,
 }) => {
   const cart = await Cart.findOne({ userId });
   if (!cart || cart.items.length === 0 || !cart.restaurantId) {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Cart is empty');
-  }
-
-  // Step 0 — Idempotency, same key shape/TTL as the items-array createOrder above.
-  if (idempotencyKey) {
-    const cached = await redis.get(`idem:${idempotencyKey}:${cart.restaurantId}`);
-    if (cached) return { orderId: cached, duplicate: true };
   }
 
   const restaurant = await Restaurant.findById(cart.restaurantId).lean();
@@ -258,8 +304,9 @@ export const createOrderFromCart = async ({
   // no-op — the checkout summary already ran the same lookup and wrote the result back — but
   // not every placement is preceded by one (an address added or switched since, a retried
   // checkout, a client that never loaded the summary). Returns null for an address the
-  // geocoder genuinely cannot place, which still does not block the order; see
-  // services/user.service.js's ensureAddressLocated for what that costs downstream.
+  // geocoder genuinely cannot place — and since the delivery fee is priced by distance, such
+  // an address is now refused at pricing below (400 ADDRESS_NOT_LOCATED) rather than turned
+  // into an order nobody can price or route.
   const dropCoordinates = await ensureAddressLocated(userId, address);
 
   // Step 1 — Re-validate item prices/availability fresh (menu items may have changed
@@ -339,12 +386,9 @@ export const createOrderFromCart = async ({
   }
 
   // Step 2 — Bill, recomputed fresh from the re-validated snapshots above (not the
-  // cart's own possibly-stale computeBill) — same fee logic (computeDeliveryFee), reused
-  // rather than re-implemented.
+  // cart's own possibly-stale computeBill) — by the same pricing engine, so it can only
+  // differ from what the customer was shown if the menu or the settings changed meanwhile.
   const subtotal = snapshots.reduce((sum, s) => sum + s.price * s.quantity, 0);
-  const deliveryFee = cartService.computeDeliveryFee(subtotal, restaurant.delivery);
-  const platformFee = cartPlatformFee;
-  const tax = subtotal * (cartTaxPercent / 100);
 
   let discountAmount = 0;
   let appliedDiscountId = null;
@@ -360,7 +404,26 @@ export const createOrderFromCart = async ({
     }
   }
 
-  const grandTotal = subtotal + deliveryFee + platformFee + tax + tip - discountAmount;
+  // Throws ADDRESS_NOT_LOCATED / OUT_OF_DELIVERY_RANGE before the order exists.
+  const pricing = await priceAppOrder({
+    type: 'delivery',
+    restaurant,
+    subtotal,
+    discountAmount,
+    tip,
+    dropCoordinates,
+  });
+
+  // The total the customer was shown (the checkout summary's charges.grandTotal). When the app
+  // sends it, a Finance Settings change or a re-priced delivery between that screen and this
+  // tap is refused instead of charging a different amount than the button said — nothing is
+  // created, and the new charges come back for the app to show.
+  if (expectedTotalPaise != null && pricing.charges.grandTotal !== expectedTotalPaise) {
+    throw new ApiError(409, 'PRICE_CHANGED', 'The total has changed — please review it before paying', {
+      expectedTotalPaise,
+      charges: pricing.charges,
+    });
+  }
 
   // Never trust the client's raw vegFleetOptIn claim — only honor it if this restaurant
   // actually has veg-fleet coverage. A restaurant without it gets a normal order,
@@ -376,23 +439,17 @@ export const createOrderFromCart = async ({
     type: 'delivery',
     batchNumber: 1,
     items: snapshots,
-    subtotal,
-    deliveryFee,
-    platformFee,
-    tax,
-    tip,
+    // charges + subtotal/deliveryFee/platformFee/tax/tip/discountAmount/grandTotal
+    ...pricing,
     appliedDiscountId,
-    discountAmount,
-    grandTotal,
     deliveryInstructions,
     cookingRequests,
     extraCutlery,
-    paymentMethod: paymentMethod === 'online' ? 'online' : 'cash',
-    // COD reads as "cash to be collected on delivery" from the moment the order exists —
-    // distinct from the schema default 'pending', which for an 'online' order here means
-    // "awaiting Razorpay verification/webhook" (see controllers/order.controller.js's
-    // payment/verify endpoint and the /api/webhooks/razorpay handler).
-    paymentStatus: paymentMethod === 'online' ? 'pending' : 'pending_cod',
+    // The wire value is 'cod' | 'online'; the model stores the instrument ('cash' for COD)
+    // plus the channel. COD reads as "cash to be collected on delivery" from the moment the
+    // order exists — distinct from 'pending', which for an 'online' order means "awaiting
+    // Razorpay verification/webhook".
+    ...paymentFieldsFor({ paymentMethod, type: 'delivery' }),
     customerName: user.name?.trim() || null,
     customerPhone: user.phone || null,
     // The whole address, not the two fields it used to keep: state and pincode were
@@ -431,10 +488,6 @@ export const createOrderFromCart = async ({
     // updateOrderStatus. Until then there is no search to count down.
     vegFleetSearchDeadline: null,
   });
-
-  if (idempotencyKey) {
-    await redis.set(`idem:${idempotencyKey}:${cart.restaurantId}`, order._id.toString(), 'EX', 86400);
-  }
 
   // Clear the cart on success — see the file-level comment on this function for why this
   // isn't (and can't cheaply be) wrapped in the same transaction as Order.create above.

@@ -54,7 +54,7 @@ export const createTicket = asyncHandler(async (req, res) => {
     category,
   });
 
-  sendSuccess(res, 201, 'Support ticket submitted', { ticket });
+  sendSuccess(res, 201, 'Support ticket submitted', { ticket: supportTicketService.legacyTicketView(ticket.toObject()) });
 });
 
 // Own tickets only — filtered by raisedBy, unlike the admin list endpoint
@@ -70,7 +70,8 @@ export const listTickets = asyncHandler(async (req, res) => {
   ]);
 
   sendSuccess(res, 200, 'Support tickets', {
-    tickets,
+    // The app reads the pre-B12 status vocabulary (open / in_progress / resolved / closed).
+    tickets: tickets.map(supportTicketService.legacyTicketView),
     total,
     page: Number(page),
     pages: Math.max(1, Math.ceil(total / Number(limit))),
@@ -84,7 +85,7 @@ export const getTicket = asyncHandler(async (req, res) => {
     raisedBy: req.user._id,
   }).lean();
   if (!ticket) throw new ApiError(404, 'NOT_FOUND', 'Ticket not found');
-  sendSuccess(res, 200, 'Ticket', { ticket });
+  sendSuccess(res, 200, 'Ticket', { ticket: supportTicketService.legacyTicketView(ticket) });
 });
 
 const messageSchema = z.object({ text: z.string().min(1) });
@@ -105,5 +106,5 @@ export const addMessage = asyncHandler(async (req, res) => {
 
   await supportTicketService.addTicketMessage(ticket, { senderType: 'user', sender: req.user._id, text });
 
-  sendSuccess(res, 200, 'Message added', { ticket });
+  sendSuccess(res, 200, 'Message added', { ticket: supportTicketService.legacyTicketView(ticket.toObject()) });
 });

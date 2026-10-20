@@ -1,15 +1,18 @@
 import { buildAppConfig, getLegalDocument } from '../config/appConfig.config.js';
+import { isCodEnabled, paymentSimulationEnabled } from '../config/payments.config.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
 // GET /api/app/config — everything the customer app's Settings screen renders: the
 // languages it can switch to, the payment-method catalogue, the "About Yulo Stores"
-// block, and the list of legal documents (titles + dates, not their text). Public and
-// static — assembled fresh each call from config/appConfig.config.js, cheap enough that
-// it needs no cache.
+// block, the list of legal documents (titles + dates, not their text), and the payment
+// switches. Public; assembled fresh each call from config/appConfig.config.js, plus the COD
+// switch from Finance Settings (itself cached — services/financeSettings.service.js).
 export const getAppConfig = asyncHandler(async (_req, res) => {
-  sendSuccess(res, 200, 'App config', { config: buildAppConfig() });
+  sendSuccess(res, 200, 'App config', {
+    config: buildAppConfig({ codEnabled: await isCodEnabled(), paymentSimulationEnabled }),
+  });
 });
 
 // GET /api/app/legal/:docId — one legal document (`terms` | `privacy`) with its full

@@ -10,6 +10,8 @@ import partnerProfileRoutes from './profile.routes.js';
 import partnerNotificationsRoutes from './notifications.routes.js';
 import partnerFleetChangeRequestRoutes from './fleetChangeRequest.routes.js';
 import partnerSupportRoutes from './support.routes.js';
+import { authenticatePartner } from '../../middleware/authenticatePartner.js';
+import { getPartnerConfig } from '../../controllers/partner/config.controller.js';
 import partnerLocationRoutes from './location.routes.js';
 
 const partnerRouter = Router();
@@ -28,5 +30,7 @@ partnerRouter.use('/notifications', partnerNotificationsRoutes);
 partnerRouter.use('/fleet-change-requests', partnerFleetChangeRequestRoutes);
 partnerRouter.use('/support', partnerSupportRoutes);
 partnerRouter.use('/location', partnerLocationRoutes);
+// Runtime switches for the rider app (e.g. whether cash on delivery is on).
+partnerRouter.get('/config', authenticatePartner, getPartnerConfig);
 
 export default partnerRouter;

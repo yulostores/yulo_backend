@@ -1,5 +1,7 @@
 import Bill from '../../models/Bill.js';
 import * as billViewService from '../../services/billView.service.js';
+import * as billingService from '../../services/billing.service.js';
+import * as counterPaymentService from '../../services/counterPayment.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
@@ -65,4 +67,33 @@ export const getBillForOrder = asyncHandler(async (req, res) => {
   });
   if (!order) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
   sendSuccess(res, 200, 'Bill', { bill });
+});
+
+// POST /api/owner/:restaurantId/bills/:billId/mark-paid — body { method: 'cash'|'upi'|'card' }.
+// The owner settling a dine-in bill paid at the table, the same as the waiter's mark-paid:
+// recorded as a counter payment (the restaurant owes Yulo the platform fee for it), refused
+// with 409 when the guest has paid — or is paying — online, or the bill is already settled.
+export const markBillPaid = asyncHandler(async (req, res) => {
+  const bill = await Bill.findOne({ _id: req.params.billId, restaurantId: req.restaurant._id }).lean();
+  if (!bill) throw new ApiError(404, 'NOT_FOUND', 'Bill not found');
+  // A table can't be closed out while the kitchen still owes it a round — same rule as the floor.
+  if (bill.status === 'open' && bill.tableSessionId) {
+    await billingService.assertSessionFullyServed(bill.tableSessionId);
+  }
+
+  const paid = await counterPaymentService.markPaidAtCounter({
+    billId: bill._id,
+    restaurantId: req.restaurant._id,
+    method: req.body?.method,
+  });
+  sendSuccess(res, 200, 'Bill marked as paid', { bill: await billViewService.buildBillView(paid) });
+});
+
+// POST /api/owner/:restaurantId/bills/:billId/release-payment — releases a dine-in bill held
+// for a guest's online payment (they walked away from Razorpay, or will pay at the counter):
+// the sitting reopens and the bill is re-priced. 409 PAYMENT_IN_PROGRESS while a payment that
+// can still settle it is going through.
+export const releaseBillPayment = asyncHandler(async (req, res) => {
+  const bill = await billingService.releasePayment({ billId: req.params.billId, restaurantId: req.restaurant._id });
+  sendSuccess(res, 200, 'Bill payment released', { bill: await billViewService.buildBillView(bill) });
 });

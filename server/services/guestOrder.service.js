@@ -15,6 +15,12 @@ const getOrOpenSession = async ({ restaurantId, tableId, guestName, guestPhone }
 
   let session = await TableSession.findOne({ tableId: table._id, status: 'open' });
   if (!session) {
+    // The table's bill is being paid online: a new round would open a second sitting at the
+    // same table (and miss the bill). Wait for the payment, or ask staff to release it.
+    const paying = await TableSession.exists({ tableId: table._id, status: 'bill_requested' });
+    if (paying) {
+      throw new ApiError(409, 'PAYMENT_IN_PROGRESS', "This table's bill is being paid — wait for it to finish, or ask staff to release the payment");
+    }
     session = await TableSession.create({
       restaurantId,
       tableId: table._id,
@@ -76,7 +82,7 @@ export const placeGuestOrder = async ({
 };
 
 export const getGuestSession = async ({ restaurantId, tableId }) => {
-  const session = await TableSession.findOne({ tableId, restaurantId, status: 'open' })
+  const session = await TableSession.findOne({ tableId, restaurantId, status: { $in: ['open', 'bill_requested'] } })
     .populate('orders')
     .lean();
   return session;

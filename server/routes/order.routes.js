@@ -7,6 +7,8 @@ import {
   checkout,
   verifyPayment,
   simulatePayment,
+  retryPayment,
+  getPaymentStatus,
   listOrders,
   getOrder,
   getTracking,
@@ -25,6 +27,8 @@ router.post('/', createOrder);
 router.post('/checkout', checkout);
 router.post('/:id/payment/verify', verifyPayment);
 router.post('/:id/payment/simulate', simulatePayment);
+router.post('/:id/payment/retry', retryPayment);
+router.get('/:id/payment', getPaymentStatus);
 router.get('/', listOrders);
 router.get('/:id', getOrder);
 router.get('/:id/tracking', getTracking);

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { refundSchema } from './refundSchema.js';
 
 const batchItemSchema = new mongoose.Schema(
   {
@@ -129,6 +130,14 @@ const billSchema = new mongoose.Schema(
     // the persisted document is self-consistent and aggregations don't need $unwind.
     discountTotal: { type: Number, default: 0 },
     grandTotal: { type: Number, required: true },
+    // The engine's breakdown in PAISE (services/charges.service.js) behind the rupee totals
+    // above: for a dine-in bill, recomputed on every re-assemble while open and frozen once
+    // paid; for a delivery/takeaway bill, copied from its order. Exposed by billView as
+    // `chargeBreakdown` (that payload's `charges` key is the older rupee summary).
+    charges: { type: mongoose.Schema.Types.Mixed, default: null },
+    // The bill's settlement line, frozen when it was paid (services/ledger.service.js) — same
+    // meaning as Order.financials.
+    financials: { type: mongoose.Schema.Types.Mixed, default: null, select: false },
 
     status: { type: String, enum: ['open', 'paid', 'cancelled'], default: 'open' },
     paidAt: { type: Date },
@@ -140,11 +149,42 @@ const billSchema = new mongoose.Schema(
     // The actual captured payment's own id, distinct from the order id above — set once
     // payment succeeds, same split as Order.razorpayPaymentId/paymentIntentId.
     razorpayPaymentId: { type: String, default: null },
+    // Same meaning as on Order: 'online' = guest paid through Razorpay (money reaches Yulo),
+    // 'counter' = settled with the restaurant directly (cash/UPI/card marked by staff).
+    // Set by billing.service.js's markPaid; null while the bill is open.
+    paymentChannel: { type: String, enum: ['online', 'counter', 'cod', null], default: null },
+    // Same three as on Order — see the comments there.
+    paymentAmountPaise: { type: Number, default: null },
+    // Every Razorpay order id ever created for this payment, oldest first — a retry
+    // (POST …/payment/retry) can replace paymentIntentId with a fresh one, and a payment that
+    // completes late against an earlier one must still be recognised as this one's.
+    paymentIntentHistory: { type: [String], default: [] },
+    // When the guest last started (or resumed) paying online — the bill is held at its total
+    // while they pay (billing.service.js assembleBill), and released if they abandon it.
+    paymentStartedAt: { type: Date, default: null },
+    // How the payment was confirmed: the app's own verify call, Razorpay's webhook, or dev
+    // simulation. Lets an app that lost its verify response see that a webhook settled it.
+    paymentConfirmedVia: { type: String, enum: ['verify', 'webhook', 'simulation', null], default: null },
+    // select: false (with razorpayTax and financials) — platform-internal money: Razorpay's
+    // cut and Yulo's margin. Never returned by any query unless the code asks for it
+    // (.select('+razorpayFee …')); only the ledger, refund and admin-breakdown code does.
+    razorpayFee: { type: Number, default: null, select: false },
+    razorpayTax: { type: Number, default: null, select: false },
+    // A Razorpay payment we refused to settle the bill with (wrong amount/currency/order).
+    paymentFailureReason: { type: String, default: null },
+    // Set to 'pending' when money was captured against this bill but we could not accept it
+    // as payment — someone has to return it. Refund integration arrives in B5.
+    refundStatus: { type: String, enum: ['none', 'pending', 'refunded'], default: 'none' },
+    // Same as Order.refund — see models/refundSchema.js.
+    refund: { type: refundSchema, default: () => ({}) },
   },
   { timestamps: true }
 );
 
 billSchema.index({ tableSessionId: 1 });
+billSchema.index({ paymentIntentHistory: 1 });
+// Refund webhooks and the "already owed back?" checks look bills up by payment.
+billSchema.index({ razorpayPaymentId: 1 }, { partialFilterExpression: { razorpayPaymentId: { $type: 'string' } } });
 billSchema.index({ restaurantId: 1, status: 1, createdAt: -1 });
 // Partial, not sparse: a compound sparse index still indexes a document whose FIRST key
 // is present, so every not-yet-numbered bill would collide on `billNumber: null`. The

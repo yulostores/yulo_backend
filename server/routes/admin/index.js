@@ -11,6 +11,7 @@ import reportRoutes from './report.routes.js';
 import financeRoutes from './finance.routes.js';
 import orderRoutes from './order.routes.js';
 import billRoutes from './bill.routes.js';
+import bankRequestRoutes from './bankRequests.routes.js';
 
 const router = Router();
 
@@ -29,5 +30,6 @@ router.use('/reports', reportRoutes);
 router.use('/finance', financeRoutes);
 router.use('/orders', orderRoutes);
 router.use('/bills', billRoutes);
+router.use('/bank-requests', bankRequestRoutes);
 
 export default router;

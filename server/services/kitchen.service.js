@@ -1,10 +1,11 @@
 import Order from '../models/Order.js';
 import { ApiError } from '../utils/ApiError.js';
 import { notifyService } from './notify.service.js';
-import { createOrderBill } from './billing.service.js';
-import { autoAssign, keepWaitingForVegFleet } from './deliveryAssignment.service.js';
+import { assertRoundCancellable, createOrderBill } from './billing.service.js';
+import { autoAssign, countCompletedDelivery, keepWaitingForVegFleet, releaseAssignmentForCancelledOrder } from './deliveryAssignment.service.js';
 import { enrichOrders } from './orderView.service.js';
-import { flagRefundIfOwed } from './refund.service.js';
+import { onOrderCancelled } from './refund.service.js';
+import { onOrderDelivered } from './ledger.service.js';
 
 // 'served' is the dine-in leg: the kitchen takes a ticket to 'ready', the waiter carries
 // it to the table and marks it served. 'preparing' -> 'served' is allowed too, for the
@@ -80,7 +81,7 @@ export const getBoard = async (restaurantId) => {
 //
 // `reason` is only read for a cancellation — it is stored as Order.cancellationReason,
 // which the customer sees.
-const CANCELLED_BY_ROLE = { owner: 'restaurant', chef: 'kitchen', waiter: 'waiter', customer: 'customer' };
+const CANCELLED_BY_ROLE = { owner: 'restaurant', chef: 'kitchen', waiter: 'waiter', customer: 'customer', admin: 'admin' };
 
 export const ORDER_AWAITING_APPROVAL = 'ORDER_AWAITING_APPROVAL';
 
@@ -102,16 +103,28 @@ export const assertNotAwaitingApproval = (order) => {
 //   owner    accept or reject (services/orderApproval.service.js)
 //   customer cancel their own order while it is still waiting
 //   system   the approval-timeout sweep (expireUnansweredOrders)
+//   admin    cancelling from the admin console (controllers/admin/order.controller.js)
 const PLACED_EXIT_ROLES = {
   confirmed: ['owner'],
-  cancelled: ['owner', 'customer', 'system'],
+  cancelled: ['owner', 'customer', 'system', 'admin'],
+};
+
+// A cancellation never overtakes a delivery: once the rider has handed the food over, the order
+// can't be cancelled (and refunded) underneath them — the rider's deliver endpoint claims the
+// assignment atomically, so exactly one of the two wins. A customer can't cancel once the
+// rider has collected the food either.
+const CANCEL_BLOCKING_ASSIGNMENT = {
+  customer: ['picked_up', 'delivered'],
+  default: ['delivered'],
 };
 
 // An online order may only be accepted once it is paid — checked inside the same atomic
 // update as the status change, so a payment that fails in between can't slip through.
 const PAID_OR_OFFLINE = { $or: [{ paymentMethod: { $ne: 'online' } }, { paymentStatus: 'paid' }] };
 
-export const updateOrderStatus = async ({ orderId, currentStatus, newStatus, staffId, actor, reason }) => {
+// `guard` (optional) is an extra condition for the compare-and-swap — the approval sweep uses it
+// so a payment landing between its read and its write keeps the order alive.
+export const updateOrderStatus = async ({ orderId, currentStatus, newStatus, staffId, actor, reason, guard = null }) => {
   const allowed = VALID_TRANSITIONS[currentStatus];
   if (!allowed?.includes(newStatus)) {
     throw new ApiError(
@@ -124,6 +137,13 @@ export const updateOrderStatus = async ({ orderId, currentStatus, newStatus, sta
   const accepting = currentStatus === 'placed' && newStatus === 'confirmed';
   if (currentStatus === 'placed' && !PLACED_EXIT_ROLES[newStatus]?.includes(actor?.role ?? 'system')) {
     throw new ApiError(409, ORDER_AWAITING_APPROVAL, 'This order is waiting for the restaurant to accept it');
+  }
+
+  // A dine-in round can't be cancelled while its table's bill is held for an online payment —
+  // the guest would pay for food that is no longer on the bill (billing.service.js).
+  if (newStatus === 'cancelled') {
+    const target = await Order.findById(orderId).select('type tableSessionId').lean();
+    await assertRoundCancellable(target);
   }
 
   const now = new Date();
@@ -146,8 +166,22 @@ export const updateOrderStatus = async ({ orderId, currentStatus, newStatus, sta
     set.vegFleetSearchDeadline = null;
   }
 
+  const cancelGuard =
+    newStatus === 'cancelled'
+      ? {
+          'deliveryAssignment.status': {
+            $nin: CANCEL_BLOCKING_ASSIGNMENT[actor?.role] ?? CANCEL_BLOCKING_ASSIGNMENT.default,
+          },
+        }
+      : {};
   const order = await Order.findOneAndUpdate(
-    { _id: orderId, status: currentStatus, ...(accepting ? PAID_OR_OFFLINE : {}) },
+    {
+      _id: orderId,
+      status: currentStatus,
+      ...(accepting ? PAID_OR_OFFLINE : {}),
+      ...cancelGuard,
+      ...(guard ? { $and: [guard] } : {}),
+    },
     { $set: set, $push: { statusHistory: historyEntry } },
     { new: true }
   );
@@ -193,11 +227,29 @@ export const updateOrderStatus = async ({ orderId, currentStatus, newStatus, sta
     notifyService.orderAccepted(order);
   }
 
-  // Cancelled after the customer had already paid online: flag the refund. The payment
-  // handlers do the same for a payment captured after the order was cancelled
-  // (services/payment.service.js), so either ordering ends up flagged.
-  if (newStatus === 'cancelled' && (await flagRefundIfOwed(order._id))) {
-    order.refundStatus = 'pending';
+  // Everything a cancellation sets off — a full refund of an online payment (and who bears
+  // Razorpay's fee), or, for a customer walking away after the kitchen started, no refund and
+  // the restaurant paid — is decided in one place: services/refund.service.js. The payment
+  // handlers cover the other ordering (a payment captured after the order was cancelled).
+  if (newStatus === 'cancelled') {
+    // The rider (or a pending offer) is released first, so nobody collects the food while the
+    // refund is being worked out.
+    if (order.type === 'delivery') {
+      const released = await releaseAssignmentForCancelledOrder(order._id);
+      if (released.length) {
+        const fresh = await Order.findById(order._id).select('deliveryAssignment').lean();
+        if (fresh?.deliveryAssignment) order.set('deliveryAssignment', fresh.deliveryAssignment);
+      }
+    }
+    const refreshed = await onOrderCancelled(order, {
+      previousStatus: currentStatus,
+      actorRole: actor?.role ?? 'system',
+    });
+    if (refreshed?.refund) {
+      order.refund = refreshed.refund;
+      order.refundStatus = refreshed.refundStatus;
+      order.paymentStatus = refreshed.paymentStatus;
+    }
   }
 
   if (newStatus === 'confirmed' && order.type === 'delivery') {
@@ -223,6 +275,9 @@ export const updateOrderStatus = async ({ orderId, currentStatus, newStatus, sta
     }
     await order.save();
     await createOrderBill(order);
+    // The restaurant's credit for an order paid online (services/ledger.service.js).
+    await onOrderDelivered(order);
+    if (order.type === 'delivery') await countCompletedDelivery(order._id);
   }
 
   notifyService.orderStatusUpdated(order);

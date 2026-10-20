@@ -1,4 +1,5 @@
 import express from 'express';
+import { fileURLToPath } from 'node:url';
 import * as Sentry from '@sentry/node';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -41,7 +42,8 @@ app.use(helmet());
 // `false` just skips that middleware's own header write, it doesn't clear the value the
 // blanket helmet() above already set — so this sets res headers directly instead,
 // overwriting/removing them for requests matching this exact route only.
-app.use('/checkout.html', (req, res, next) => {
+// Applied to checkout.js too, so the script the page loads is served under the same policy.
+app.use(['/checkout.html', '/checkout.js'], (req, res, next) => {
   res.setHeader(
     'Content-Security-Policy',
     [
@@ -112,7 +114,9 @@ app.use('/api/partner', partnerRouter);
 
 app.get('/health', (_, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
-app.use(express.static('public'));
+// Absolute, not 'public': a relative path resolves against the process's working directory,
+// so starting the server from anywhere but server/ silently 404'd /checkout.html.
+app.use(express.static(fileURLToPath(new URL('./public', import.meta.url))));
 
 app.use((req, res) => res.status(404).json({
   status: 'error',

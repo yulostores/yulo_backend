@@ -6,7 +6,7 @@ const adminActivityLogSchema = new mongoose.Schema(
     action: { type: String, required: true },
     targetType: {
       type: String,
-      enum: ['restaurant', 'user', 'delivery_partner', 'ticket', 'order', 'payout'],
+      enum: ['restaurant', 'user', 'delivery_partner', 'ticket', 'order', 'payout', 'finance_settings', 'settlement', 'payout_batch'],
       required: true,
     },
     // Optional: bulk actions (e.g. marking many payouts paid at once) don't have a

@@ -79,10 +79,17 @@ export const blacklistToken = async (token) => {
   const decoded = jwt.decode(token);
   if (!decoded?.exp) return;
   const ttl = decoded.exp - Math.floor(Date.now() / 1000);
+  // No Redis configured (REDIS_URL unset, which config/env.js allows): there is no denylist
+  // to write to. Logout still clears the client's tokens; it just can't revoke this one early.
+  if (!redis) return;
   if (ttl > 0) await redis.set(revocationKey(decoded, token), '1', 'EX', ttl);
 };
 
 // Callers must verify the token first — the `jti` this keys off is only trustworthy once
 // the signature has been checked, and there is no reason to ask Redis about a forgery.
+//
+// With no Redis configured nothing can have been revoked, so the answer is "no" — the
+// behaviour the README always described. Before this guard, every authenticated request
+// crashed with a TypeError when REDIS_URL was unset.
 export const isTokenRevoked = async (decoded, token) =>
-  (await redis.get(revocationKey(decoded, token))) !== null;
+  redis ? (await redis.get(revocationKey(decoded, token))) !== null : false;

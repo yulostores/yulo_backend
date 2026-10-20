@@ -50,6 +50,8 @@ const EMAIL_PATTERN = '^[^\\s@]+@[^\\s@]+\\.[A-Za-z]{2,}$';
 const PHONE_PATTERN = '^[0-9]{10}$';
 const PINCODE_PATTERN = '^[1-9][0-9]{5}$';
 const PAN_PATTERN = '^[A-Z]{5}[0-9]{4}[A-Z]$';
+// GSTIN: 2-digit state code, the holder's PAN, entity number, 'Z', checksum character.
+export const GSTIN_PATTERN = '^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$';
 
 // Every field the store-settings screen edits, addressed by its path in the PATCH payload
 // (which is also its path on the Restaurant document). `section` is the card it sits in;
@@ -223,6 +225,12 @@ export const STORE_SETTINGS_FIELDS = [
 
   // ── Licenses & tax — optional here; the scans behind them are reviewed separately
   // (POST /owner/:rId/documents).
+  //
+  // Optional on its own — but mandatory, and checked as a real GSTIN, once the restaurant says
+  // it is GST-registered (the `gstRegistered` toggle below). `requiredWhen` carries the extra
+  // rules that switch on; see effectiveField. Kept conditional rather than adding the pattern
+  // outright so a restaurant holding a legacy, non-standard number that is NOT registered can
+  // still save the rest of its form.
   {
     path: 'settings.gstNumber',
     wide: true,
@@ -232,7 +240,16 @@ export const STORE_SETTINGS_FIELDS = [
     required: false,
     transform: 'uppercase',
     maxLength: 15,
-    placeholder: '27AACR1234F1Z1',
+    placeholder: '27AAPFU0939F1ZV',
+    requiredWhen: {
+      path: 'gstRegistered',
+      equals: true,
+      rules: {
+        requiredMessage: 'GST Number is required for a GST-registered restaurant',
+        pattern: GSTIN_PATTERN,
+        patternMessage: 'Enter a valid 15-character GSTIN, e.g. 27AAPFU0939F1ZV',
+      },
+    },
   },
   {
     path: 'settings.healthPermitId',
@@ -265,6 +282,18 @@ export const STORE_SETTINGS_FIELDS = [
     section: 'licenses',
     type: 'date',
     required: false,
+  },
+
+  // ── Tax status. Its own section so a portal that predates it simply doesn't render it.
+  // Whether food GST is charged on this restaurant's orders, and whether the GST number above
+  // is mandatory.
+  {
+    path: 'gstRegistered',
+    label: 'GST registered',
+    section: 'tax',
+    type: 'toggle',
+    required: false,
+    help: 'Turn on if this restaurant is registered for GST. Food GST is then charged on its orders, and the GST number becomes mandatory.',
   },
 
   // ── Delivery logistics. The zod schema on PATCH /settings/delivery is built from these
@@ -366,7 +395,12 @@ export const validateField = (field, rawValue) => {
     return null;
   }
 
-  if (typeof value !== 'string') return null;
+  // A text rule can't be checked on a number/object — and must not wave it through either
+  // (a GSTIN sent as a number would otherwise pass its pattern unchecked).
+  if (typeof value !== 'string') {
+    const hasTextRules = field.pattern || field.minLength || field.maxLength || field.options;
+    return hasTextRules ? `${field.label} must be text` : null;
+  }
 
   if (field.minLength && value.length < field.minLength) {
     return `${field.label} must be at least ${field.minLength} characters`;
@@ -383,6 +417,15 @@ export const validateField = (field, rawValue) => {
   return null;
 };
 
+// A field's rules as they apply to one particular document: the static descriptor, plus the
+// extra rules of its `requiredWhen` when that condition holds (e.g. the GST number once the
+// restaurant is GST-registered). Twinned in the portal's fieldRules.js like validateField.
+export const effectiveField = (field, doc) => {
+  const condition = field.requiredWhen;
+  if (!condition || getByPath(doc, condition.path) !== condition.equals) return field;
+  return { ...field, required: true, ...condition.rules };
+};
+
 // Server-side gate for PATCH /owner/:rId/settings. Only the required fields are checked
 // here, and deliberately so: an owner whose *optional* GST number was captured in some
 // older format must still be able to save a phone-number correction, so a legacy value
@@ -394,7 +437,8 @@ export const validateField = (field, rawValue) => {
 // of the request doesn't slip past the check by simply not being mentioned.
 export const validateRequiredStoreSettings = (doc) => {
   const fieldErrors = {};
-  for (const field of STORE_SETTINGS_FIELDS) {
+  for (const baseField of STORE_SETTINGS_FIELDS) {
+    const field = effectiveField(baseField, doc);
     if (!field.required) continue;
     const message = validateField(field, getByPath(doc, field.path));
     if (message) fieldErrors[field.path] = message;
