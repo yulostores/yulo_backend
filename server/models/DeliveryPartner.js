@@ -109,6 +109,11 @@ const deliveryPartnerSchema = new mongoose.Schema(
       appUpdates: { type: Boolean, default: true },
       soundVibration: { type: Boolean, default: true },
     },
+    // The Expo push token of the phone the rider is signed in on (PUT
+    // /api/partner/notifications/push-token). How an order offer reaches a rider whose app is in
+    // the background or whose screen is locked — Android closes the socket then. Null until the
+    // app registers one, and cleared on sign-out or when Expo reports the device unregistered.
+    pushToken: { type: String, default: null },
     rating: { type: Number, default: 0, min: 0, max: 5 },
     totalDeliveries: { type: Number, default: 0 },
     joinedOn: { type: Date, default: Date.now },
@@ -131,6 +136,8 @@ const deliveryPartnerSchema = new mongoose.Schema(
 );
 
 deliveryPartnerSchema.index({ status: 1 });
+// Registering a phone takes its token off any other rider (controllers/partner/profile.controller.js).
+deliveryPartnerSchema.index({ pushToken: 1 }, { partialFilterExpression: { pushToken: { $type: 'string' } } });
 deliveryPartnerSchema.index({ verificationStatus: 1 });
 deliveryPartnerSchema.index({ currentLocation: '2dsphere' });
 

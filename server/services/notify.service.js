@@ -10,6 +10,10 @@ import { maskPhone } from './tracking.service.js';
 
 export const notifyService = {
   newOrder(order) {
+    // An online order is the restaurant's business once it is paid: orderPaymentUpdated
+    // announces it then. Announced at creation, a payment that was then declined or abandoned
+    // left an order on the owner's screen that nobody had paid for.
+    if (order.paymentMethod === 'online' && order.paymentStatus !== 'paid') return;
     const io = getIO();
     const payload = {
       orderId: order._id,
@@ -80,6 +84,8 @@ export const notifyService = {
   // inbox had it flagged "awaiting payment" with Accept disabled; this lifts that live.
   orderPaymentUpdated(order) {
     if (order.status !== 'placed') return;
+    // Just paid: this is the moment it becomes a new order for the restaurant.
+    if (order.paymentStatus === 'paid') notifyService.newOrder(order);
     getIO().to(`owner:${order.restaurantId}`).emit('order_payment_updated', {
       orderId: order._id,
       paymentStatus: order.paymentStatus,

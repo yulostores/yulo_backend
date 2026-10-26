@@ -10,6 +10,7 @@ import { computeRiderPay } from './settlementMath.service.js';
 import { PARTNER_PICKUP_SEARCH_RADIUS_KM } from '../config/delivery.config.js';
 import { getIO } from '../socket.js';
 import { notifyService } from './notify.service.js';
+import { pushToPartner, PUSH_CHANNELS } from './push.service.js';
 import logger from '../utils/logger.js';
 import { computeDropKm, computePickupKm, isLocationFresh, LOCATION_FRESHNESS_SECONDS } from './geo.service.js';
 import { formatAddress as formatPostalAddress } from './geocode.service.js';
@@ -131,7 +132,11 @@ export const computeRiderEarningsBreakdown = async (order) => {
   };
 };
 
-export const buildOfferPayload = async (order, candidate) => {
+// `offerExpiresAt` — when this offer lapses. Passed by autoAssign for an offer it is making right
+// now (the in-memory order predates that write); otherwise read off the order. It identifies the
+// offer (the rider app keys its offer screen on orderId + offerExpiresAt, so an order re-offered
+// later opens a fresh screen, not the earlier one that already timed out) and sets the countdown.
+export const buildOfferPayload = async (order, candidate, { offerExpiresAt = order.deliveryAssignment?.offerExpiresAt ?? null } = {}) => {
   // The account lookup is only a fallback for orders placed before Order.customerName/
   // customerPhone were snapshotted — a current order carries its own, and the address
   // carries the door contact, which is who the partner actually needs to reach and is not
@@ -217,7 +222,12 @@ export const buildOfferPayload = async (order, candidate) => {
     // geo.service.js file comment on why that's a separate, larger capability than this step adds.
     customerEtaMin: null,
     pickupEtaMin: null,
-    countdownSeconds: offerWindowSeconds,
+    offerExpiresAt,
+    // What is actually left of the window — an offer reopened from a notification or on return
+    // to the app must not restart a full countdown on an offer that lapses sooner.
+    countdownSeconds: offerExpiresAt
+      ? Math.max(0, Math.min(offerWindowSeconds, Math.round((new Date(offerExpiresAt).getTime() - Date.now()) / 1000)))
+      : offerWindowSeconds,
   };
 };
 
@@ -226,16 +236,58 @@ export const buildOfferPayload = async (order, candidate) => {
 // services/orderApproval.service.js) and 'cancelled' (rejected) must never reach a rider.
 export const ASSIGNABLE_STATUSES = ['confirmed', 'preparing', 'ready'];
 
+// A rider who let an offer lapse or skipped it is passed over for a while, then becomes eligible
+// for the same order again. Never offering it to them again left the order with no rider at all
+// whenever they were the only one around — the usual case on a quiet evening, and every time a
+// rider's phone simply missed the offer. A lapse (they probably never saw it) comes back sooner
+// than an explicit skip (they did see it, and said no), and nobody is asked about the same order
+// more than REOFFER_MAX_PER_RIDER times.
+export const REOFFER_COOLDOWN_MS = 2 * 60 * 1000;
+export const REJECT_COOLDOWN_MS = 10 * 60 * 1000;
+export const REOFFER_MAX_PER_RIDER = 5;
+
+// A rider counts as reachable for an offer when their app holds a live socket, OR when the
+// backend can wake their phone with a push: a registered push token, on duty, and a location
+// ping this recent. The background-location service keeps pinging while the phone is locked —
+// exactly when Android has closed the socket — so socket presence alone missed the riders the
+// push exists for.
+export const PUSH_REACHABLE_WITHIN_MS = 10 * 60 * 1000;
+
+// Riders who may not be asked about this order right now: still in their cooldown after the last
+// time, or asked too often already. The rider currently holding it never reaches here.
+const passedOverFor = (order, now = Date.now()) => {
+  const offers = new Map();
+  const blocked = new Set();
+  for (const h of order.deliveryAssignment?.history || []) {
+    if (!h.partnerId) continue;
+    const id = h.partnerId.toString();
+    offers.set(id, (offers.get(id) ?? 0) + 1);
+    // No end time: the rider accepted it (and was later released) — not offered again.
+    if (!h.unassignedAt) {
+      blocked.add(id);
+      continue;
+    }
+    const cooldown = h.reason === 'expired' ? REOFFER_COOLDOWN_MS : REJECT_COOLDOWN_MS;
+    if (new Date(h.unassignedAt).getTime() > now - cooldown) blocked.add(id);
+  }
+  for (const [id, count] of offers) if (count >= REOFFER_MAX_PER_RIDER) blocked.add(id);
+  return blocked;
+};
+
+// Riders with a live socket (socket.js join_partner keeps this Redis set). Swappable in tests,
+// which run without Redis.
+const presenceFromRedis = async () => (redis ? redis.smembers('live:active_partners') : []);
+let readOnlinePartnerIds = presenceFromRedis;
+export const __setPresenceForTests = (fn) => {
+  readOnlinePartnerIds = fn ?? presenceFromRedis;
+};
+
 export const autoAssign = async (order) => {
   if (order.type !== 'delivery') return null;
   if (!ASSIGNABLE_STATUSES.includes(order.status)) return null;
+  if (order.deliveryAssignment?.partnerId) return null;
 
-  const alreadyTried = new Set(
-    (order.deliveryAssignment?.history || []).map((h) => h.partnerId?.toString()).filter(Boolean)
-  );
-  if (order.deliveryAssignment?.partnerId) {
-    alreadyTried.add(order.deliveryAssignment.partnerId.toString());
-  }
+  const alreadyTried = passedOverFor(order);
 
   // Presence lives in Redis (socket.js's join_partner). Without it — REDIS_URL unset, or Redis
   // unreachable — no rider can be known to be online, so nobody is offered the order now; the
@@ -243,9 +295,25 @@ export const autoAssign = async (order) => {
   // restaurant's "accept" with a 500 after the acceptance itself had already been saved.
   let onlinePartnerIds = new Set();
   try {
-    onlinePartnerIds = new Set(redis ? await redis.smembers('live:active_partners') : []);
+    onlinePartnerIds = new Set(await readOnlinePartnerIds());
   } catch (err) {
     logger.warn({ err, orderId: order._id }, 'Rider presence unavailable (Redis) — no auto-offer this time');
+  }
+  const pushCutoff = new Date(Date.now() - PUSH_REACHABLE_WITHIN_MS);
+  const isReachable = (candidate) =>
+    onlinePartnerIds.has(candidate._id.toString()) ||
+    Boolean(candidate.pushToken && candidate.currentLocationUpdatedAt && candidate.currentLocationUpdatedAt >= pushCutoff);
+  // Nobody reachable at all — skip the candidate queries; the sweep tries again in a few seconds.
+  if (
+    onlinePartnerIds.size === 0 &&
+    !(await DeliveryPartner.exists({
+      status: 'active',
+      verificationStatus: 'approved',
+      pushToken: { $type: 'string' },
+      currentLocationUpdatedAt: { $gte: pushCutoff },
+    }))
+  ) {
+    return null;
   }
 
   const restaurant = await Restaurant.findById(order.restaurantId).select('location delivery.radiusKm').lean();
@@ -261,7 +329,7 @@ export const autoAssign = async (order) => {
   for (const candidate of candidates) {
     const candidateId = candidate._id.toString();
     if (alreadyTried.has(candidateId)) continue;
-    if (!onlinePartnerIds.has(candidateId)) continue;
+    if (!isReachable(candidate)) continue;
 
     const activeCount = await countActiveAssignments(candidate._id);
     if (activeCount >= maxConcurrentOrdersPerPartner) continue;
@@ -279,9 +347,19 @@ export const autoAssign = async (order) => {
 
     const offerExpiresAt = new Date(Date.now() + offerWindowSeconds * 1000);
     // Only while the order can still take a rider: a cancellation landing during the search
-    // must not be followed by a fresh offer for food nobody is cooking.
+    // must not be followed by a fresh offer for food nobody is cooking. And only while nobody
+    // holds it or a live offer for it — the sweep, a rider coming online and a reject can all
+    // look for a rider at the same moment, and the second must not overwrite the first's offer.
     const offered = await Order.updateOne(
-      { _id: order._id, status: { $in: ASSIGNABLE_STATUSES } },
+      {
+        _id: order._id,
+        status: { $in: ASSIGNABLE_STATUSES },
+        'deliveryAssignment.partnerId': null,
+        $or: [
+          { 'deliveryAssignment.offerStatus': { $ne: 'offered' } },
+          { 'deliveryAssignment.offerExpiresAt': { $lte: new Date() } },
+        ],
+      },
       {
         $set: {
           'deliveryAssignment.offeredTo': candidate._id,
@@ -293,12 +371,21 @@ export const autoAssign = async (order) => {
 
     if (!offered.modifiedCount) return null;
 
-    const payload = await buildOfferPayload(order, candidate);
+    const payload = await buildOfferPayload(order, candidate, { offerExpiresAt });
     try {
       getIO().to(`partner:${candidateId}`).emit('order_offer', payload);
     } catch (err) {
       logger.error({ err, orderId: order._id, partnerId: candidateId }, 'Failed to emit order_offer');
     }
+    // The socket only reaches an app in the foreground; the push wakes a locked phone. Not
+    // awaited — the restaurant's accept must not wait on Expo — and it never throws.
+    void pushToPartner(candidateId, {
+      title: 'New delivery request',
+      body: `Pick up from ${payload.restaurantName ?? 'a restaurant'} · earn ₹${payload.fare}. Open the app to accept.`,
+      data: { type: 'order_offer', orderId: String(order._id) },
+      channelId: PUSH_CHANNELS.offers,
+      ttlSeconds: offerWindowSeconds,
+    });
 
     return candidate._id;
   }
@@ -386,6 +473,11 @@ export const releaseAssignmentForCancelledOrder = async (orderId) => {
       } catch (err) {
         logger.error({ err, orderId: order._id, partnerId }, 'Failed to emit order_cancelled');
       }
+      void pushToPartner(partnerId, {
+        title: 'Order cancelled',
+        body: 'This order was cancelled — no need to pick it up or deliver it.',
+        data: { type: 'order_cancelled', orderId: String(order._id) },
+      });
       // Mirrors deliverOrder: free a rider this order was holding at their concurrency limit.
       if ((await countActiveAssignments(partnerId)) < maxConcurrentOrdersPerPartner) {
         await DeliveryPartner.updateOne({ _id: partnerId, status: 'busy' }, { $set: { status: 'active' } });
@@ -411,18 +503,35 @@ export const releaseAssignmentForCancelledOrder = async (orderId) => {
 // consistent with ensurePayoutForPeriod's philosophy), and sweepExpiredOffers is a small periodic
 // scan — the same shape as the live_visitor_update setInterval socket.js already runs every 30s,
 // just on a tighter interval to match a ~20s offer window. Neither is a new dependency.
+// Conditional on the offer being exactly the stale one that was read: between the read and this
+// write a new offer may have gone to someone else (a skip re-offering it, the veg-fleet fallback),
+// and saving the whole document back would have marked THAT live offer expired too.
 const expireAndReassign = async (order) => {
   const now = new Date();
-  order.deliveryAssignment.offerStatus = 'expired';
-  order.deliveryAssignment.history.push({
-    partnerId: order.deliveryAssignment.offeredTo,
-    assignedAt: order.deliveryAssignment.offerExpiresAt,
-    assignedBy: 'auto',
-    unassignedAt: now,
-    reason: 'expired',
-  });
-  await order.save();
-  return autoAssign(order);
+  const da = order.deliveryAssignment;
+  const expired = await Order.updateOne(
+    {
+      _id: order._id,
+      'deliveryAssignment.offerStatus': 'offered',
+      'deliveryAssignment.offeredTo': da.offeredTo,
+      'deliveryAssignment.offerExpiresAt': da.offerExpiresAt,
+    },
+    {
+      $set: { 'deliveryAssignment.offerStatus': 'expired' },
+      $push: {
+        'deliveryAssignment.history': {
+          partnerId: da.offeredTo,
+          assignedAt: da.offerExpiresAt,
+          assignedBy: 'auto',
+          unassignedAt: now,
+          reason: 'expired',
+        },
+      },
+    }
+  );
+  if (!expired.modifiedCount) return null; // someone else already moved it on
+  const fresh = await Order.findById(order._id);
+  return fresh ? autoAssign(fresh) : null;
 };
 
 export const expireIfStale = async (order) => {
@@ -448,6 +557,50 @@ export const sweepExpiredOffers = async () => {
       await expireAndReassign(order);
     } catch (err) {
       logger.error({ err, orderId: order._id }, 'Failed to expire/reassign stale offer');
+    }
+  }
+};
+
+// An accepted delivery order still without a rider keeps being offered, not just once. A rider
+// used to be looked for at exactly two moments — the restaurant accepting, and an offer lapsing —
+// so an order accepted while no rider's app happened to be connected (phone locked, a network
+// blip, a reconnect in progress) was never offered to anyone and sat until an admin noticed.
+// Run from socket.js's 5-second interval. Veg-fleet searches have their own sweep below.
+// Only orders placed within this window. Without it, the first sweep after deploying would
+// start offering riders every old order left stuck in confirmed/preparing/ready without a rider
+// (abandoned test orders, ones a restaurant delivered itself and never closed).
+export const WAITING_ORDER_MAX_AGE_MS = 3 * 60 * 60 * 1000;
+
+let _sweepingUnassigned = false;
+export const sweepUnassignedOrders = async () => {
+  // A slow pass (many waiting orders, a slow database) must not overlap the next 5-second tick.
+  if (_sweepingUnassigned) return;
+  _sweepingUnassigned = true;
+  try {
+    await sweepUnassignedOnce();
+  } finally {
+    _sweepingUnassigned = false;
+  }
+};
+
+const sweepUnassignedOnce = async () => {
+  const waiting = await Order.find({
+    type: 'delivery',
+    createdAt: { $gte: new Date(Date.now() - WAITING_ORDER_MAX_AGE_MS) },
+    status: { $in: ASSIGNABLE_STATUSES },
+    'deliveryAssignment.status': 'unassigned',
+    'deliveryAssignment.partnerId': null,
+    'deliveryAssignment.offerStatus': { $ne: 'offered' },
+    vegFleetAssignmentStatus: { $ne: 'searching' },
+  })
+    .sort({ createdAt: 1 })
+    .limit(100);
+
+  for (const order of waiting) {
+    try {
+      await autoAssign(order);
+    } catch (err) {
+      logger.error({ err, orderId: order._id }, 'Failed to offer a waiting order');
     }
   }
 };

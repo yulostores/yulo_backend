@@ -3,6 +3,7 @@ import Order from '../models/Order.js';
 import Restaurant from '../models/Restaurant.js';
 import { redis } from '../config/redis.js';
 import { enrichOrders } from './orderView.service.js';
+import { AWAITING_ONLINE_PAYMENT } from './orderApproval.service.js';
 
 export const getKPIs = async (restaurantId) => {
   const today = new Date();
@@ -11,7 +12,7 @@ export const getKPIs = async (restaurantId) => {
   const rid = new mongoose.Types.ObjectId(restaurantId);
 
   const [totalOrders, revenueResult, liveRaw, restaurant] = await Promise.all([
-    Order.countDocuments({ restaurantId: rid, createdAt: { $gte: today } }),
+    Order.countDocuments({ restaurantId: rid, createdAt: { $gte: today }, $nor: [AWAITING_ONLINE_PAYMENT] }),
     Order.aggregate([
       { $match: { restaurantId: rid, paymentStatus: 'paid', status: { $ne: 'cancelled' }, createdAt: { $gte: today } } },
       { $group: { _id: null, total: { $sum: '$subtotal' } } },
@@ -73,7 +74,7 @@ export const getTopItems = (restaurantId, limit = 5) => {
 // from and the staff member who took it — without that the feed lists orders the owner
 // has no way to place on the floor.
 export const getRecentOrders = async (restaurantId, limit = 10) => {
-  const orders = await Order.find({ restaurantId })
+  const orders = await Order.find({ restaurantId, $nor: [AWAITING_ONLINE_PAYMENT] })
     .sort({ createdAt: -1 })
     .limit(limit)
     .lean();
@@ -84,7 +85,7 @@ export const getStatusBreakdown = (restaurantId) => {
   const rid = new mongoose.Types.ObjectId(restaurantId);
 
   return Order.aggregate([
-    { $match: { restaurantId: rid } },
+    { $match: { restaurantId: rid, $nor: [AWAITING_ONLINE_PAYMENT] } },
     { $group: { _id: '$status', count: { $sum: 1 } } },
   ]);
 };

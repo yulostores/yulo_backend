@@ -9,7 +9,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 
 export const listOrders = asyncHandler(async (req, res) => {
   const { status, type, tableId, page = 1, limit = 20 } = req.query;
-  const filter = { restaurantId: req.restaurant._id };
+  const filter = { restaurantId: req.restaurant._id, $nor: [orderApprovalService.AWAITING_ONLINE_PAYMENT] };
   if (status) filter.status = status;
   if (type) filter.type = type;
   // Lets the owner drill into one table from the grouped view without re-fetching all of it.
@@ -63,10 +63,15 @@ export const getOrder = asyncHandler(async (req, res) => {
 // answer first). Not paginated: this is a live inbox, and a restaurant with more than a
 // screenful of unanswered orders has a bigger problem than pagination.
 //
-// `awaitingPayment` flags an online order the customer hasn't paid for yet — it is listed
-// so the owner can see it coming, but accepting it answers 409 PAYMENT_PENDING.
+// An online order the customer hasn't paid for isn't listed — it appears once paid
+// (orderApprovalService.AWAITING_ONLINE_PAYMENT). `awaitingPayment` stays on each row for the
+// portal, and is now always false.
 export const listPendingOrders = asyncHandler(async (req, res) => {
-  const filter = { restaurantId: req.restaurant._id, status: 'placed' };
+  const filter = {
+    restaurantId: req.restaurant._id,
+    status: 'placed',
+    $nor: [orderApprovalService.AWAITING_ONLINE_PAYMENT],
+  };
   const [orders, count] = await Promise.all([
     Order.find(filter).sort({ createdAt: 1 }).limit(200).lean(),
     // The real total, not the page size — a badge reading "200" when 350 are waiting would

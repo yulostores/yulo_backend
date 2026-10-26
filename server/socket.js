@@ -7,7 +7,11 @@ import Restaurant from './models/Restaurant.js';
 import StaffMember from './models/StaffMember.js';
 import { isTokenRevoked } from './services/auth.service.js';
 import * as liveMonitorService from './services/liveMonitor.service.js';
-import { sweepExpiredOffers, sweepExpiredVegFleetSearches } from './services/deliveryAssignment.service.js';
+import {
+  sweepExpiredOffers,
+  sweepExpiredVegFleetSearches,
+  sweepUnassignedOrders,
+} from './services/deliveryAssignment.service.js';
 import { expireUnansweredOrders } from './services/orderApproval.service.js';
 import logger from './utils/logger.js';
 
@@ -182,9 +186,19 @@ export function initSocket(httpServer, { backgroundJobs = true } = {}) {
       }
     });
 
-    socket.on('join_partner', async (payload) => {
+    // `ack` (optional — older app builds don't send one) tells the app whether it is now
+    // reachable. A rider's access token lasts 15 minutes, and the app used to rejoin after a
+    // reconnect with whatever token it held: an expired one got the socket dropped without a
+    // word, socket.io-client never reconnects a socket the server closed, and the rider silently
+    // stopped receiving offers while the app still said "Online". With the answer, the app
+    // refreshes its token and joins again.
+    socket.on('join_partner', async (payload, ack) => {
+      const reply = typeof ack === 'function' ? ack : () => {};
       const decoded = verifyPartnerToken(payload?.token);
-      if (!decoded) return socket.disconnect();
+      if (!decoded) {
+        reply({ ok: false, code: 'INVALID_TOKEN' });
+        return socket.disconnect();
+      }
       socket.join(`partner:${decoded.partnerId}`);
       socket.data.partnerId = decoded.partnerId;
       // Presence registry for auto-assignment eligibility — a partner must be actually
@@ -193,6 +207,7 @@ export function initSocket(httpServer, { backgroundJobs = true } = {}) {
       // reads this set to filter candidates, and emits offers into this same
       // `partner:{partnerId}` room.
       await presence('sadd', 'live:active_partners', decoded.partnerId);
+      reply({ ok: true });
     });
 
     socket.on('disconnect', async (reason) => {
@@ -234,6 +249,8 @@ export function initSocket(httpServer, { backgroundJobs = true } = {}) {
   // against a ~20s offer window without excessive DB load.
   setInterval(() => {
     sweepExpiredOffers().catch((err) => logger.error({ err }, 'sweepExpiredOffers failed'));
+    // Accepted orders nobody has been offered yet — no rider was connected at the time.
+    sweepUnassignedOrders().catch((err) => logger.error({ err }, 'sweepUnassignedOrders failed'));
     // Piggybacks on this same interval rather than a second scheduler — keeps
     // veg-fleet-only orders actively retrying assignment (not just waiting on the next
     // offer-expiry) and auto-extends the countdown once vegFleetSearchDeadline passes

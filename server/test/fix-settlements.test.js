@@ -321,6 +321,10 @@ test('a failed payout carried forward is its own (positive) total, not "carried 
   await RestaurantSettlement.updateOne({ _id: s._id }, { $set: { status: 'failed' } });
   await payoutBatchService.carryForwardFailed(s._id, admin._id);
 
+  // Carrying forward stamps the real date, so this week is the real current one — and the
+  // settlement clock must agree. Left at the suite's frozen AFTER_BOTH, the test began failing
+  // (WEEK_NOT_STARTED) as soon as the real calendar moved past that week.
+  settlementService.__setSettlementClockForTests(() => new Date());
   const { settlements } = await settlementService.generateWeeklySettlements(new Date());
   const next = settlements.find((x) => String(x.restaurantId) === String(restaurant._id));
   assert.equal(next.totals.failedPayoutsCarriedIn, 30250);

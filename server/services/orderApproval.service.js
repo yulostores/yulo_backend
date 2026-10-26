@@ -140,6 +140,15 @@ export const cancelByCustomer = async ({ userId, orderId, confirmNoRefund = fals
 };
 
 export const APPROVAL_TIMEOUT_REASON = "The restaurant didn't respond in time";
+export const PAYMENT_TIMEOUT_REASON = 'Payment was not completed';
+
+// An online order the customer hasn't paid for (yet, or ever). It exists so the customer can
+// pay or retry, but it is not an order for the restaurant: it stays out of the owner's inbox,
+// order list and dashboard until the payment lands, and is announced then
+// (notify.service.js). Showing it earlier put orders that were never paid for — a declined
+// UPI payment, an abandoned checkout — in front of the restaurant as if they were real.
+// Use with $nor: `{ ..., $nor: [AWAITING_ONLINE_PAYMENT] }`.
+export const AWAITING_ONLINE_PAYMENT = { paymentMethod: 'online', paymentStatus: { $in: ['pending', 'failed'] } };
 
 // Which 'placed' orders have waited too long. The restaurant can only accept an online order
 // once it is paid, so that order's clock starts at payment (paidAt) — counting from createdAt
@@ -161,19 +170,21 @@ const timedOut = (cutoff) => ({
 export const expireUnansweredOrders = async ({ now = new Date() } = {}) => {
   const cutoff = new Date(now.getTime() - env.ORDER_APPROVAL_TIMEOUT_MINUTES * 60 * 1000);
   const stale = await Order.find({ status: 'placed', ...timedOut(cutoff) })
-    .select('_id')
+    .select('_id paymentMethod paymentStatus')
     .limit(500)
     .lean();
 
   let expired = 0;
-  for (const { _id } of stale) {
+  for (const { _id, paymentMethod, paymentStatus } of stale) {
+    // Never paid: the restaurant never saw it, so "didn't respond" would be untrue.
+    const unpaid = paymentMethod === 'online' && paymentStatus !== 'paid';
     try {
       await updateOrderStatus({
         orderId: _id,
         currentStatus: 'placed',
         newStatus: 'cancelled',
         actor: { role: 'system' },
-        reason: APPROVAL_TIMEOUT_REASON,
+        reason: unpaid ? PAYMENT_TIMEOUT_REASON : APPROVAL_TIMEOUT_REASON,
         guard: timedOut(cutoff),
       });
       expired += 1;
