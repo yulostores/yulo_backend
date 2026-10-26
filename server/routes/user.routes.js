@@ -38,6 +38,21 @@ const locationSchema = z.object({
   coordinates: z.tuple([z.number(), z.number()]).optional(),
 });
 
+// The structured parts the app sends alongside `street` (src/lib/address.ts →
+// buildAddressPayload). validate() replaces req.body with the parsed data, so any key not
+// listed here is silently dropped before services/address.service.js ever sees it — which
+// is how the flat number used to vanish. Limits mirror baseAddressSchema there; nullable so
+// an edit can clear a part.
+const addressDetailFields = {
+  houseNumber: z.string().trim().max(120).nullable().optional(),
+  floor: z.string().trim().max(40).nullable().optional(),
+  building: z.string().trim().max(160).nullable().optional(),
+  landmark: z.string().trim().max(160).nullable().optional(),
+  area: z.string().trim().max(160).nullable().optional(),
+  country: z.string().trim().max(80).nullable().optional(),
+  formattedAddress: z.string().trim().max(400).nullable().optional(),
+};
+
 // `customLabel` only makes sense (and is only ever persisted) when label === 'other' —
 // services/user.service.js clears it server-side whenever label is set back to
 // 'home'/'work', but reject it as a validation error up front too when label is present
@@ -50,6 +65,7 @@ const addressCreateSchema = z
     city: z.string().optional(),
     state: z.string().optional(),
     pincode: z.string().optional(),
+    ...addressDetailFields,
     location: locationSchema.optional(),
     // Who receives the order here, when that isn't the account holder. Optional — checkout
     // falls back to the account's own name and verified phone.
@@ -75,6 +91,7 @@ const addressUpdateSchema = z
     city: z.string().optional(),
     state: z.string().optional(),
     pincode: z.string().optional(),
+    ...addressDetailFields,
     location: locationSchema.optional(),
     contactName: z.string().trim().min(1).max(60).optional(),
     contactPhone: z.string().trim().min(6).max(20).optional(),
@@ -139,5 +156,8 @@ router.post('/me/favorites/restaurants/:restaurantId', addFavoriteRestaurant);
 router.delete('/me/favorites/restaurants/:restaurantId', removeFavoriteRestaurant);
 router.post('/me/favorites/items/:menuItemId', addFavoriteItem);
 router.delete('/me/favorites/items/:menuItemId', removeFavoriteItem);
+
+// Exported for test/address-route-schema.contract.test.js.
+export { addressCreateSchema, addressUpdateSchema };
 
 export default router;

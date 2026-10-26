@@ -1,6 +1,7 @@
 import Order from '../models/Order.js';
 import Restaurant from '../models/Restaurant.js';
 import DeliveryPartner from '../models/DeliveryPartner.js';
+import Review from '../models/Review.js';
 import { ApiError } from '../utils/ApiError.js';
 import { haversineKm, estimateEtaMinutes, isLocationFresh } from './geo.service.js';
 import { customerRefundView } from './refund.service.js';
@@ -259,5 +260,8 @@ export const getOrderTracking = async (orderId, userId) => {
     paymentMethod: order.paymentMethod ?? null,
     paymentStatus: order.paymentStatus ?? null,
     totalPaid: order.grandTotal ?? order.subtotal,
+    // Lets the app skip the "Rate your order" card once it's been rated — without it the customer
+    // could type a whole review only to be told "already reviewed" and lose it.
+    isReviewed: order.status === 'delivered' ? Boolean(await Review.exists({ orderId: order._id })) : false,
   };
 };
