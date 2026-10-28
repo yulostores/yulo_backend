@@ -1,4 +1,5 @@
 import User from '../models/User.js';
+import CustomerSession from '../models/CustomerSession.js';
 import UserDevice from '../models/UserDevice.js';
 import {
   geocodableLine,
@@ -9,12 +10,47 @@ import {
 import { geocodeAddress, isUsableCoordinatePair } from './geocode.service.js';
 import { redis } from '../config/redis.js';
 import { ApiError } from '../utils/ApiError.js';
+import { now } from '../utils/clock.js';
+import { isLiveActivityEnabled } from '../config/liveActivity.config.js';
 import logger from '../utils/logger.js';
+import { forgetSharePreference } from './activity.service.js';
+import { publishSessionsRemoved } from './liveBroadcast.service.js';
 
 export const getPreferences = async (userId) => {
   const user = await User.findById(userId).select('preferences').lean();
   if (!user) throw new ApiError(404, 'NOT_FOUND', 'User not found');
-  return user.preferences;
+  // With live activity on, always report the two activity fields — older rows have no stored
+  // value, and missing means sharing is on. With it off the response is exactly as before.
+  if (!isLiveActivityEnabled()) return user.preferences;
+  return {
+    ...user.preferences,
+    shareActivity: user.preferences?.shareActivity !== false,
+    activityNoticeAt: user.preferences?.activityNoticeAt ?? null,
+  };
+};
+
+/**
+ * A customer turned activity sharing off: their open sessions end now, and every session of
+ * theirs — open or closed — disappears from owner dashboards (`hiddenAt`). One updateMany.
+ * Turning sharing back on later does not unhide these; only new activity is shown.
+ */
+const hideActivityOf = async (userId) => {
+  const at = now();
+  // The sessions owners can still see — each disappears from its dashboard after the update.
+  const visible = await CustomerSession.find({ userId, hiddenAt: null }).select('_id restaurantId').lean();
+  await CustomerSession.updateMany(
+    { userId, $or: [{ hiddenAt: null }, { isOpen: true }] },
+    [
+      {
+        $set: {
+          status: { $cond: ['$isOpen', 'ended', '$status'] },
+          isOpen: false,
+          hiddenAt: { $ifNull: ['$hiddenAt', at] },
+        },
+      },
+    ]
+  );
+  await publishSessionsRemoved(visible);
 };
 
 // Merges rather than replaces: a body of just { vegModeEnabled } must not wipe out
@@ -26,8 +62,14 @@ export const updatePreferences = async (userId, updates) => {
   const user = await User.findById(userId);
   if (!user) throw new ApiError(404, 'NOT_FOUND', 'User not found');
 
-  const { notifications, ...rest } = updates;
+  const { notifications, activityNoticeAcknowledged, ...rest } = updates;
+  const wasSharingActivity = user.preferences.shareActivity !== false;
   Object.assign(user.preferences, rest);
+
+  // The one-time notice: recorded once, never moved by a later acknowledgement.
+  if (activityNoticeAcknowledged === true && !user.preferences.activityNoticeAt) {
+    user.preferences.activityNoticeAt = now();
+  }
 
   if (notifications) {
     const { categories, ...notificationRest } = notifications;
@@ -48,6 +90,14 @@ export const updatePreferences = async (userId, updates) => {
   }
 
   await user.save();
+  // Recording reads the setting through a 60 s cache; any change to it drops that entry.
+  if (rest.shareActivity !== undefined) await forgetSharePreference(userId);
+
+  // Turning sharing off ends and hides the customer's sessions — only while the feature is on;
+  // with it off the setting is still saved (above) so it sticks for when it is turned on.
+  if (wasSharingActivity && rest.shareActivity === false && isLiveActivityEnabled()) {
+    await hideActivityOf(userId);
+  }
   return user.preferences;
 };
 

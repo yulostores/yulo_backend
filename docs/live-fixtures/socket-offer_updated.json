@@ -1,0 +1,6 @@
+{
+  "offerId": "<id>",
+  "sessionId": "<id>",
+  "offerStatus": "sent",
+  "at": "<date>"
+}

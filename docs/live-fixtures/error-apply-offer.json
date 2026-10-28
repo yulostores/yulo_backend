@@ -1,0 +1,5 @@
+{
+  "status": "error",
+  "code": "OFFER_ALREADY_USED",
+  "message": "This offer has already been used"
+}

@@ -1,0 +1,12 @@
+{
+  "join_restaurant": {
+    "ok": true
+  },
+  "join_user": {
+    "ok": true
+  },
+  "join_user_refused": {
+    "ok": false,
+    "code": "GUEST"
+  }
+}

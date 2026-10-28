@@ -1,5 +1,6 @@
 import { buildAppConfig, getLegalDocument } from '../config/appConfig.config.js';
 import { isCodEnabled, paymentSimulationEnabled } from '../config/payments.config.js';
+import { isLiveActivityEnabled } from '../config/liveActivity.config.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -11,7 +12,11 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 // switch from Finance Settings (itself cached — services/financeSettings.service.js).
 export const getAppConfig = asyncHandler(async (_req, res) => {
   sendSuccess(res, 200, 'App config', {
-    config: buildAppConfig({ codEnabled: await isCodEnabled(), paymentSimulationEnabled }),
+    config: buildAppConfig({
+      codEnabled: await isCodEnabled(),
+      paymentSimulationEnabled,
+      liveActivityEnabled: isLiveActivityEnabled(),
+    }),
   });
 });
 

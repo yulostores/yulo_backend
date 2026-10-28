@@ -10,6 +10,9 @@ import { getActiveSettings } from './financeSettings.service.js';
 import { computeCustomerCharges, resolveDeliveryDistance, toLegacyTotals } from './charges.service.js';
 import { toPaise } from '../utils/money.js';
 import { ApiError } from '../utils/ApiError.js';
+import { now } from '../utils/clock.js';
+import { OPEN_OFFER_STATUSES, isLiveActivityEnabledFor } from '../config/liveActivity.config.js';
+import { publishOffer } from './liveBroadcast.service.js';
 
 const getOrCreateCart = (userId) =>
   Cart.findOneAndUpdate(
@@ -56,6 +59,23 @@ export const priceItemSelection = (menuItem, optionGroups, selectedOptions) => {
 // discount, which is restaurant-scoped) — otherwise the NEXT add from a *different*
 // restaurant would spuriously hit the CART_RESTAURANT_CONFLICT check against a cart that
 // has no actual items left in it.
+// A personal offer taken off the cart (cleared, emptied, replaced, removed) goes back to
+// `viewed` — the customer can apply it again. Only from `applied`, so it never moves an offer
+// that was redeemed or closed meanwhile; a public discount id simply matches nothing.
+const releaseAppliedOffer = async (discountId) => {
+  if (!discountId) return;
+  const offer = await Discount.findOneAndUpdate(
+    { _id: discountId, kind: 'personal', offerStatus: 'applied' },
+    { $set: { offerStatus: 'viewed' } },
+    { new: true, lean: true }
+  );
+  if (offer) await publishOffer(offer);
+};
+
+// Paise per cart line, for a personal offer that applies to some items only.
+const linesOf = (items) =>
+  items.map((item) => ({ menuItemId: item.menuItemId, amountPaise: toPaise(item.unitPrice) * item.qty }));
+
 const resetIfEmpty = (cart) => {
   if (cart.items.length === 0) {
     cart.restaurantId = null;
@@ -138,6 +158,7 @@ export const computeBill = async (cart, restaurant, { dropCoordinates } = {}) =>
     (await Restaurant.findById(cart.restaurantId).select('delivery location gstRegistered').lean());
 
   let discountAmount = 0;
+  let offerIssue = null;
   if (cart.appliedDiscountId) {
     const discount = await Discount.findById(cart.appliedDiscountId).lean();
     // Re-validated on every read, not just at apply-time — if items were removed since
@@ -146,10 +167,22 @@ export const computeBill = async (cart, restaurant, { dropCoordinates } = {}) =>
     // deliberately left on the cart either way (not auto-cleared): if the customer adds
     // items back and it becomes valid again, it resumes applying without re-entering the code.
     try {
-      discountService.validateDiscountForOrder(discount, { subtotal: itemTotal, orderType: 'delivery' });
-      discountAmount = await discountService.computeDiscountAmount(discount, itemTotal);
-    } catch {
+      discountService.validateDiscountForOrder(discount, {
+        subtotal: itemTotal,
+        orderType: 'delivery',
+        userId: cart.userId,
+        restaurantId: cart.restaurantId,
+        cartMenuItemIds: cart.items.map((item) => item.menuItemId),
+      });
+      discountAmount = await discountService.computeDiscountAmount(discount, itemTotal, { lines: linesOf(cart.items) });
+    } catch (err) {
       discountAmount = 0;
+      // A personal offer says why it stopped applying, so the app can explain ("Add ₹120
+      // more"). New optional fields; public discounts' bills are unchanged.
+      if (discount?.kind === 'personal') {
+        offerIssue = { offerIssue: err.code ?? 'OFFER_NOT_APPLICABLE' };
+        if (err.details?.shortfallPaise != null) offerIssue.shortfallPaise = err.details.shortfallPaise;
+      }
     }
   }
 
@@ -177,6 +210,7 @@ export const computeBill = async (cart, restaurant, { dropCoordinates } = {}) =>
     grandTotal: legacy.grandTotal,
     charges,
     deliveryIssue: issue,
+    ...(offerIssue ?? {}),
   };
 };
 
@@ -336,16 +370,29 @@ export const addItem = async (userId, { menuItemId, qty, selectedOptions = [] })
   return buildCartResponse(cart);
 };
 
+// `previous` on the three changes below is what the cart held before the change — the line as
+// it was, or the restaurant a cleared cart belonged to — for live activity's events (the
+// controller sends only { cart, bill }). Read from the document already loaded; no extra query.
+const previousLine = (cart, item) => ({
+  restaurantId: cart.restaurantId,
+  menuItemId: item.menuItemId,
+  name: item.name,
+  qty: item.qty,
+});
+
 export const removeItem = async (userId, lineItemId) => {
   const cart = await getOrCreateCart(userId);
   const item = cart.items.id(lineItemId);
   if (!item) throw new ApiError(404, 'NOT_FOUND', 'Cart item not found');
+  const previous = previousLine(cart, item);
+  const appliedDiscountId = cart.appliedDiscountId;
 
   cart.items.pull(lineItemId);
   resetIfEmpty(cart);
 
   await cart.save();
-  return buildCartResponse(cart);
+  if (appliedDiscountId && !cart.appliedDiscountId) await releaseAppliedOffer(appliedDiscountId);
+  return { ...(await buildCartResponse(cart)), previous };
 };
 
 export const updateItemQty = async (userId, lineItemId, qty) => {
@@ -354,30 +401,95 @@ export const updateItemQty = async (userId, lineItemId, qty) => {
   const cart = await getOrCreateCart(userId);
   const item = cart.items.id(lineItemId);
   if (!item) throw new ApiError(404, 'NOT_FOUND', 'Cart item not found');
+  const previous = previousLine(cart, item);
 
   item.qty = qty;
   await cart.save();
-  return buildCartResponse(cart);
+  return { ...(await buildCartResponse(cart)), previous };
 };
 
 export const clearCart = async (userId) => {
   const cart = await getOrCreateCart(userId);
+  const previous = { restaurantId: cart.restaurantId, itemCount: cart.items.length };
+  const appliedDiscountId = cart.appliedDiscountId;
   cart.items = [];
   cart.restaurantId = null;
   cart.appliedDiscountId = null;
   await cart.save();
-  return buildCartResponse(cart);
+  await releaseAppliedOffer(appliedDiscountId);
+  return { ...(await buildCartResponse(cart)), previous };
 };
 
 export const applyPromo = async (userId, code) => {
   const cart = await getOrCreateCart(userId);
   if (!cart.restaurantId) throw new ApiError(400, 'VALIDATION_ERROR', 'Cart is empty');
 
-  const discount = await Discount.findOne({ code, restaurantId: cart.restaurantId }).lean();
+  // Codes are public offers only — a personal offer is applied by id (live activity), never by code.
+  const discount = await Discount.findOne({ code, restaurantId: cart.restaurantId, kind: { $ne: 'personal' } }).lean();
   const itemTotal = cart.items.reduce((sum, item) => sum + item.unitPrice * item.qty, 0);
-  discountService.validateDiscountForOrder(discount, { subtotal: itemTotal, orderType: 'delivery' });
+  discountService.validateDiscountForOrder(discount, { subtotal: itemTotal, orderType: 'delivery', userId });
 
+  const replaced = cart.appliedDiscountId;
   cart.appliedDiscountId = discount._id;
   await cart.save();
+  // A code replaces a personal offer that was on the cart; that offer can be applied again.
+  if (replaced && String(replaced) !== String(discount._id)) await releaseAppliedOffer(replaced);
+  return buildCartResponse(cart);
+};
+
+const offerNotFound = () => new ApiError(404, 'OFFER_NOT_FOUND', 'Offer not found');
+
+/**
+ * Applies the customer's personal offer to their cart, after the full validation against the
+ * current cart (which must be for the offer's restaurant). Replaces any promo code on the cart
+ * (`replacedPromo` says so). Marks the offer `applied`.
+ */
+export const applyOffer = async (userId, offerId, at = now()) => {
+  const cart = await getOrCreateCart(userId);
+  const offer = /^[a-f\d]{24}$/i.test(String(offerId))
+    ? await Discount.findOne({ _id: offerId, kind: 'personal' }).lean()
+    : null;
+  if (!offer || !isLiveActivityEnabledFor(offer.restaurantId)) throw offerNotFound();
+
+  const itemTotal = cart.items.reduce((sum, item) => sum + item.unitPrice * item.qty, 0);
+  discountService.validateDiscountForOrder(offer, {
+    subtotal: itemTotal,
+    orderType: 'delivery',
+    userId,
+    restaurantId: cart.restaurantId,
+    cartMenuItemIds: cart.items.map((item) => item.menuItemId),
+    now: at,
+  });
+
+  const previousId = cart.appliedDiscountId;
+  let replacedPromo = false;
+  if (previousId && String(previousId) !== String(offer._id)) {
+    const previous = await Discount.findById(previousId).select('kind').lean();
+    replacedPromo = Boolean(previous) && previous.kind !== 'personal';
+  }
+  cart.appliedDiscountId = offer._id;
+  await cart.save();
+  if (previousId && String(previousId) !== String(offer._id)) await releaseAppliedOffer(previousId);
+  const applied = await Discount.findOneAndUpdate(
+    { _id: offer._id, isOpen: true, offerStatus: { $in: OPEN_OFFER_STATUSES } },
+    { $set: { offerStatus: 'applied', appliedAt: at } },
+    { new: true, lean: true }
+  );
+  if (applied) await publishOffer(applied, { at });
+  return { ...(await buildCartResponse(cart)), replacedPromo, offer };
+};
+
+/** Takes the personal offer off the cart (back to `viewed`); a promo code is left alone. */
+export const removeOffer = async (userId) => {
+  const cart = await getOrCreateCart(userId);
+  const appliedId = cart.appliedDiscountId;
+  if (appliedId) {
+    const applied = await Discount.findById(appliedId).select('kind').lean();
+    if (applied?.kind === 'personal') {
+      cart.appliedDiscountId = null;
+      await cart.save();
+      await releaseAppliedOffer(appliedId);
+    }
+  }
   return buildCartResponse(cart);
 };

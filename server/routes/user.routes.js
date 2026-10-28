@@ -128,6 +128,11 @@ const preferencesUpdateSchema = z
         categories: z.array(notificationCategorySchema).optional(),
       })
       .optional(),
+    // Live customer activity (config/liveActivity.config.js). A real boolean only — "false"
+    // or 0 is refused rather than coerced.
+    shareActivity: z.boolean().optional(),
+    // The app sends this when the customer taps either button on the one-time notice.
+    activityNoticeAcknowledged: z.literal(true).optional(),
   })
   .refine((data) => Object.keys(data).length > 0, { message: 'At least one field is required' });
 

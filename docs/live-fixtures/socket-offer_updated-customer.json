@@ -1,0 +1,6 @@
+{
+  "offerId": "<id>",
+  "offerStatus": "redeemed",
+  "at": "<date>",
+  "orderId": "<id>"
+}

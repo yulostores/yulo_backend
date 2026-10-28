@@ -3,6 +3,7 @@ import OptionGroup from '../models/OptionGroup.js';
 import Category from '../models/Category.js';
 import Restaurant from '../models/Restaurant.js';
 import * as favoriteService from '../services/favorite.service.js';
+import * as activityService from '../services/activity.service.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { ApiError } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -35,4 +36,8 @@ export const getItem = asyncHandler(async (req, res) => {
   favoriteService.annotateEntity(item, favoritedIds);
 
   sendSuccess(res, 200, 'Item detail', { item });
+  void activityService.record(req, item.restaurantId, 'item_viewed', {
+    menuItemId: item._id,
+    itemName: item.name,
+  });
 });

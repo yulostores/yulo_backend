@@ -16,6 +16,7 @@ import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import logger from '../utils/logger.js';
+import * as activityService from '../services/activity.service.js';
 
 // Review.orderId already has a unique index (models/Review.js) — a batch $in query
 // against it is cheap even for a full page of orders, so this joins rather than
@@ -252,6 +253,12 @@ export const checkout = asyncHandler(async (req, res) => {
   };
 
   sendSuccess(res, 201, 'Order placed', responseData);
+  // Not on the Idempotency-Key replay above — that returned before this line.
+  void activityService.record(req, order.restaurantId, 'order_placed', {
+    orderId: order._id,
+    totalPaise: order.charges?.grandTotal,
+    ...(order.$locals?.personalOfferId ? { offerId: order.$locals.personalOfferId } : {}),
+  });
 });
 
 // The order as the customer may see it after a payment call: re-read from the database (so

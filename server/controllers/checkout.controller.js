@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as checkoutService from '../services/checkout.service.js';
+import * as activityService from '../services/activity.service.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { ApiError } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -18,4 +19,10 @@ export const getSummary = asyncHandler(async (req, res) => {
   }
   const summary = await checkoutService.getCheckoutSummary(req.user._id, parsed.data);
   sendSuccess(res, 200, 'Checkout summary', summary);
+  // An empty cart has no restaurant, so nothing is recorded for it.
+  void activityService.record(req, summary.cart?.restaurantId, 'checkout_started', {
+    totalPaise: summary.bill?.charges?.grandTotal,
+    cart: summary.cart,
+    bill: summary.bill,
+  });
 });

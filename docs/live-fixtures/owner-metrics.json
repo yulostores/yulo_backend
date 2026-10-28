@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "message": "Offer metrics",
+  "data": {
+    "range": "today",
+    "from": "<date>",
+    "to": "<date>",
+    "sent": 1,
+    "delivered": 1,
+    "viewed": 1,
+    "applied": 1,
+    "redeemed": 1,
+    "expired": 0,
+    "revoked": 0,
+    "conversionRate": 1,
+    "revenuePaise": 48000,
+    "discountPaise": 8100
+  }
+}

@@ -126,6 +126,12 @@ const preferencesSchema = new mongoose.Schema(
         default: () => [{ key: 'orders_and_purchases', enabled: true }],
       },
     },
+    // Live customer activity: whether restaurants this customer visits may see their in-store
+    // browsing and cart (first name only) to send personal offers. On unless turned off. Rows
+    // written before this field existed have no value — every reader treats missing as true.
+    shareActivity: { type: Boolean, default: true },
+    // When the customer acknowledged the one-time notice about it (either button). Set once.
+    activityNoticeAt: { type: Date, default: null },
   },
   { _id: false }
 );

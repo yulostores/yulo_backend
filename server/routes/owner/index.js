@@ -22,6 +22,7 @@ import billRoutes from './bill.routes.js';
 import discountRoutes from './discount.routes.js';
 import loyaltyRoutes from './loyalty.routes.js';
 import liveMonitorRoutes from './liveMonitor.routes.js';
+import liveRoutes from './live.routes.js';
 import staffRoutes from './staff.routes.js';
 import requestRoutes from './request.routes.js';
 import paymentIssueRoutes from './paymentIssue.routes.js';
@@ -77,6 +78,8 @@ restaurantScopedRouter.use('/bills', billRoutes);
 restaurantScopedRouter.use('/discounts', discountRoutes);
 restaurantScopedRouter.use('/loyalty', loyaltyRoutes);
 restaurantScopedRouter.use('/live-monitor', liveMonitorRoutes);
+// Live customer activity + personal offers (404 unless the feature is on for this restaurant).
+restaurantScopedRouter.use('/live', liveRoutes);
 restaurantScopedRouter.use('/staff', staffRoutes);
 restaurantScopedRouter.use('/requests', requestRoutes);
 // The restaurant's account with Yulo (credits/debits that settle weekly) — read-only.

@@ -1,5 +1,6 @@
 import rateLimit from 'express-rate-limit';
 import { env } from '../config/env.js';
+import { RATE_LIMITS } from '../config/liveActivity.config.js';
 
 // CORS preflights carry no credentials and do no work — counting them would
 // halve every real budget below.
@@ -81,3 +82,21 @@ export const refreshLimiter = rateLimit({
   legacyHeaders: false,
   skip: skipPreflight,
 });
+
+// Personal offers from the live dashboard: 20 a minute per RESTAURANT (not per IP — an owner's
+// whole team shares one budget, and a stolen token can't spam past it from many addresses).
+// A preview saves nothing and counts toward nothing, this budget included.
+export const liveOfferLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: RATE_LIMITS.offerCreatePerMinutePerRestaurant,
+  keyGenerator: (req) => liveOfferLimiterKey(req.params.restaurantId),
+  message: { status: 'error', code: 'RATE_LIMITED', message: 'Too many offers sent — please wait a minute' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => skipPreflight(req) || req.body?.preview === true,
+});
+
+/** The limiter's key for a restaurant (tests reset it with `liveOfferLimiter.resetKey`). */
+export function liveOfferLimiterKey(restaurantId) {
+  return `liveoffer:${restaurantId}`;
+}

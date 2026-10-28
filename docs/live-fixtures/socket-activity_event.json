@@ -1,0 +1,17 @@
+{
+  "sessionId": "<id>",
+  "id": "<id>",
+  "type": "cart_item_added",
+  "label": "Added Paneer Tikka ×2",
+  "at": "<date>",
+  "data": {
+    "menuItemId": "<id>",
+    "itemName": "Paneer Tikka",
+    "qty": 2,
+    "deltaQty": 2,
+    "totalPaise": null,
+    "query": null,
+    "offerId": null,
+    "orderId": null
+  }
+}

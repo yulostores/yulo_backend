@@ -98,6 +98,8 @@ const getFeaturedBanner = async (restaurantIds) => {
   const now = new Date();
   const discount = await Discount.findOne({
     restaurantId: { $in: restaurantIds },
+    // Never a personal (one-customer) offer; old rows have no `kind`.
+    kind: { $ne: 'personal' },
     status: 'active',
     isFeatured: true,
     startDate: { $lte: now },

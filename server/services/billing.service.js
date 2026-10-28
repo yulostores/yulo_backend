@@ -463,7 +463,8 @@ export const applyDiscount = async ({ billId, discountCode, restaurantId }) => {
     }
   }
 
-  const discount = await Discount.findOne({ code: discountCode, restaurantId });
+  // Personal offers are delivery-only and have no code; never applicable to a dine-in bill.
+  const discount = await Discount.findOne({ code: discountCode, restaurantId, kind: { $ne: 'personal' } });
   // orderType: 'dine_in' — this is a new check (see discount.service.js's comment); a
   // delivery-only discount now correctly gets rejected here instead of silently applying.
   discountService.validateDiscountForOrder(discount, { subtotal: bill.subtotal, orderType: 'dine_in' });

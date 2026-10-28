@@ -1,0 +1,26 @@
+{
+  "status": "success",
+  "message": "Offer revoked",
+  "data": {
+    "offer": {
+      "id": "<id>",
+      "title": "A treat for you",
+      "type": "percentage",
+      "percentage": 15,
+      "flatAmount": null,
+      "maxDiscountAmount": 100,
+      "minimumOrderValue": 0,
+      "applicableItems": [],
+      "status": "revoked",
+      "sentAt": "<date>",
+      "expiresAt": "<date>",
+      "deliveredAt": "<date>",
+      "viewedAt": "<date>",
+      "appliedAt": "<date>",
+      "redeemedAt": null,
+      "revokedAt": "<date>",
+      "redemptionCount": 0,
+      "orderId": null
+    }
+  }
+}

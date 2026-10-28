@@ -189,6 +189,8 @@ export const getPopularSearches = async (vegOnly) => {
 export const getRestaurantIdsWithActiveOffers = async () => {
   const now = new Date();
   const discounts = await Discount.find({
+    // A personal (one-customer) offer doesn't make a restaurant "have offers"; old rows have no `kind`.
+    kind: { $ne: 'personal' },
     status: 'active',
     startDate: { $lte: now },
     endDate: { $gte: now },

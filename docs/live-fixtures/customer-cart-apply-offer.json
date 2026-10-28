@@ -1,0 +1,129 @@
+{
+  "status": "success",
+  "message": "Offer applied",
+  "data": {
+    "cart": {
+      "_id": "<id>",
+      "userId": "<id>",
+      "__v": 2,
+      "appliedDiscountId": "<id>",
+      "createdAt": "<date>",
+      "items": [
+        {
+          "menuItemId": "<id>",
+          "name": "Paneer Tikka",
+          "unitPrice": 250,
+          "mrpUnitPrice": 250,
+          "qty": 2,
+          "foodType": "veg",
+          "selectedOptions": [],
+          "_id": "<id>",
+          "resolvedOptions": [],
+          "image": null
+        },
+        {
+          "menuItemId": "<id>",
+          "name": "Butter Naan",
+          "unitPrice": 40,
+          "mrpUnitPrice": 40,
+          "qty": 1,
+          "foodType": "veg",
+          "selectedOptions": [],
+          "_id": "<id>",
+          "resolvedOptions": [],
+          "image": null
+        }
+      ],
+      "restaurantId": "<id>",
+      "updatedAt": "<date>",
+      "restaurant": {
+        "_id": "<id>",
+        "name": "Spice Route",
+        "image": null,
+        "isPureVeg": false
+      }
+    },
+    "bill": {
+      "itemTotal": 540,
+      "mrpTotal": 540,
+      "itemDiscountAmount": 0,
+      "deliveryFee": 9.44,
+      "platformFee": 12,
+      "tax": 0,
+      "discountAmount": 81,
+      "grandTotal": 480,
+      "charges": {
+        "orderType": "delivery",
+        "food": {
+          "subtotal": 54000,
+          "discount": 8100,
+          "base": 45900,
+          "gstPercent": 0,
+          "gst": 0,
+          "total": 45900
+        },
+        "delivery": {
+          "pending": false,
+          "distanceKm": 1,
+          "base": 800,
+          "gst": 144,
+          "total": 944,
+          "paidBy": "customer",
+          "customerPays": 944
+        },
+        "serviceCharge": 0,
+        "platformFee": {
+          "count": 1,
+          "base": 1017,
+          "gst": 183,
+          "total": 1200
+        },
+        "tip": 0,
+        "subtotalBeforeRoundOff": 48044,
+        "roundOff": -44,
+        "grandTotal": 48000,
+        "settingsVersionId": "<id>",
+        "settingsVersion": 2,
+        "lines": [
+          {
+            "key": "item_total",
+            "label": "Item total",
+            "amountPaise": 54000,
+            "sublabel": null
+          },
+          {
+            "key": "discount",
+            "label": "Discount",
+            "amountPaise": -8100,
+            "sublabel": null
+          },
+          {
+            "key": "delivery_fee",
+            "label": "Delivery fee",
+            "amountPaise": 944,
+            "sublabel": "1 km · incl. ₹1.44 GST"
+          },
+          {
+            "key": "platform_fee",
+            "label": "Platform fee",
+            "amountPaise": 1200,
+            "sublabel": "incl. ₹1.83 GST"
+          },
+          {
+            "key": "round_off",
+            "label": "Round off",
+            "amountPaise": -44,
+            "sublabel": null
+          },
+          {
+            "key": "grand_total",
+            "label": "To pay",
+            "amountPaise": 48000,
+            "sublabel": null
+          }
+        ]
+      },
+      "deliveryIssue": null
+    }
+  }
+}

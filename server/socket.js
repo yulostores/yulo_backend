@@ -13,6 +13,10 @@ import {
   sweepUnassignedOrders,
 } from './services/deliveryAssignment.service.js';
 import { expireUnansweredOrders } from './services/orderApproval.service.js';
+import { runSessionSweep } from './services/activity.service.js';
+import { markOfferDelivered } from './services/personalOffer.service.js';
+import { liveRooms } from './services/liveEmit.service.js';
+import { isLiveActivityEnabled } from './config/liveActivity.config.js';
 import logger from './utils/logger.js';
 
 
@@ -117,23 +121,83 @@ export function initSocket(httpServer, { backgroundJobs = true } = {}) {
   io.on('connection', (socket) => {
     logger.debug({ socketId: socket.id }, 'socket connected');
 
-    socket.on('join_restaurant', async (payload) => {
+    // `ack` is optional, like join_partner's: `{ ok: true }`, or `{ ok: false, code }`
+    // (UNAUTHORIZED: bad token; FORBIDDEN: not this owner's restaurant) before the disconnect.
+    // Portal builds that send no callback behave exactly as before.
+    socket.on('join_restaurant', async (payload, ack) => {
+      const reply = typeof ack === 'function' ? ack : () => {};
       try {
         const { restaurantId, token } = payload ?? {};
         const decoded = verifyUserToken(token);
-        if (!decoded || decoded.role !== 'restaurant_owner') return socket.disconnect();
+        if (!decoded || decoded.role !== 'restaurant_owner') {
+          reply({ ok: false, code: 'UNAUTHORIZED' });
+          return socket.disconnect();
+        }
         const owns = await Restaurant.exists({ _id: restaurantId, ownerId: decoded.userId });
-        if (!owns) return socket.disconnect();
+        if (!owns) {
+          reply({ ok: false, code: 'FORBIDDEN' });
+          return socket.disconnect();
+        }
         socket.join(`restaurant:${restaurantId}`);
         // Owner-only room: orders awaiting the restaurant's approval are emitted here and
-        // nowhere else, since `restaurant:` is shared with waiter sockets.
+        // nowhere else, since `restaurant:` is shared with waiter sockets. Live customer
+        // activity and personal offers go here too, and only here (liveEmit.service.js).
         socket.join(`owner:${restaurantId}`);
         socket.data.restaurantId = restaurantId;
         await presence('sadd', 'live:active_restaurants', restaurantId);
+        reply({ ok: true });
       } catch (err) {
         logger.error({ err }, 'join_restaurant failed');
+        reply({ ok: false, code: 'UNAUTHORIZED' });
         socket.disconnect();
       }
+    });
+
+    // A signed-in customer's own channel for personal offers (live customer activity):
+    // `offer_received` / `offer_updated` arrive in user:<userId>. The room comes from the token
+    // alone — any userId in the payload is ignored. Refused → the ack says why
+    // (DISABLED / UNAUTHORIZED / GUEST), then the socket is closed. `ack` is optional.
+    //
+    // Token expiry while connected: the access token is checked once, here. The socket keeps
+    // its room until it disconnects, even after the token runs out (unlike staff screens,
+    // closeAtTokenExpiry above). That is acceptable for this room — it only ever carries the
+    // customer's own offers — and the app rejoins with a fresh token whenever it reconnects.
+    // Re-auth on expiry is not built.
+    socket.on('join_user', async (payload, ack) => {
+      const reply = typeof ack === 'function' ? ack : () => {};
+      const refuse = (code) => {
+        reply({ ok: false, code });
+        socket.disconnect();
+      };
+      try {
+        if (!isLiveActivityEnabled()) return refuse('DISABLED');
+        const token = payload?.token;
+        const decoded = typeof token === 'string' ? verifyUserToken(token) : null;
+        if (!decoded || (await isTokenRevoked(decoded, token))) return refuse('UNAUTHORIZED');
+        if (decoded.role === 'guest') return refuse('GUEST');
+        if (decoded.role !== 'customer') return refuse('UNAUTHORIZED');
+        socket.join(liveRooms.userRoom(decoded.userId));
+        socket.data.liveUserId = decoded.userId;
+        reply({ ok: true });
+      } catch (err) {
+        logger.error({ err }, 'join_user failed');
+        refuse('UNAUTHORIZED');
+      }
+    });
+
+    // Delivery receipt for a personal offer, from a socket that joined as its customer. Only
+    // the socket's own offers count; anything else is silently ignored (the reply is the same
+    // either way, so it reveals nothing).
+    socket.on('offer_ack', async (payload, ack) => {
+      const reply = typeof ack === 'function' ? ack : () => {};
+      try {
+        if (socket.data.liveUserId && isLiveActivityEnabled()) {
+          await markOfferDelivered(socket.data.liveUserId, payload?.offerId);
+        }
+      } catch (err) {
+        logger.warn({ err: err.message }, 'offer_ack failed');
+      }
+      reply({ ok: true });
     });
 
     // The try/catch matters: these handlers are async, so a throw (a bad payload, a
@@ -263,6 +327,9 @@ export function initSocket(httpServer, { backgroundJobs = true } = {}) {
   // minute is plenty of resolution for a timeout measured in minutes.
   setInterval(() => {
     expireUnansweredOrders().catch((err) => logger.error({ err }, 'expireUnansweredOrders failed'));
+    // Live customer activity: idle / abandoned / ended / checkout_left. A no-op with the feature
+    // off; skips a tick while the previous one is still running; never throws.
+    void runSessionSweep();
   }, 60_000);
 
   // index.js closes this on shutdown.

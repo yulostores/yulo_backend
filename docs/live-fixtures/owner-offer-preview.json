@@ -1,0 +1,9 @@
+{
+  "status": "success",
+  "message": "Offer preview",
+  "data": {
+    "wouldSavePaise": 8100,
+    "cartTotalPaise": 54000,
+    "eligibleSubtotalPaise": 54000
+  }
+}

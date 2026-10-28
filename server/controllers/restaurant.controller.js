@@ -5,6 +5,7 @@ import * as menuService from '../services/menu.service.js';
 import * as cacheService from '../services/cache.service.js';
 import * as favoriteService from '../services/favorite.service.js';
 import * as searchService from '../services/search.service.js';
+import * as activityService from '../services/activity.service.js';
 import * as restaurantService from '../services/restaurant.service.js';
 import { escapeRegExp } from '../utils/regex.js';
 import { PUBLIC_RESTAURANT_FILTER, PUBLIC_RESTAURANT_PROJECTION } from '../utils/publicRestaurant.js';
@@ -142,6 +143,9 @@ export const listRestaurants = asyncHandler(async (req, res) => {
   if (cacheKey) await cacheService.set(cacheKey, data, 60);
   favoriteService.annotateRestaurants(data.restaurants, favoritedIds);
   sendSuccess(res, 200, q ? 'Search results' : 'Nearby restaurants', data);
+  // A text search is remembered for 10 min so opening one of these restaurants can be
+  // attributed to it; it never creates an event or a session by itself.
+  if (q) void activityService.rememberSearch(req, q, data.restaurants.map((r) => r._id));
 });
 
 export const getRestaurant = asyncHandler(async (req, res) => {
@@ -152,6 +156,7 @@ export const getRestaurant = asyncHandler(async (req, res) => {
   favoriteService.annotateRestaurants(restaurant, favoritedIds);
 
   sendSuccess(res, 200, 'Restaurant detail', { restaurant });
+  void activityService.record(req, restaurant._id, 'restaurant_viewed');
 });
 
 export const getMenu = asyncHandler(async (req, res) => {
@@ -166,6 +171,8 @@ export const getMenu = asyncHandler(async (req, res) => {
   favoriteService.annotateMenuFavorites(menu, favoritedIds);
 
   sendSuccess(res, 200, 'Menu', { menu });
+  // Coalesced with the detail call above: opening a restaurant loads both, and counts once.
+  void activityService.record(req, req.publicRestaurant._id, 'restaurant_viewed');
 });
 
 // Paginated, lazy-load feed for the storefront menu (customer app screen 14).
@@ -228,6 +235,8 @@ export const searchRestaurantMenu = asyncHandler(async (req, res) => {
   await menuService.attachOptionGroupCounts(items);
 
   sendSuccess(res, 200, 'Menu search results', { items });
+  const query = activityService.sanitizeText(q);
+  if (query) void activityService.record(req, req.publicRestaurant._id, 'menu_searched', { query });
 });
 
 export const getMenuCategories = asyncHandler(async (req, res) => {

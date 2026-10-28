@@ -6,6 +6,8 @@ import { autoAssign, countCompletedDelivery, keepWaitingForVegFleet, releaseAssi
 import { enrichOrders } from './orderView.service.js';
 import { onOrderCancelled } from './refund.service.js';
 import { onOrderDelivered } from './ledger.service.js';
+import { releaseOfferForCancelledOrder } from './personalOffer.service.js';
+import logger from '../utils/logger.js';
 
 // 'served' is the dine-in leg: the kitchen takes a ticket to 'ready', the waiter carries
 // it to the table and marks it served. 'preparing' -> 'served' is allowed too, for the
@@ -239,6 +241,16 @@ export const updateOrderStatus = async ({ orderId, currentStatus, newStatus, sta
       if (released.length) {
         const fresh = await Order.findById(order._id).select('deliveryAssignment').lean();
         if (fresh?.deliveryAssignment) order.set('deliveryAssignment', fresh.deliveryAssignment);
+      }
+    }
+    // Cancelled before the restaurant accepted it (any actor — customer, reject, approval or
+    // payment timeout, admin): a personal offer the order used is given back. After acceptance
+    // it stays redeemed. Never blocks the cancellation itself.
+    if (currentStatus === 'placed' && order.appliedDiscountId) {
+      try {
+        await releaseOfferForCancelledOrder(order);
+      } catch (err) {
+        logger.error({ err, orderId: String(order._id) }, 'Could not release the personal offer of a cancelled order');
       }
     }
     const refreshed = await onOrderCancelled(order, {

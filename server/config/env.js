@@ -101,6 +101,16 @@ const schema = z.object({
   // cancelled automatically ("the restaurant didn't respond"). Keeps a customer from waiting
   // forever on an owner portal nobody is watching. See services/orderApproval.service.js.
   ORDER_APPROVAL_TIMEOUT_MINUTES: z.coerce.number().min(1).default(15),
+  // Live customer activity + personalized offers (yulo_backend/LIVE_ACTIVITY_IMPLEMENTATION_PROMPTS.md).
+  // Off by default: with it off, every existing endpoint, response and socket event is unchanged.
+  LIVE_ACTIVITY_ENABLED: envFlag(false),
+  // Pilot allow-list — comma-separated restaurant ids. Empty means every restaurant (when
+  // enabled). Ids that aren't valid ObjectIds are ignored with a startup warning
+  // (config/liveActivity.config.js).
+  LIVE_ACTIVITY_RESTAURANT_IDS: z.string().default(''),
+  // Local-only: much shorter session timings so idle/abandoned can be walked through by hand.
+  // Refused in production (below).
+  LIVE_ACTIVITY_TEST_TIMINGS: envFlag(false),
 });
 
 const result = schema.safeParse(process.env);
@@ -141,6 +151,12 @@ if (result.data.NODE_ENV === 'production') {
   // Without it, restaurants' bank account numbers can be neither stored nor read back.
   if (!result.data.DATA_ENCRYPTION_KEY) {
     console.error('Refusing to start in production — DATA_ENCRYPTION_KEY is not set (see DEPLOYMENT.md).');
+    process.exit(1);
+  }
+
+  // Shortened session timings would close real customers' sessions within minutes.
+  if (result.data.LIVE_ACTIVITY_TEST_TIMINGS) {
+    console.error('Refusing to start in production — LIVE_ACTIVITY_TEST_TIMINGS is a local-only setting.');
     process.exit(1);
   }
 }

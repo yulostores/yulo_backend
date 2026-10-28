@@ -1,0 +1,57 @@
+{
+  "status": "success",
+  "message": "Session events",
+  "data": {
+    "events": [
+      {
+        "id": "<id>",
+        "type": "cart_item_added",
+        "label": "Added Butter Naan ×1",
+        "at": "<date>",
+        "data": {
+          "menuItemId": "<id>",
+          "itemName": "Butter Naan",
+          "qty": 1,
+          "deltaQty": 1,
+          "totalPaise": null,
+          "query": null,
+          "offerId": null,
+          "orderId": null
+        }
+      },
+      {
+        "id": "<id>",
+        "type": "cart_item_added",
+        "label": "Added Paneer Tikka ×2",
+        "at": "<date>",
+        "data": {
+          "menuItemId": "<id>",
+          "itemName": "Paneer Tikka",
+          "qty": 2,
+          "deltaQty": 2,
+          "totalPaise": null,
+          "query": null,
+          "offerId": null,
+          "orderId": null
+        }
+      },
+      {
+        "id": "<id>",
+        "type": "restaurant_viewed",
+        "label": "Viewed menu",
+        "at": "<date>",
+        "data": {
+          "menuItemId": null,
+          "itemName": null,
+          "qty": null,
+          "deltaQty": null,
+          "totalPaise": null,
+          "query": null,
+          "offerId": null,
+          "orderId": null
+        }
+      }
+    ],
+    "nextBefore": null
+  }
+}

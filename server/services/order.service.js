@@ -22,6 +22,9 @@ import { ensureAddressLocated } from './user.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { isPubliclyVisible } from '../utils/publicRestaurant.js';
 import { notifyService } from './notify.service.js';
+import { now as clockNow } from '../utils/clock.js';
+import logger from '../utils/logger.js';
+import { publishOffer } from './liveBroadcast.service.js';
 
 // The one place "who is this order for" is answered, for every door an order can come
 // through. Returns the pair that gets snapshotted onto the order (see the comment on
@@ -392,14 +395,30 @@ const createOrderFromCartOnce = async ({
 
   let discountAmount = 0;
   let appliedDiscountId = null;
+  let personalOffer = null;
+  const at = clockNow();
   if (cart.appliedDiscountId) {
     const discount = await Discount.findById(cart.appliedDiscountId).lean();
     try {
-      discountService.validateDiscountForOrder(discount, { subtotal, orderType: 'delivery' });
-      discountAmount = await discountService.computeDiscountAmount(discount, subtotal);
+      discountService.validateDiscountForOrder(discount, {
+        subtotal,
+        orderType: 'delivery',
+        userId,
+        restaurantId: cart.restaurantId,
+        cartMenuItemIds: snapshots.map((s) => s.menuItemId),
+        now: at,
+      });
+      discountAmount = await discountService.computeDiscountAmount(discount, subtotal, {
+        lines: snapshots.map((s) => ({ menuItemId: s.menuItemId, amountPaise: toPaise(s.price) * s.quantity })),
+      });
       appliedDiscountId = discount._id;
-    } catch {
-      // Same "silently stop applying rather than block checkout" behavior as
+      if (discount.kind === 'personal') personalOffer = discount;
+    } catch (err) {
+      // A personal offer someone else's checkout already used, or one that ran out, fails the
+      // checkout instead: the customer was shown the discount, and an order at full price is
+      // not what they agreed to (parallel checkouts from two devices end here).
+      if (discount?.kind === 'personal' && ['OFFER_ALREADY_USED', 'OFFER_EXPIRED'].includes(err.code)) throw err;
+      // Otherwise the same "silently stop applying rather than block checkout" behavior as
       // cart.service.js's computeBill — see that comment for the reasoning.
     }
   }
@@ -425,69 +444,93 @@ const createOrderFromCartOnce = async ({
     });
   }
 
+  // A personal offer is redeemable once: claim it now — after the price check above, so a
+  // mismatch claims nothing — with one conditional increment. Exactly one of any number of
+  // parallel checkouts wins; the rest create no order. An Idempotency-Key replay never gets
+  // here (runOnce returns the first order before this function runs).
+  if (personalOffer) await claimPersonalOffer(personalOffer, userId, at);
+
   // Never trust the client's raw vegFleetOptIn claim — only honor it if this restaurant
   // actually has veg-fleet coverage. A restaurant without it gets a normal order,
   // regardless of what the client sent.
   const effectiveVegFleetOptIn = Boolean(vegFleetOptIn && restaurant.vegFleetAvailable);
 
-  const order = await Order.create({
-    restaurantId: cart.restaurantId,
-    userId,
-    staffId: null,
-    placedBy: 'customer',
-    statusHistory: [{ status: 'placed', at: new Date(), byRole: 'customer' }],
-    type: 'delivery',
-    batchNumber: 1,
-    items: snapshots,
-    // charges + subtotal/deliveryFee/platformFee/tax/tip/discountAmount/grandTotal
-    ...pricing,
-    appliedDiscountId,
-    deliveryInstructions,
-    cookingRequests,
-    extraCutlery,
-    // The wire value is 'cod' | 'online'; the model stores the instrument ('cash' for COD)
-    // plus the channel. COD reads as "cash to be collected on delivery" from the moment the
-    // order exists — distinct from 'pending', which for an 'online' order means "awaiting
-    // Razorpay verification/webhook".
-    ...paymentFieldsFor({ paymentMethod, type: 'delivery' }),
-    customerName: user.name?.trim() || null,
-    customerPhone: user.phone || null,
-    // The whole address, not the two fields it used to keep: state and pincode were
-    // dropped here, which left the restaurant and the delivery partner with a street line
-    // and a city and no PIN to navigate by. contactName/contactPhone fall back to the
-    // account holder — an address saved for someone else carries its own.
-    deliveryAddress: {
-      label: address.customLabel?.trim() || address.label || null,
-      // Every part, not just the composed line: the restaurant's ticket and the rider's app
-      // can then show "B-402" and "Near City Mall" as their own lines. `street` still
-      // carries the joined form for everything that reads one string.
-      houseNumber: address.houseNumber ?? null,
-      floor: address.floor ?? null,
-      building: address.building ?? null,
-      landmark: address.landmark ?? null,
-      area: address.area ?? null,
-      street: address.street,
-      city: address.city,
-      state: address.state,
-      pincode: address.pincode,
-      // Resolved above, not read off the address: a point the geocoder only just recovered
-      // belongs on this order too, not just on the next one. Already normalised to a real
-      // pair or a clean null — an address whose geocode failed can hold an empty coordinates
-      // array, and `[]` survives `??` intact, reaching computeDropKm where destructuring it
-      // yields undefined and the haversine returns NaN, straight into the rider's distance
-      // pay and the customer's ETA. `null` is what every reader already handles.
-      coordinates: dropCoordinates,
-      contactName: address.contactName?.trim() || user.name?.trim() || null,
-      contactPhone: address.contactPhone || user.phone || null,
-    },
-    vegFleetOptIn: effectiveVegFleetOptIn,
-    dedicatedBagRequired: effectiveVegFleetOptIn,
-    vegFleetAssignmentStatus: effectiveVegFleetOptIn ? 'searching' : 'not_requested',
-    // Not started yet: the veg-fleet rider search (and the customer's countdown for it)
-    // begins when the restaurant accepts the order — see kitchen.service.js's
-    // updateOrderStatus. Until then there is no search to count down.
-    vegFleetSearchDeadline: null,
-  });
+  let order;
+  try {
+    order = await Order.create({
+      restaurantId: cart.restaurantId,
+      userId,
+      staffId: null,
+      placedBy: 'customer',
+      statusHistory: [{ status: 'placed', at: new Date(), byRole: 'customer' }],
+      type: 'delivery',
+      batchNumber: 1,
+      items: snapshots,
+      // charges + subtotal/deliveryFee/platformFee/tax/tip/discountAmount/grandTotal
+      ...pricing,
+      appliedDiscountId,
+      deliveryInstructions,
+      cookingRequests,
+      extraCutlery,
+      // The wire value is 'cod' | 'online'; the model stores the instrument ('cash' for COD)
+      // plus the channel. COD reads as "cash to be collected on delivery" from the moment the
+      // order exists — distinct from 'pending', which for an 'online' order means "awaiting
+      // Razorpay verification/webhook".
+      ...paymentFieldsFor({ paymentMethod, type: 'delivery' }),
+      customerName: user.name?.trim() || null,
+      customerPhone: user.phone || null,
+      // The whole address, not the two fields it used to keep: state and pincode were
+      // dropped here, which left the restaurant and the delivery partner with a street line
+      // and a city and no PIN to navigate by. contactName/contactPhone fall back to the
+      // account holder — an address saved for someone else carries its own.
+      deliveryAddress: {
+        label: address.customLabel?.trim() || address.label || null,
+        // Every part, not just the composed line: the restaurant's ticket and the rider's app
+        // can then show "B-402" and "Near City Mall" as their own lines. `street` still
+        // carries the joined form for everything that reads one string.
+        houseNumber: address.houseNumber ?? null,
+        floor: address.floor ?? null,
+        building: address.building ?? null,
+        landmark: address.landmark ?? null,
+        area: address.area ?? null,
+        street: address.street,
+        city: address.city,
+        state: address.state,
+        pincode: address.pincode,
+        // Resolved above, not read off the address: a point the geocoder only just recovered
+        // belongs on this order too, not just on the next one. Already normalised to a real
+        // pair or a clean null — an address whose geocode failed can hold an empty coordinates
+        // array, and `[]` survives `??` intact, reaching computeDropKm where destructuring it
+        // yields undefined and the haversine returns NaN, straight into the rider's distance
+        // pay and the customer's ETA. `null` is what every reader already handles.
+        coordinates: dropCoordinates,
+        contactName: address.contactName?.trim() || user.name?.trim() || null,
+        contactPhone: address.contactPhone || user.phone || null,
+      },
+      vegFleetOptIn: effectiveVegFleetOptIn,
+      dedicatedBagRequired: effectiveVegFleetOptIn,
+      vegFleetAssignmentStatus: effectiveVegFleetOptIn ? 'searching' : 'not_requested',
+      // Not started yet: the veg-fleet rider search (and the customer's countdown for it)
+      // begins when the restaurant accepts the order — see kitchen.service.js's
+      // updateOrderStatus. Until then there is no search to count down.
+      vegFleetSearchDeadline: null,
+    });
+  } catch (err) {
+    if (personalOffer) await releaseClaim(personalOffer._id);
+    throw err;
+  }
+
+  if (personalOffer) {
+    const redeemed = await Discount.findOneAndUpdate(
+      { _id: personalOffer._id },
+      { $set: { offerStatus: 'redeemed', isOpen: false, status: 'expired', redeemedAt: at, orderId: order._id } },
+      { new: true, lean: true }
+    );
+    // The session's own update (converted) is announced by the order_placed event.
+    if (redeemed) await publishOffer(redeemed, { toCustomer: true, at });
+    // For the order_placed activity event (controllers/order.controller.js).
+    order.$locals.personalOfferId = personalOffer._id;
+  }
 
   // Clear the cart on success — see the file-level comment on this function for why this
   // isn't (and can't cheaply be) wrapped in the same transaction as Order.create above.
@@ -505,6 +548,38 @@ const createOrderFromCartOnce = async ({
   notifyService.newOrder(order);
 
   return order;
+};
+
+// One redemption of a personal offer, or 409: OFFER_ALREADY_USED when it has been used (or is
+// being used by a parallel checkout), OFFER_EXPIRED when it ran out or was revoked/expired.
+const claimPersonalOffer = async (offer, userId, at) => {
+  const claimed = await Discount.findOneAndUpdate(
+    {
+      _id: offer._id,
+      kind: 'personal',
+      targetUserId: userId,
+      isOpen: true,
+      endDate: { $gt: at },
+      $expr: { $lt: ['$redemptionCount', '$maxRedemptions'] },
+    },
+    { $inc: { redemptionCount: 1 } },
+    { new: true }
+  );
+  if (claimed) return;
+  const current = await Discount.findById(offer._id).select('redemptionCount maxRedemptions offerStatus').lean();
+  if (current && (current.offerStatus === 'redeemed' || current.redemptionCount >= current.maxRedemptions)) {
+    throw new ApiError(409, 'OFFER_ALREADY_USED', 'This offer has already been used');
+  }
+  throw new ApiError(409, 'OFFER_EXPIRED', 'This offer has expired');
+};
+
+// The order couldn't be created after the claim: give the redemption back.
+const releaseClaim = async (offerId) => {
+  try {
+    await Discount.updateOne({ _id: offerId, redemptionCount: { $gt: 0 } }, { $inc: { redemptionCount: -1 } });
+  } catch (err) {
+    logger.error({ err, offerId: String(offerId) }, 'Could not release a personal offer claim after a failed order');
+  }
 };
 
 // Seeds a fresh Cart from a past order rather than creating an Order directly — the

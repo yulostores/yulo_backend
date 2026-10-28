@@ -1,57 +1,38 @@
 import mongoose from 'mongoose';
 import Order from '../models/Order.js';
 import TableSession from '../models/TableSession.js';
-import User from '../models/User.js';
-import Discount from '../models/Discount.js';
+import CustomerSession from '../models/CustomerSession.js';
 import { redis } from '../config/redis.js';
-import { getIO } from '../socket.js';
-import logger from '../utils/logger.js';
+import { LIST_LIMITS, OPEN_SESSION_STATUSES, isLiveActivityEnabledFor } from '../config/liveActivity.config.js';
+import { displayNameFor, liveSessionScope } from './activity.service.js';
+import { toSessionRow } from './liveSession.serializer.js';
 
-// Live visitor numbers live only in Redis. Without it (local dev, a Redis outage) they read as
-// zero and are not recorded — the dashboard keeps working on its MongoDB numbers.
-export const trackVisitor = async ({ restaurantId, sessionId, userId, cartItems, intentScore }) => {
-  if (!redis) return;
-  const key = `live:visitor:${restaurantId}:${sessionId}`;
-  await redis.hset(key, {
-    userId: userId || '',
-    cartItems: JSON.stringify(cartItems || []),
-    intentScore: intentScore || 0,
-    updatedAt: Date.now(),
-  });
-  await redis.expire(key, 300);
-  await redis.incr(`live:count:${restaurantId}`);
-};
-
+// Who is on the restaurant right now: its open live-activity sessions (active / idle), newest
+// activity first — the same rows the live dashboard shows, with the key names this endpoint
+// always had (`userId`, `name`, `lastSeen` in epoch seconds, `tableId`) kept for the portal's
+// current Live Monitor screens until the new dashboard replaces them. First name only, never
+// phone or email; opted-out customers' sessions are hidden. Empty while the feature is off.
 export const getActiveVisitors = async (restaurantId) => {
-  if (!redis) return { visitors: [], count: 0 };
-  const keys = await redis.keys(`live:visitor:${restaurantId}:*`);
-
-  if (!keys.length) return { visitors: [], count: 0 };
-
-  const rawVisitors = await Promise.all(keys.map((key) => redis.hgetall(key)));
-
-  const visitors = rawVisitors
-    .filter(Boolean)
-    .map((v, i) => ({
-      sessionId: keys[i].split(':').pop(),
-      userId: v.userId || null,
-      cartItems: JSON.parse(v.cartItems || '[]'),
-      intentScore: parseFloat(v.intentScore) || 0,
-      updatedAt: parseInt(v.updatedAt, 10) || 0,
-    }));
-
-  const userIds = [...new Set(visitors.map((v) => v.userId).filter(Boolean))];
-
-  if (userIds.length) {
-    const users = await User.find({ _id: { $in: userIds } })
-      .select('name email phone')
-      .lean();
-    const userMap = new Map(users.map((u) => [u._id.toString(), u]));
-    visitors.forEach((v) => {
-      if (v.userId) v.user = userMap.get(v.userId) || null;
-    });
-  }
-
+  if (!isLiveActivityEnabledFor(restaurantId)) return { visitors: [], count: 0 };
+  const sessions = await CustomerSession.find({
+    ...liveSessionScope(new mongoose.Types.ObjectId(String(restaurantId))),
+    status: { $in: OPEN_SESSION_STATUSES },
+  })
+    .sort({ lastActivityAt: -1, _id: -1 })
+    .limit(LIST_LIMITS.sessionsMax)
+    .lean();
+  const visitors = sessions.map((session) => ({
+    ...toSessionRow(session),
+    sessionId: String(session._id),
+    // The portal keys its list on `userId`. It gets the visit's id, not the customer's: owners
+    // never see who a customer is beyond the first name (liveSession.serializer.js).
+    userId: String(session._id),
+    name: session.displayName,
+    lastSeen: Math.floor(session.lastActivityAt.getTime() / 1000),
+    tableId: null,
+    cartItems: (session.cart?.items ?? []).map((line) => ({ name: line.name, qty: line.qty })),
+    updatedAt: session.lastActivityAt.getTime(),
+  }));
   return { visitors, count: visitors.length };
 };
 
@@ -82,9 +63,12 @@ export const updateGMV = async (restaurantId, amount) => {
   await redis.expire(key, 86400);
 };
 
+// Customers with more than one order here: first name and order count only — never email or
+// phone (decided 28 Oct 2026, the same rule as the live dashboard). `_id` keeps the key the
+// portal lists by.
 export const getRepeatVisitors = async (restaurantId) => {
   const rid = new mongoose.Types.ObjectId(restaurantId);
-  return Order.aggregate([
+  const rows = await Order.aggregate([
     { $match: { restaurantId: rid, userId: { $ne: null } } },
     { $group: { _id: '$userId', orderCount: { $sum: 1 }, lastOrder: { $max: '$createdAt' } } },
     { $match: { orderCount: { $gt: 1 } } },
@@ -96,28 +80,15 @@ export const getRepeatVisitors = async (restaurantId) => {
         localField: '_id',
         foreignField: '_id',
         as: 'user',
-        pipeline: [{ $project: { name: 1, email: 1, phone: 1 } }],
+        pipeline: [{ $project: { name: 1, role: 1 } }],
       },
     },
     { $unwind: '$user' },
-    { $project: { user: 1, orderCount: 1, lastOrder: 1 } },
   ]);
-};
-
-export const createTargetedOffer = async ({ restaurantId, offerData }) => {
-  const discount = await Discount.create({
-    restaurantId,
-    ...offerData,
-    status: 'active',
-  });
-
-  try {
-    getIO()
-      .to(`restaurant:${restaurantId}`)
-      .emit('targeted_offer', { discountId: discount._id, code: discount.code, offerName: discount.offerName });
-  } catch (err) {
-    logger.error({ err }, 'Failed to emit targeted_offer');
-  }
-
-  return discount;
+  return rows.map((row) => ({
+    _id: row._id,
+    name: displayNameFor(row.user),
+    orderCount: row.orderCount,
+    lastOrder: row.lastOrder,
+  }));
 };

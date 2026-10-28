@@ -1,0 +1,22 @@
+{
+  "status": "success",
+  "message": "Offer viewed",
+  "data": {
+    "offer": {
+      "id": "<id>",
+      "restaurant": {
+        "id": "<id>",
+        "name": "Spice Route"
+      },
+      "title": "A treat for you",
+      "type": "percentage",
+      "percentage": 15,
+      "flatAmount": null,
+      "maxDiscountAmount": 100,
+      "minimumOrderValue": 0,
+      "applicableItems": [],
+      "status": "viewed",
+      "expiresAt": "<date>"
+    }
+  }
+}

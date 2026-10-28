@@ -103,8 +103,13 @@ const uploadOfferImage = async (req) => {
   }
 };
 
+// Personal offers (one customer, sent from the live dashboard) are managed there, never here:
+// every query below leaves them out, so editing or deleting one by id is a 404. Old rows have
+// no `kind`, hence `$ne` rather than `kind: 'public'`.
+const NOT_PERSONAL = { kind: { $ne: 'personal' } };
+
 export const list = asyncHandler(async (req, res) => {
-  const discounts = await Discount.find({ restaurantId: req.restaurant._id }).lean();
+  const discounts = await Discount.find({ restaurantId: req.restaurant._id, ...NOT_PERSONAL }).lean();
   sendSuccess(res, 200, 'Discounts', { discounts });
 });
 
@@ -135,6 +140,7 @@ export const update = asyncHandler(async (req, res) => {
   const existing = await Discount.findOne({
     _id: req.params.dId,
     restaurantId: req.restaurant._id,
+    ...NOT_PERSONAL,
   }).lean();
   if (!existing) throw new ApiError(404, 'NOT_FOUND', 'Discount not found');
 
@@ -164,6 +170,7 @@ export const remove = asyncHandler(async (req, res) => {
   const discount = await Discount.findOneAndDelete({
     _id: req.params.dId,
     restaurantId: req.restaurant._id,
+    ...NOT_PERSONAL,
   });
   if (!discount) throw new ApiError(404, 'NOT_FOUND', 'Discount not found');
 
@@ -179,7 +186,7 @@ export const remove = asyncHandler(async (req, res) => {
 
 export const publish = asyncHandler(async (req, res) => {
   const discount = await Discount.findOneAndUpdate(
-    { _id: req.params.dId, restaurantId: req.restaurant._id, status: 'draft' },
+    { _id: req.params.dId, restaurantId: req.restaurant._id, status: 'draft', ...NOT_PERSONAL },
     { $set: { status: 'active' } },
     { new: true }
   );
@@ -189,7 +196,7 @@ export const publish = asyncHandler(async (req, res) => {
 
 export const draft = asyncHandler(async (req, res) => {
   const discount = await Discount.findOneAndUpdate(
-    { _id: req.params.dId, restaurantId: req.restaurant._id, status: 'active' },
+    { _id: req.params.dId, restaurantId: req.restaurant._id, status: 'active', ...NOT_PERSONAL },
     { $set: { status: 'draft' } },
     { new: true }
   );

@@ -12,6 +12,10 @@ import { connectRedis, redis } from './config/redis.js';
 import { env } from './config/env.js';
 import { startSettlementScheduler } from './jobs/settlementScheduler.js';
 import logger from './utils/logger.js';
+// Registered here so the index build below covers them even before any route imports them:
+// their unique (one open session per customer) and TTL (retention) indexes must exist from boot.
+import './models/CustomerSession.js';
+import './models/ActivityEvent.js';
 
 // Happy Eyeballs for every outbound socket this process opens.
 //

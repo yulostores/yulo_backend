@@ -16,11 +16,3 @@ export const getRepeatVisitors = asyncHandler(async (req, res) => {
   const visitors = await liveMonitorService.getRepeatVisitors(req.params.restaurantId);
   sendSuccess(res, 200, 'Repeat visitors', { visitors });
 });
-
-export const createTargetedOffer = asyncHandler(async (req, res) => {
-  const discount = await liveMonitorService.createTargetedOffer({
-    restaurantId: req.params.restaurantId,
-    offerData: req.body,
-  });
-  sendSuccess(res, 201, 'Targeted offer created', { discount });
-});

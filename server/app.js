@@ -18,6 +18,7 @@ import itemRoutes from './routes/item.routes.js';
 import searchRoutes from './routes/search.routes.js';
 import homeRoutes from './routes/home.routes.js';
 import cartRoutes from './routes/cart.routes.js';
+import offerRoutes from './routes/offer.routes.js';
 import checkoutRoutes from './routes/checkout.routes.js';
 import orderRoutes from './routes/order.routes.js';
 import geoRoutes from './routes/geo.routes.js';
@@ -102,6 +103,8 @@ app.use('/api/items', itemRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/home', homeRoutes);
 app.use('/api/cart', cartRoutes);
+// A customer's personal offers (live customer activity; 404 while the feature is off).
+app.use('/api/offers', offerRoutes);
 app.use('/api/checkout', checkoutRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/geo', geoRoutes);

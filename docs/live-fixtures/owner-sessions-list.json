@@ -1,0 +1,47 @@
+{
+  "status": "success",
+  "message": "Live sessions",
+  "data": {
+    "sessions": [
+      {
+        "id": "<id>",
+        "displayName": "Meera",
+        "isGuest": false,
+        "pastOrderCount": 0,
+        "status": "active",
+        "startedAt": "<date>",
+        "lastActivityAt": "<date>",
+        "lastEvent": {
+          "type": "cart_item_added",
+          "label": "Added Butter Naan ×1",
+          "at": "<date>"
+        },
+        "cart": {
+          "itemCount": 3,
+          "totalPaise": 56100,
+          "items": [
+            {
+              "name": "Paneer Tikka",
+              "qty": 2
+            },
+            {
+              "name": "Butter Naan",
+              "qty": 1
+            }
+          ]
+        },
+        "cameFromSearch": null,
+        "eventCount": 3,
+        "orderId": null,
+        "offerEligible": true,
+        "notEligibleReason": null
+      }
+    ],
+    "summary": {
+      "live": 1,
+      "cartsInProgress": 1,
+      "cartsTotalPaise": 56100,
+      "abandonedLastHour": 0
+    }
+  }
+}

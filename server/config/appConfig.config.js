@@ -307,7 +307,15 @@ export const LEGAL_DOCUMENTS = [
 // `payments` also carries the two runtime payment switches (config/payments.config.js):
 // codEnabled — hide/disable "Pay on delivery" when false; paymentSimulationEnabled — dev
 // builds settle online payments through the simulate endpoint instead of Razorpay.
-export const buildAppConfig = ({ codEnabled = false, paymentSimulationEnabled = false } = {}) => ({
+//
+// `liveActivity` appears only while live customer activity is switched on, so with it off this
+// response is exactly what it was before the feature: the customer app shows the activity
+// notice and Settings toggle only when `liveActivity.enabled` is true.
+export const buildAppConfig = ({
+  codEnabled = false,
+  paymentSimulationEnabled = false,
+  liveActivityEnabled = false,
+} = {}) => ({
   languages: SUPPORTED_LANGUAGES,
   defaultLanguage: DEFAULT_LANGUAGE,
   payments: { groups: PAYMENT_GROUPS, methods: PAYMENT_METHODS, codEnabled, paymentSimulationEnabled },
@@ -317,6 +325,7 @@ export const buildAppConfig = ({ codEnabled = false, paymentSimulationEnabled = 
     copyright: `© ${new Date().getFullYear()} ${ABOUT.copyrightHolder}`,
   },
   legal: LEGAL_DOCUMENTS.map(({ sections, ...summary }) => summary),
+  ...(liveActivityEnabled ? { liveActivity: { enabled: true } } : {}),
 });
 
 // One legal document with its sections, or null for an unknown id.
