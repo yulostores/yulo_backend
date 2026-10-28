@@ -9,11 +9,15 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 // trusting free text for the reason code, same convention as order-reject's SKIP_REASONS. Unlike
 // SKIP_REASONS, there's no "Other" option here and notes is always optional (the screen's Input
 // placeholder is "Additional notes (optional)…", no conditional requirement).
+// The rider app shows the ones that fit the direction: leaving the veg fleet, or joining it (the
+// last two — the list used to have only leaving reasons, offered to standard riders too).
 const FLEET_CHANGE_REASONS = [
   'Not enough orders on veg fleet',
   'Moving to a different zone',
   'Equipment issue (bag problem)',
   'Personal reason',
+  'I want to deliver veg-only orders',
+  'I have a certified veg bag',
 ];
 
 // The one real figure this flow gives — both FleetChangeRequest.jsx ("Ops responds within 72

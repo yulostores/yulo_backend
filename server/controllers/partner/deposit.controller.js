@@ -22,6 +22,15 @@ export const createDeposit = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid deposit', result.error.flatten());
   }
   const { amount, depositPointRestaurantId, notes } = result.data;
+  // Never more than the rider holds: cash in hand is collected minus deposited, so an over-sized
+  // deposit (a typo, or a deliberate one) would silently write off the next cash they collect
+  // too — the balance just reads ₹0 until that credit is used up.
+  const held = await getCashInHand(req.partner._id);
+  if (amount > held + 0.005) {
+    throw new ApiError(400, 'AMOUNT_EXCEEDS_CASH_IN_HAND', `You can deposit up to ₹${held.toFixed(2)} — the cash you hold.`, {
+      cashInHand: held,
+    });
+  }
 
   if (depositPointRestaurantId) {
     const exists = await Restaurant.exists({ _id: depositPointRestaurantId });

@@ -58,10 +58,24 @@ const PERSONAL_FIELDS = [
   'panNumber',
 ];
 
+// Delivery partners ride on public roads, which needs a driving licence — 18 or older. The
+// app's date picker stops at 18 years ago; this refuses anything later sent directly.
+export const MIN_PARTNER_AGE_YEARS = 18;
+const latestAllowedBirthDate = () => {
+  const d = new Date();
+  d.setUTCFullYear(d.getUTCFullYear() - MIN_PARTNER_AGE_YEARS);
+  return d;
+};
+
 const personalSchema = z.object({
   fullName: z.string().min(2).optional(),
   email: z.string().email().optional(),
-  dateOfBirth: z.coerce.date().optional(),
+  dateOfBirth: z.coerce
+    .date()
+    .refine((d) => d <= latestAllowedBirthDate(), {
+      message: `You must be at least ${MIN_PARTNER_AGE_YEARS} years old to deliver.`,
+    })
+    .optional(),
   gender: z.enum(['male', 'female', 'other']).optional(),
   emergencyPhone: z.string().optional(),
   aadharNumber: z.string().optional(),
@@ -71,7 +85,10 @@ const personalSchema = z.object({
 export const updatePersonal = asyncHandler(async (req, res) => {
   const result = personalSchema.safeParse(req.body);
   if (!result.success) {
-    throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid personal details', result.error.flatten());
+    const details = result.error.flatten();
+    // The age rule's own sentence, so the app can show the rider why (it displays the message).
+    const message = details.fieldErrors.dateOfBirth?.[0] ?? 'Invalid personal details';
+    throw new ApiError(400, 'VALIDATION_ERROR', message, details);
   }
 
   const partner = await DeliveryPartner.findById(req.partner._id);
@@ -236,6 +253,11 @@ export const submitForReview = asyncHandler(async (req, res) => {
     if (!presentDocTypes.has(type)) missing.push(`document:${type}`);
   }
   if (!partner.bankDetails?.accountNumber) missing.push('bankDetails.accountNumber');
+  // What the vehicle is and its registration — a non-RTO EV (low-speed scooter) has none.
+  if (!partner.vehicle?.model?.trim()) missing.push('vehicle.model');
+  if (partner.vehicle?.type !== 'non_rto_2_wheeler' && !partner.vehicle?.number?.trim()) {
+    missing.push('vehicle.number');
+  }
 
   if (missing.length > 0) {
     throw new ApiError(

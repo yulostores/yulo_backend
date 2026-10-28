@@ -477,6 +477,9 @@ describe('personal offers stay private', () => {
     expectError(await call('POST', '/api/cart/apply-promo', customer, { code: 'SECRET' }), 404, 'NOT_FOUND');
 
     // A public offer at the same restaurant still shows everywhere.
+    // The home feed and search read the real clock, not this suite's fixed one — so the window
+    // covers both (a window built from the fixed clock alone expired a day after T0).
+    const realNow = Date.now();
     await Discount.create({
       restaurantId: restaurant._id,
       offerName: 'Public',
@@ -484,8 +487,8 @@ describe('personal offers stay private', () => {
       percentage: 5,
       status: 'active',
       isFeatured: true,
-      startDate: new Date(now.getTime() - MINUTE),
-      endDate: new Date(now.getTime() + DAY),
+      startDate: new Date(Math.min(now.getTime(), realNow) - MINUTE),
+      endDate: new Date(Math.max(now.getTime(), realNow) + DAY),
     });
     assert.equal((await call('GET', `/api/home/feed?lat=${lat}&lng=${lng}`, customer)).body.data.banner.offerName, 'Public');
     assert.equal((await call('GET', `/api/restaurants?q=Spice&hasOffers=true`, customer)).body.data.restaurants.length, 1);
