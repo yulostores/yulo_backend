@@ -10,7 +10,7 @@ import logger from '../utils/logger.js';
 //                         activity or offers may reach staff devices.
 //   user:<userId>         one signed-in customer (join_user in socket.js).
 //
-// Every emit is a no-op while the feature (or the pilot allow-list) is off for the restaurant,
+// Every emit is a no-op while the feature (or the restaurant's own setting) is off for the restaurant,
 // or when no Socket.IO server is running (scripts, most tests). Nothing here ever throws.
 
 // Keys no live-activity payload may carry, at any depth.

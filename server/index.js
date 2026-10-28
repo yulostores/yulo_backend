@@ -11,6 +11,7 @@ import { connectDB } from './config/db.js';
 import { connectRedis, redis } from './config/redis.js';
 import { env } from './config/env.js';
 import { startSettlementScheduler } from './jobs/settlementScheduler.js';
+import { loadLiveActivityRestaurants, startLiveActivityAccessRefresh } from './services/liveActivityAccess.service.js';
 import logger from './utils/logger.js';
 // Registered here so the index build below covers them even before any route imports them:
 // their unique (one open session per customer) and TTL (retention) indexes must exist from boot.
@@ -35,6 +36,11 @@ const io = initSocket(server);
 
 await connectDB();
 await connectRedis();
+
+// Live customer activity: the restaurants a super admin turned it on for, before the first
+// request is served, then re-read on a timer (services/liveActivityAccess.service.js).
+await loadLiveActivityRestaurants();
+const stopLiveActivityAccessRefresh = startLiveActivityAccessRefresh();
 
 // Mongoose builds the models' indexes in the background once connected and logs nothing when
 // a build fails — yet the unique ones are what keep money writes idempotent (one ledger row
@@ -100,6 +106,7 @@ const shutdown = async (signal) => {
   force.unref();
   try {
     await settlementScheduler.stop();
+    stopLiveActivityAccessRefresh();
     // Closes every socket and, with them, the HTTP server it is attached to.
     await new Promise((resolve) => io.close(() => resolve()));
     await mongoose.disconnect();

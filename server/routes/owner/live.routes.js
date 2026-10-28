@@ -15,7 +15,7 @@ import {
 // authenticate, restaurant_owner, authorizeRestaurant and requireRestaurantApproved have run.
 const router = Router({ mergeParams: true });
 
-// With the feature off (or this restaurant outside the pilot) the whole router is skipped, so
+// With the feature off (or not turned on for this restaurant by a super admin) the whole router is skipped, so
 // the request falls through to the app's ordinary 404 — exactly as if these routes didn't exist.
 router.use((req, _res, next) => (isLiveActivityEnabledFor(req.restaurant._id) ? next() : next('router')));
 

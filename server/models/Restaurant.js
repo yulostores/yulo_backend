@@ -157,6 +157,12 @@ const restaurantSchema = new mongoose.Schema(
       default: 'pending',
     },
     plan: { type: String, enum: ['trial', 'basic', 'standard', 'premium'], default: 'trial' },
+    // Live customer activity, turned on for this restaurant by a super admin (store page →
+    // PATCH /api/admin/stores/:id/live-activity; services/liveActivityAccess.service.js). It
+    // only matters while LIVE_ACTIVITY_ENABLED is on. No default and `select: false`: unset means
+    // off, and no existing restaurant response gains a field — only the admin store view and the
+    // access service ask for it.
+    liveActivityEnabled: { type: Boolean, select: false },
     submittedAt: { type: Date, default: Date.now },
     reviewedAt: { type: Date },
     reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -225,6 +231,8 @@ restaurantSchema.index({ location: '2dsphere' });
 restaurantSchema.index({ name: 'text', description: 'text' });
 restaurantSchema.index({ ownerId: 1 });
 restaurantSchema.index({ approvalStatus: 1 });
+// The few restaurants with live customer activity on (loaded at boot and re-read on a timer).
+restaurantSchema.index({ liveActivityEnabled: 1 }, { partialFilterExpression: { liveActivityEnabled: true } });
 // Admin 'Bank requests' queue (payoutAccount.service.js listBankRequests).
 restaurantSchema.index(
   { 'payoutAccount.pendingChange.status': 1, 'payoutAccount.pendingChange.requestedAt': 1 },

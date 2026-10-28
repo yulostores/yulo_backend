@@ -4,7 +4,6 @@
 // yulo_backend/LIVE_ACTIVITY_IMPLEMENTATION_PROMPTS.md (§ Rules).
 
 import { env } from './env.js';
-import logger from '../utils/logger.js';
 
 // ─── Enums ─────────────────────────────────────────────────────────────────
 
@@ -115,11 +114,18 @@ export const TEXT_LIMITS = Object.freeze({
 // stats, and a `live:*` cleanup would break rider dispatch.
 export const REDIS_PREFIX = 'liveact:';
 
-// ─── Switch + pilot allow-list ─────────────────────────────────────────────
+// ─── Switch + per-restaurant access ────────────────────────────────────────
+//
+// Two levels: LIVE_ACTIVITY_ENABLED is the server-wide switch, and a super admin turns the
+// feature on per restaurant (Restaurant.liveActivityEnabled, from the store page —
+// services/liveActivityAccess.service.js). The restaurants that are on are held here as a set
+// of ids, so the check on every request is synchronous and never touches the database: the
+// service loads the set at boot, updates it on a toggle, and re-reads it on a timer so every
+// instance catches up with a toggle made on another.
 
 const OBJECT_ID = /^[a-f0-9]{24}$/i;
 
-/** Splits the comma-separated allow-list into valid ids and the entries that were ignored. */
+/** Splits a comma-separated id list into valid ids and the entries that were ignored. */
 export const parseRestaurantAllowList = (raw = '') => {
   const ids = new Set();
   const invalid = [];
@@ -132,40 +138,48 @@ export const parseRestaurantAllowList = (raw = '') => {
   return { ids, invalid };
 };
 
-const fromEnv = () => {
-  const { ids, invalid } = parseRestaurantAllowList(env.LIVE_ACTIVITY_RESTAURANT_IDS);
-  if (invalid.length) {
-    logger.warn(
-      { ignored: invalid.length },
-      'LIVE_ACTIVITY_RESTAURANT_IDS has entries that are not restaurant ids — they are ignored'
-    );
-  }
-  return { enabled: env.LIVE_ACTIVITY_ENABLED, restaurantIds: ids };
-};
+const fromEnv = () => ({ enabled: env.LIVE_ACTIVITY_ENABLED, everyRestaurant: false, restaurantIds: new Set() });
 
 let settings = fromEnv();
 
 /** The feature switch (LIVE_ACTIVITY_ENABLED). */
 export const isLiveActivityEnabled = () => settings.enabled;
 
-/** On for this restaurant: the switch is on AND the allow-list is empty or contains it. */
+/** On for this restaurant: the switch is on AND a super admin turned it on for the restaurant. */
 export const isLiveActivityEnabledFor = (restaurantId) => {
   if (!settings.enabled) return false;
-  if (settings.restaurantIds.size === 0) return true;
+  if (settings.everyRestaurant) return true;
   return restaurantId != null && settings.restaurantIds.has(String(restaurantId).toLowerCase());
 };
 
+/** Replaces the set of restaurants the feature is on for (the database's view). */
+export const setLiveActivityRestaurants = (ids) => {
+  settings = { ...settings, restaurantIds: new Set([...ids].map((id) => String(id).toLowerCase())) };
+};
+
+/** One restaurant turned on or off (applied on this instance at once; others on their next read). */
+export const markLiveActivityRestaurant = (restaurantId, on) => {
+  const restaurantIds = new Set(settings.restaurantIds);
+  if (on) restaurantIds.add(String(restaurantId).toLowerCase());
+  else restaurantIds.delete(String(restaurantId).toLowerCase());
+  settings = { ...settings, restaurantIds };
+};
+
 /**
- * Tests only: override the switch and allow-list (`{ enabled, restaurantIds: 'id1,id2' }`),
- * or pass `null` to go back to the environment's values.
+ * Tests only. `{ enabled, restaurantIds }`: `restaurantIds` omitted or '' means every
+ * restaurant (for tests that aren't about access), 'id1,id2' means just those, and
+ * `{ enabled, perRestaurant: true }` uses the real per-restaurant set (setLiveActivityRestaurants
+ * / the access service). `null` goes back to the environment's switch with an empty set.
  */
 export const __setLiveActivityForTests = (override) => {
   if (override == null) {
     settings = fromEnv();
     return;
   }
-  settings = {
-    enabled: Boolean(override.enabled),
-    restaurantIds: parseRestaurantAllowList(override.restaurantIds ?? '').ids,
-  };
+  if (override.perRestaurant) {
+    settings = { enabled: Boolean(override.enabled), everyRestaurant: false, restaurantIds: settings.restaurantIds };
+    return;
+  }
+  const { ids } = parseRestaurantAllowList(override.restaurantIds ?? '');
+  settings = { enabled: Boolean(override.enabled), everyRestaurant: ids.size === 0, restaurantIds: ids };
 };

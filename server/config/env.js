@@ -103,11 +103,8 @@ const schema = z.object({
   ORDER_APPROVAL_TIMEOUT_MINUTES: z.coerce.number().min(1).default(15),
   // Live customer activity + personalized offers (yulo_backend/LIVE_ACTIVITY_IMPLEMENTATION_PROMPTS.md).
   // Off by default: with it off, every existing endpoint, response and socket event is unchanged.
+  // With it on, a super admin still turns it on per restaurant (store page → Live customer activity).
   LIVE_ACTIVITY_ENABLED: envFlag(false),
-  // Pilot allow-list — comma-separated restaurant ids. Empty means every restaurant (when
-  // enabled). Ids that aren't valid ObjectIds are ignored with a startup warning
-  // (config/liveActivity.config.js).
-  LIVE_ACTIVITY_RESTAURANT_IDS: z.string().default(''),
   // Local-only: much shorter session timings so idle/abandoned can be walked through by hand.
   // Refused in production (below).
   LIVE_ACTIVITY_TEST_TIMINGS: envFlag(false),

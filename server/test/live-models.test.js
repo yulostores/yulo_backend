@@ -1,4 +1,4 @@
-// Live customer activity — A1: the feature switch and pilot allow-list, the shared clock, the
+// Live customer activity — A1: the feature switch and per-restaurant access, the shared clock, the
 // CustomerSession / ActivityEvent models and their indexes, the `shareActivity` preference with
 // opt-out, the one-time notice acknowledgement, the app-config signal and the local-only
 // shortened timings. In-memory MongoDB.
@@ -17,12 +17,16 @@ const { default: CustomerSession, sessionStatusFields, sessionExpiresAt } = awai
 );
 const { default: ActivityEvent, eventExpiresAt } = await import('../models/ActivityEvent.js');
 const { default: User } = await import('../models/User.js');
+const { default: Restaurant } = await import('../models/Restaurant.js');
+const { default: AdminActivityLog } = await import('../models/AdminActivityLog.js');
+const access = await import('../services/liveActivityAccess.service.js');
 const {
   ObjectId,
   authHeader: bearer,
   makeCustomer,
   makeGuest,
   makeLegacyCustomer,
+  makeRestaurant,
   makeSession: session,
 } = await import('../test-utils/liveFixtures.mjs');
 const DAY = 24 * 60 * 60 * 1000;
@@ -245,14 +249,13 @@ describe('preferences: shareActivity and the notice', () => {
   });
 });
 
-// ─── Switch, allow-list, clock, app config, timings ────────────────────────
+// ─── Switch, per-restaurant access, clock, app config, timings ────────────────────────
 
-describe('switch, allow-list, clock and timings', () => {
+describe('switch, per-restaurant access, clock and timings', () => {
   test('the feature is off by default', () => {
     // A fresh process with the variable unset, whatever this shell has exported.
     const env = { ...process.env, LOG_LEVEL: 'silent' };
     delete env.LIVE_ACTIVITY_ENABLED;
-    delete env.LIVE_ACTIVITY_RESTAURANT_IDS;
     const probe = spawnSync(
       process.execPath,
       [
@@ -268,25 +271,120 @@ describe('switch, allow-list, clock and timings', () => {
     assert.deepEqual(JSON.parse(probe.stdout.trim().split('\n').pop()), [false, false]);
   });
 
-  test('the allow-list: empty = all, contains, does not contain, invalid entries ignored', () => {
+  test('per-restaurant access: on only with the switch on AND the restaurant turned on', () => {
     const a = new ObjectId().toString();
     const b = new ObjectId().toString();
 
-    live.__setLiveActivityForTests({ enabled: true });
-    assert.equal(live.isLiveActivityEnabledFor(a), true, 'empty list allows every restaurant');
+    live.__setLiveActivityForTests({ enabled: true, perRestaurant: true });
+    live.setLiveActivityRestaurants([]);
+    assert.equal(live.isLiveActivityEnabledFor(a), false, 'no restaurant is on until an admin turns it on');
 
-    live.__setLiveActivityForTests({ enabled: true, restaurantIds: ` ${a.toUpperCase()} , not-an-id,` });
-    assert.equal(live.isLiveActivityEnabledFor(a), true, 'listed (case and spaces ignored)');
+    live.setLiveActivityRestaurants([a.toUpperCase()]);
+    assert.equal(live.isLiveActivityEnabledFor(a), true, 'turned on (case ignored)');
     assert.equal(live.isLiveActivityEnabledFor(new ObjectId(a)), true, 'ObjectId input works too');
-    assert.equal(live.isLiveActivityEnabledFor(b), false, 'not listed');
+    assert.equal(live.isLiveActivityEnabledFor(b), false, 'not turned on');
     assert.equal(live.isLiveActivityEnabledFor(null), false);
+
+    live.markLiveActivityRestaurant(b, true);
+    live.markLiveActivityRestaurant(a, false);
+    assert.deepEqual([live.isLiveActivityEnabledFor(a), live.isLiveActivityEnabledFor(b)], [false, true]);
+
+    live.__setLiveActivityForTests({ enabled: false, perRestaurant: true });
+    assert.equal(live.isLiveActivityEnabledFor(b), false, 'the switch beats the restaurant setting');
 
     const parsed = live.parseRestaurantAllowList(`${a},not-an-id,,${b}`);
     assert.deepEqual([...parsed.ids].sort(), [a, b].sort());
     assert.deepEqual(parsed.invalid, ['not-an-id']);
+  });
 
-    live.__setLiveActivityForTests({ enabled: false, restaurantIds: a });
-    assert.equal(live.isLiveActivityEnabledFor(a), false, 'the switch beats the list');
+  test('a super admin turns it on and off for a store: saved, audit-logged, applied at once', async () => {
+    live.__setLiveActivityForTests({ enabled: true, perRestaurant: true });
+    live.setLiveActivityRestaurants([]);
+    const { restaurant, owner } = await makeRestaurant();
+    const admin = await User.create({ name: 'Admin', email: 'admin@test.local', role: 'admin' });
+    const dashboard = () => srv.request('GET', `/api/owner/${restaurant._id}/live/sessions`, { headers: bearer(owner) });
+    const toggle = (body, who = admin, id = restaurant._id) =>
+      srv.request('PATCH', `/api/admin/stores/${id}/live-activity`, { body, headers: bearer(who) });
+    const storeView = async () => (await srv.request('GET', `/api/admin/stores/${restaurant._id}`, { headers: bearer(admin) })).body.data;
+
+    assert.equal((await dashboard()).status, 404, 'off until turned on');
+    assert.equal((await storeView()).store.liveActivityEnabled, false);
+    assert.deepEqual((await storeView()).liveActivity, { serverEnabled: true });
+
+    const on = await toggle({ enabled: true });
+    assert.equal(on.status, 200);
+    assert.deepEqual(on.body.data.liveActivity, { enabled: true, serverEnabled: true });
+    assert.equal((await dashboard()).status, 200, 'applied on this instance straight away');
+    assert.equal((await storeView()).store.liveActivityEnabled, true);
+    assert.equal((await Restaurant.findById(restaurant._id).select('+liveActivityEnabled').lean()).liveActivityEnabled, true);
+
+    // Another instance (an empty set here) picks it up on its next read.
+    live.setLiveActivityRestaurants([]);
+    await access.loadLiveActivityRestaurants();
+    assert.equal(live.isLiveActivityEnabledFor(restaurant._id), true);
+
+    // Turning it on again changes nothing and logs nothing new.
+    assert.equal((await toggle({ enabled: true })).status, 200);
+    const off = await toggle({ enabled: false });
+    assert.deepEqual(off.body.data.liveActivity, { enabled: false, serverEnabled: true });
+    assert.equal((await dashboard()).status, 404);
+    await access.loadLiveActivityRestaurants();
+    assert.equal(live.isLiveActivityEnabledFor(restaurant._id), false);
+
+    const logs = await AdminActivityLog.find({ targetId: restaurant._id }).sort({ _id: 1 }).lean();
+    assert.deepEqual(logs.map((l) => l.action), ['STORE_LIVE_ACTIVITY_ENABLED', 'STORE_LIVE_ACTIVITY_DISABLED']);
+    assert.ok(logs.every((l) => String(l.adminId) === String(admin._id)));
+
+    // Refused: a non-boolean, an extra field, an owner, an unknown store.
+    assert.equal((await toggle({ enabled: 'yes' })).status, 400);
+    assert.equal((await toggle({ enabled: true, ownerId: String(owner._id) })).status, 400);
+    assert.equal((await toggle({ enabled: true }, owner)).status, 403);
+    assert.equal((await toggle({ enabled: true }, admin, new ObjectId())).status, 404);
+    assert.equal(live.isLiveActivityEnabledFor(restaurant._id), false);
+  });
+
+  test('the setting never appears in existing restaurant responses, and owners cannot set it', async () => {
+    live.__setLiveActivityForTests({ enabled: true, perRestaurant: true });
+    const { restaurant, owner } = await makeRestaurant();
+    await Restaurant.updateOne({ _id: restaurant._id }, { $set: { liveActivityEnabled: true } });
+
+    const responses = [
+      await srv.request('GET', `/api/restaurants/${restaurant._id}`),
+      await srv.request('GET', `/api/owner/${restaurant._id}/restaurant`, { headers: bearer(owner) }),
+      await srv.request('GET', '/api/owner/restaurants', { headers: bearer(owner) }),
+    ];
+    for (const res of responses) {
+      assert.equal(res.status, 200);
+      assert.ok(!JSON.stringify(res.body).includes('liveActivityEnabled'), 'not in the response');
+    }
+
+    await Restaurant.updateOne({ _id: restaurant._id }, { $unset: { liveActivityEnabled: 1 } });
+    const patched = await srv.request('PATCH', `/api/owner/${restaurant._id}/restaurant`, {
+      body: { description: 'New', liveActivityEnabled: true },
+      headers: bearer(owner),
+    });
+    assert.equal(patched.status, 200);
+    assert.equal((await Restaurant.findById(restaurant._id).select('+liveActivityEnabled').lean()).liveActivityEnabled, undefined);
+  });
+
+  test('with the server switch off the store choice is kept but has no effect, and nothing is read', async () => {
+    live.__setLiveActivityForTests({ enabled: false, perRestaurant: true });
+    live.setLiveActivityRestaurants([]);
+    const { restaurant } = await makeRestaurant();
+    const admin = await User.create({ name: 'Admin', email: 'admin2@test.local', role: 'admin' });
+    const res = await srv.request('PATCH', `/api/admin/stores/${restaurant._id}/live-activity`, {
+      body: { enabled: true },
+      headers: bearer(admin),
+    });
+    assert.deepEqual(res.body.data.liveActivity, { enabled: true, serverEnabled: false });
+    assert.equal(live.isLiveActivityEnabledFor(restaurant._id), false);
+
+    live.setLiveActivityRestaurants([]);
+    await access.loadLiveActivityRestaurants();
+    live.__setLiveActivityForTests({ enabled: true, perRestaurant: true });
+    assert.equal(live.isLiveActivityEnabledFor(restaurant._id), false, 'the switch-off load read nothing');
+    await access.loadLiveActivityRestaurants();
+    assert.equal(live.isLiveActivityEnabledFor(restaurant._id), true, 'and it applies once the switch is on');
   });
 
   test('the clock can be moved for tests and restored', () => {

@@ -433,7 +433,7 @@ test('switch off: no live emits at all, and join_user acks DISABLED', async () =
   assert.deepEqual(await ask(customerSocket, 'join_user', { token: bearer(customer) }), { ok: false, code: 'DISABLED' });
   await disconnected(customerSocket);
 
-  // A pilot that excludes this restaurant: on for others, silent for it.
+  // On, but not for this restaurant: on for others, silent for it.
   live.__setLiveActivityForTests({ enabled: true, restaurantIds: String(new ObjectId()) });
   const other = await makeCustomer();
   ok(await call('GET', `/api/restaurants/${a.restaurant._id}`, other));
@@ -466,7 +466,7 @@ describe('no personal data in any payload', () => {
     assert.deepEqual(emitted.map((e) => e.payload), [{ sessionId: 's', data: { itemName: 'Naan' } }, { offerId: 'o' }]);
   });
 
-  test('the emit helpers themselves refuse while the switch (or the pilot list) is off', () => {
+  test('the emit helpers themselves refuse while the switch (or the restaurant setting) is off', () => {
     const restaurantId = String(new ObjectId());
     emitted.length = 0;
     live.__setLiveActivityForTests({ enabled: false, restaurantIds: '' });

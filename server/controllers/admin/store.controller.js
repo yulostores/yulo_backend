@@ -11,6 +11,8 @@ import { streamDocument } from '../../services/restaurantDocument.service.js';
 import { hashPassword } from '../../services/auth.service.js';
 import { geocodeAddress, resolveRestaurantCoordinates } from '../../services/geocode.service.js';
 import { STORE_STATUSES, shapeCounts } from '../../services/adminStats.service.js';
+import { setRestaurantLiveActivity } from '../../services/liveActivityAccess.service.js';
+import { isLiveActivityEnabled } from '../../config/liveActivity.config.js';
 import {
   effectiveField,
   getStoreSettingsField,
@@ -199,9 +201,34 @@ export const create = asyncHandler(async (req, res) => {
 });
 
 export const getOne = asyncHandler(async (req, res) => {
-  const store = await Restaurant.findById(req.params.id).populate('ownerId', 'name email phone').lean();
+  const store = await Restaurant.findById(req.params.id)
+    .select('+liveActivityEnabled')
+    .populate('ownerId', 'name email phone')
+    .lean();
   if (!store) throw new ApiError(404, 'NOT_FOUND', 'Store not found');
-  sendSuccess(res, 200, 'Store', { store });
+  // Live customer activity: this store's own switch (unset = off) and whether the server-wide
+  // LIVE_ACTIVITY_ENABLED is on, so the store page can say when a choice has no effect yet.
+  store.liveActivityEnabled = Boolean(store.liveActivityEnabled);
+  sendSuccess(res, 200, 'Store', { store, liveActivity: { serverEnabled: isLiveActivityEnabled() } });
+});
+
+// PATCH /api/admin/stores/:id/live-activity — turn live customer activity on or off for this
+// store (services/liveActivityAccess.service.js). Audit-logged.
+const liveActivitySchema = z.object({ enabled: z.boolean() }).strict();
+
+export const updateLiveActivity = asyncHandler(async (req, res) => {
+  const result = liveActivitySchema.safeParse(req.body ?? {});
+  if (!result.success) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'enabled must be true or false', result.error.flatten());
+  }
+  const liveActivity = await setRestaurantLiveActivity({
+    restaurantId: req.params.id,
+    enabled: result.data.enabled,
+    adminId: req.user._id,
+  });
+  sendSuccess(res, 200, liveActivity.enabled ? 'Live customer activity turned on' : 'Live customer activity turned off', {
+    liveActivity,
+  });
 });
 
 export const approve = asyncHandler(async (req, res) => {

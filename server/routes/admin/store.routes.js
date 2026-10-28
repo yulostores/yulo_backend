@@ -9,6 +9,7 @@ import {
   reactivate,
   update,
   updateLocation,
+  updateLiveActivity,
   addNote,
   verifyDocument,
   getDocumentFile,
@@ -35,6 +36,8 @@ router.patch('/:id/suspend', suspend);
 router.patch('/:id/reactivate', reactivate);
 // Before '/:id' so the literal segment is not swallowed by the parameterised route.
 router.patch('/:id/location', updateLocation);
+// Live customer activity for this store (on top of the server-wide LIVE_ACTIVITY_ENABLED).
+router.patch('/:id/live-activity', updateLiveActivity);
 // The store's settlement bank account: masked view, audit-logged reveal, verify / reject.
 router.get('/:id/payout-account', getPayoutAccount);
 router.post('/:id/payout-account/reveal', revealPayoutAccount);
