@@ -80,14 +80,23 @@ export const searchMenu = async (restaurantId, query, foodType) => {
 // Lightweight category jump-sheet (screen 15) — a separate, smaller shape from the full
 // menu payload (screen 14), but built from the same cached getMenu() call rather than a
 // fresh Category/SubCategory query.
-export const getMenuCategories = async (restaurantId) => {
+//
+// `foodType`, when one of the known values, counts only those items — the same narrowing
+// `/menu-items?foodType=` applies — so a section's "N items" agrees with what the app lists
+// under its Veg / Non-veg filter. Omitted (or unknown) it counts everything, as before.
+export const getMenuCategories = async (restaurantId, foodType) => {
+  const FOOD_TYPES = ['veg', 'non_veg', 'egg'];
+  const wantType = FOOD_TYPES.includes(foodType) ? foodType : null;
+  const count = (items = []) =>
+    wantType ? items.filter((item) => item.foodType === wantType).length : items.length;
+
   const menu = await getMenu(restaurantId);
   return menu.map((cat) => ({
     id: cat._id,
     name: cat.name,
     itemCount:
-      (cat.items?.length ?? 0) +
-      (cat.subCategories ?? []).reduce((sum, sub) => sum + (sub.items?.length ?? 0), 0),
+      count(cat.items) +
+      (cat.subCategories ?? []).reduce((sum, sub) => sum + count(sub.items), 0),
     subCategories: (cat.subCategories ?? []).map((sub) => ({ id: sub._id, name: sub.name })),
   }));
 };

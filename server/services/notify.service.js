@@ -34,6 +34,7 @@ export const notifyService = {
       // Restaurant-fulfillment toggles (screen 19) — the kitchen/restaurant needs these,
       // not the delivery partner (deliveryInstructions below is the partner-facing one).
       cookingRequests: order.cookingRequests,
+      cookingInstructions: order.cookingInstructions ?? '',
       extraCutlery: order.extraCutlery,
       status: order.status,
       paymentMethod: order.paymentMethod ?? null,
@@ -73,6 +74,7 @@ export const notifyService = {
       specialInstructions: order.specialInstructions,
       subtotal: order.subtotal,
       cookingRequests: order.cookingRequests,
+      cookingInstructions: order.cookingInstructions ?? '',
       extraCutlery: order.extraCutlery,
       status: order.status,
     };

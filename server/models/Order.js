@@ -135,6 +135,9 @@ const orderSchema = new mongoose.Schema(
     // Simple restaurant-fulfillment toggles (screen 19's chip buttons) — flow to the
     // kitchen via notify.service.js's newOrder payload, not the delivery partner.
     cookingRequests: { type: Boolean, default: false },
+    // What the cooking request actually is ("less spicy, no onion") — the toggle alone told
+    // the kitchen there was a request but not what it was. Empty for orders without one.
+    cookingInstructions: { type: String, default: '', trim: true, maxlength: 300 },
     extraCutlery: { type: Boolean, default: false },
     // A customer-chosen, opt-in, per-order delivery-ASSIGNMENT preference — distinct from
     // User.preferences.vegModeEnabled (menu-content filtering) and

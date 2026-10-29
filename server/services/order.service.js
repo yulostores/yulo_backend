@@ -279,6 +279,7 @@ const createOrderFromCartOnce = async ({
   addressId,
   deliveryInstructions = '',
   cookingRequests = false,
+  cookingInstructions = '',
   extraCutlery = false,
   tip = 0,
   vegFleetOptIn = false,
@@ -471,6 +472,9 @@ const createOrderFromCartOnce = async ({
       appliedDiscountId,
       deliveryInstructions,
       cookingRequests,
+      cookingInstructions,
+      // Text without the toggle still means there is a request.
+      ...(cookingInstructions ? { cookingRequests: true } : {}),
       extraCutlery,
       // The wire value is 'cod' | 'online'; the model stores the instrument ('cash' for COD)
       // plus the channel. COD reads as "cash to be collected on delivery" from the moment the

@@ -62,14 +62,18 @@ export const typeahead = async (q) => {
   ];
 };
 
-// Dedupes by exact query text (case-sensitive, trimmed) so re-searching something already
-// in the list moves it to the top instead of appearing twice, then trims back down to the
-// cap — two extra queries per write, acceptable at a 20-item ceiling.
+// Dedupes by query text, ignoring case (trimmed), so re-searching something already in the
+// list moves it to the top instead of appearing twice — "Pizza" and "pizza" are one entry —
+// then trims back down to the cap. Two extra queries per write, acceptable at a 20-item
+// ceiling.
 export const recordSearch = async (userId, query) => {
   const trimmed = query.trim();
   if (!trimmed) return;
 
-  await SearchHistory.deleteMany({ userId, query: trimmed });
+  await SearchHistory.deleteMany({
+    userId,
+    query: new RegExp(`^${escapeRegExp(trimmed)}$`, 'i'),
+  });
   await SearchHistory.create({ userId, query: trimmed });
 
   const excess = await SearchHistory.find({ userId })
@@ -82,8 +86,21 @@ export const recordSearch = async (userId, query) => {
   }
 };
 
-export const listRecentSearches = (userId) =>
-  SearchHistory.find({ userId }).sort({ createdAt: -1 }).limit(RECENT_SEARCH_CAP).lean();
+// Newest first, one entry per query ignoring case — history saved before recordSearch
+// deduped case-insensitively can still hold "Pizza" and "pizza"; the newer one is kept.
+export const listRecentSearches = async (userId) => {
+  const rows = await SearchHistory.find({ userId })
+    .sort({ createdAt: -1 })
+    .limit(RECENT_SEARCH_CAP)
+    .lean();
+  const seen = new Set();
+  return rows.filter((row) => {
+    const key = row.query.trim().toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
 
 export const removeRecentSearch = (userId, id) => SearchHistory.deleteOne({ _id: id, userId });
 

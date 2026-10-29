@@ -240,7 +240,7 @@ export const searchRestaurantMenu = asyncHandler(async (req, res) => {
 });
 
 export const getMenuCategories = asyncHandler(async (req, res) => {
-  const categories = await menuService.getMenuCategories(req.params.id);
+  const categories = await menuService.getMenuCategories(req.params.id, req.query.foodType);
   sendSuccess(res, 200, 'Menu categories', { categories });
 });
 
