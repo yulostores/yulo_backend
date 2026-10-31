@@ -150,7 +150,9 @@ const riderDelivers = async (orderId) => {
   ok(await req('POST', `/api/partner/orders/${orderId}/accept`, { headers: h.partner }));
   const otp = (await Order.findById(orderId).lean()).deliveryAssignment.pickupOtp;
   ok(await req('POST', `/api/partner/orders/${orderId}/verify-pickup`, { headers: h.partner, body: { otp } }));
-  ok(await req('POST', `/api/partner/orders/${orderId}/deliver`, { headers: h.partner, body: {} }));
+  // The customer reads their delivery code to the rider at the door.
+  const code = (await Order.findById(orderId).select('+deliveryAssignment.deliveryOtp').lean()).deliveryAssignment.deliveryOtp;
+  ok(await req('POST', `/api/partner/orders/${orderId}/deliver`, { headers: h.partner, body: { otp: code } }));
 };
 
 // A guest at a table: QR order → restaurant accepts → kitchen → served.

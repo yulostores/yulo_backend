@@ -145,7 +145,7 @@ async function buildEtaAndRoute(order, restaurant, partner) {
 }
 
 export const getOrderTracking = async (orderId, userId) => {
-  const order = await Order.findOne({ _id: orderId, userId }).lean();
+  const order = await Order.findOne({ _id: orderId, userId }).select('+deliveryAssignment.deliveryOtp').lean();
   if (!order) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
   if (order.type !== 'delivery') {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Only delivery orders can be tracked');
@@ -235,6 +235,10 @@ export const getOrderTracking = async (orderId, userId) => {
     // The tracking screen uses this alongside order.status to show finer-grained
     // copy ("Partner assigned, heading to restaurant" vs "On the way to you").
     assignmentStatus: order.deliveryAssignment?.status ?? 'unassigned',
+    // The code the customer reads to the rider at the door, while the rider has the food. The
+    // rider can't mark the order delivered without it.
+    deliveryOtp:
+      order.deliveryAssignment?.status === 'picked_up' ? order.deliveryAssignment?.deliveryOtp ?? null : null,
     etaMinutes,
     // 'here' when the number came from traffic-aware road routing, 'estimate' when it fell back
     // to straight-line distance. The app hedges its wording on this rather than presenting a

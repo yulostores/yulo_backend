@@ -272,10 +272,19 @@ export const checkout = asyncHandler(async (req, res) => {
 // Never the pickup OTP — the restaurant reads that to the rider at handover (owner and kitchen
 // order views, services/orderView.service.js) — nor the offer bookkeeping (offeredTo /
 // offerStatus / offerExpiresAt / history: other riders' rejections) or the rider's pay.
+// The delivery code IS the customer's: while the rider has the food (picked_up) it is shown so
+// they can read it out at the door — only on reads that selected it (getOrder; the tracking
+// service has its own copy). Gone once the order is delivered.
 const withCustomerDelivery = (order) => {
   if (order?.deliveryAssignment) {
-    const { partnerId, status, assignedAt, pickupOtpVerifiedAt } = order.deliveryAssignment;
-    order.deliveryAssignment = { partnerId, status, assignedAt, pickupOtpVerifiedAt };
+    const { partnerId, status, assignedAt, pickupOtpVerifiedAt, deliveryOtp } = order.deliveryAssignment;
+    order.deliveryAssignment = {
+      partnerId,
+      status,
+      assignedAt,
+      pickupOtpVerifiedAt,
+      deliveryOtp: status === 'picked_up' ? deliveryOtp ?? null : null,
+    };
   }
   return order;
 };
@@ -509,7 +518,9 @@ export const listOrders = asyncHandler(async (req, res) => {
 });
 
 export const getOrder = asyncHandler(async (req, res) => {
-  const order = await Order.findOne({ _id: req.params.id, userId: req.user._id }).lean();
+  const order = await Order.findOne({ _id: req.params.id, userId: req.user._id })
+    .select('+deliveryAssignment.deliveryOtp')
+    .lean();
   if (!order) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
 
   await attachRatings([order]);

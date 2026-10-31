@@ -67,9 +67,14 @@ test('the rider delivering counts once; the kitchen closing it out afterwards ad
   assert.equal(await totalOf(), 1);
 });
 
-test('the kitchen marking a delivery delivered counts it; with no rider assigned nothing is counted', async () => {
+test('support closing a rider\'s delivery counts it; the kitchen is refused; with no rider nothing is counted', async () => {
   const order = await outForDelivery();
-  await kitchenService.updateOrderStatus({ orderId: order._id, currentStatus: 'out_for_delivery', newStatus: 'delivered', actor: { role: 'chef' } });
+  await assert.rejects(
+    kitchenService.updateOrderStatus({ orderId: order._id, currentStatus: 'out_for_delivery', newStatus: 'delivered', actor: { role: 'chef' } }),
+    (err) => err.code === 'RIDER_CONFIRMS_DELIVERY'
+  );
+  assert.equal(await totalOf(), 0);
+  await kitchenService.updateOrderStatus({ orderId: order._id, currentStatus: 'out_for_delivery', newStatus: 'delivered', actor: { role: 'admin' } });
   assert.equal(await totalOf(), 1);
 
   const riderless = await outForDelivery({ partnerId: null, status: 'unassigned' });

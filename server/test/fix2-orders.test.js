@@ -197,6 +197,16 @@ test('customer cancel after preparation (confirmNoRefund) with a rider assigned:
   assert.equal((await Order.findById(orderId).lean()).status, 'cancelled');
 });
 
+test('pickup moves the order on even when the kitchen never pressed Ready', async () => {
+  for (const status of ['confirmed', 'preparing']) {
+    const { orderId, otp } = await assignedOrder(status);
+    ok(await pickup(orderId, otp));
+    const order = await Order.findById(orderId).lean();
+    assert.equal(order.status, 'out_for_delivery', `from ${status}`);
+    assert.equal(order.statusHistory.at(-1).byRole, 'delivery_partner');
+  }
+});
+
 test('cancelled after the rider collected the food: assignment failed, deliver refused', async () => {
   const { orderId, otp } = await assignedOrder('ready');
   ok(await pickup(orderId, otp));

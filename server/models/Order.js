@@ -50,7 +50,7 @@ const orderStatusHistorySchema = new mongoose.Schema(
     byStaffName: { type: String, default: null },
     byRole: {
       type: String,
-      enum: ['waiter', 'chef', 'owner', 'customer', 'guest', 'system', 'delivery_partner'],
+      enum: ['waiter', 'chef', 'owner', 'customer', 'guest', 'system', 'delivery_partner', 'admin'],
       default: 'system',
     },
   },
@@ -321,6 +321,15 @@ const orderSchema = new mongoose.Schema(
       // comment on getOrder in controllers/order.controller.js.
       pickupOtp: { type: String, default: null },
       pickupOtpVerifiedAt: { type: Date, default: null },
+      // The customer's code for the doorstep handover: created when the rider collects the food,
+      // shown only to the customer (GET /api/orders/:id and tracking), and required by the
+      // rider's "mark delivered". select:false so no restaurant, rider or admin view can carry
+      // it by accident — the two places that need it select it explicitly.
+      deliveryOtp: { type: String, default: null, select: false },
+      // Wrong codes entered so far; at DELIVERY_OTP_MAX_ATTEMPTS the rider is locked out and
+      // support closes the order (PATCH /api/admin/orders/:id/mark-delivered).
+      deliveryOtpAttempts: { type: Number, default: 0 },
+      deliveryOtpVerifiedAt: { type: Date, default: null },
       // When this delivery was added to the rider's totalDeliveries — set once, atomically, so
       // a delivery confirmed from both the rider app and the kitchen is counted once
       // (deliveryAssignment.service.js countCompletedDelivery).

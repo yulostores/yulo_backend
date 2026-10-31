@@ -141,6 +141,21 @@ export const updateOrderStatus = async ({ orderId, currentStatus, newStatus, sta
     throw new ApiError(409, ORDER_AWAITING_APPROVAL, 'This order is waiting for the restaurant to accept it');
   }
 
+  // Once a rider holds a delivery order, it is closed by the rider entering the customer's
+  // delivery code (or by Yulo support, PATCH /api/admin/orders/:id/mark-delivered) — never by the
+  // restaurant, which isn't at the door. A kitchen "Delivered" tap used to close it with no proof
+  // the customer got anything.
+  if (newStatus === 'delivered' && !['admin', 'system'].includes(actor?.role ?? 'system')) {
+    const target = await Order.findById(orderId).select('type deliveryAssignment.status').lean();
+    if (target?.type === 'delivery' && ['assigned', 'picked_up'].includes(target.deliveryAssignment?.status)) {
+      throw new ApiError(
+        409,
+        'RIDER_CONFIRMS_DELIVERY',
+        'A rider is delivering this order — it is marked delivered when they enter the customer’s code'
+      );
+    }
+  }
+
   // A dine-in round can't be cancelled while its table's bill is held for an online payment —
   // the guest would pay for food that is no longer on the bill (billing.service.js).
   if (newStatus === 'cancelled') {

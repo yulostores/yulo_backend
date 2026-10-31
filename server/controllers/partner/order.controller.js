@@ -37,6 +37,12 @@ const assertOrderBelongsToPartner = (order, partnerId) => {
 };
 
 const generatePickupOtp = () => String(crypto.randomInt(0, 10_000)).padStart(4, '0');
+// Same shape as the pickup code — four digits the customer reads out at the door.
+const generateDeliveryOtp = generatePickupOtp;
+
+// Wrong delivery codes a rider may enter before the order is locked to support. Enough for a
+// misheard digit or two; few enough that guessing 4 digits is hopeless.
+export const DELIVERY_OTP_MAX_ATTEMPTS = 5;
 
 // Not security-critical for a 4-digit code (an attacker within a few requests either way isn't
 // meaningfully slowed down), but a plain `===` on user input invites the habit — cheap to do
@@ -289,7 +295,15 @@ export const verifyPickup = asyncHandler(async (req, res) => {
       'deliveryAssignment.status': 'assigned',
       'deliveryAssignment.partnerId': req.partner._id,
     },
-    { $set: { 'deliveryAssignment.status': 'picked_up', 'deliveryAssignment.pickupOtpVerifiedAt': pickedUpAt } }
+    {
+      $set: {
+        'deliveryAssignment.status': 'picked_up',
+        'deliveryAssignment.pickupOtpVerifiedAt': pickedUpAt,
+        // The doorstep code starts to exist only now, when there is food on its way to hand over.
+        'deliveryAssignment.deliveryOtp': generateDeliveryOtp(),
+        'deliveryAssignment.deliveryOtpAttempts': 0,
+      },
+    }
   );
   if (!picked.modifiedCount) await refuseChangedOrder(order._id);
   order.deliveryAssignment.status = 'picked_up';
@@ -299,8 +313,10 @@ export const verifyPickup = asyncHandler(async (req, res) => {
   // The verified pickup OTP is the handoff itself, so it moves the order on to
   // 'out_for_delivery'. Before, only the kitchen's "Out for Delivery" button did — when the
   // chef didn't press it, the customer kept seeing "Ready for pickup" while the food was on
-  // its way. Conditional on 'ready': a kitchen that already pressed the button (or a
-  // cancellation) wins, and the history entry is written once.
+  // its way. From 'confirmed'/'preparing' too: a kitchen that never pressed "Ready" left the
+  // customer reading "Preparing" for the whole ride, and the verified OTP already proves the
+  // food left the counter. Conditional: a kitchen that already moved it on (or a cancellation)
+  // wins, and the history entry is written once.
   const historyEntry = {
     status: 'out_for_delivery',
     at: pickedUpAt,
@@ -308,7 +324,7 @@ export const verifyPickup = asyncHandler(async (req, res) => {
     byRole: 'delivery_partner',
   };
   const handedOff = await Order.updateOne(
-    { _id: order._id, status: 'ready' },
+    { _id: order._id, status: { $in: ['confirmed', 'preparing', 'ready'] } },
     { $set: { status: 'out_for_delivery' }, $push: { statusHistory: historyEntry } }
   );
   if (handedOff.modifiedCount) {
@@ -324,6 +340,9 @@ export const verifyPickup = asyncHandler(async (req, res) => {
 // slip of the finger (or a crafted request) can't put an absurd figure into cash-in-hand.
 const MAX_COD_COLLECTED = 100_000;
 const deliverSchema = z.object({
+  // The customer's delivery code (shown in their app). Required for every order picked up since
+  // delivery codes exist; an order collected before then has none and isn't asked for one.
+  otp: z.string().regex(/^\d{4}$/, 'Enter the 4-digit code from the customer').optional(),
   codCollected: z
     .number()
     .min(0)
@@ -337,9 +356,9 @@ export const deliverOrder = asyncHandler(async (req, res) => {
   if (!result.success) {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid delivery confirmation', result.error.flatten());
   }
-  const { codCollected } = result.data;
+  const { codCollected, otp } = result.data;
 
-  const found = await Order.findById(req.params.orderId);
+  const found = await Order.findById(req.params.orderId).select('+deliveryAssignment.deliveryOtp');
   if (!found) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
   assertNotCancelled(found, req.partner._id);
   assertOrderBelongsToPartner(found, req.partner._id);
@@ -351,6 +370,39 @@ export const deliverOrder = asyncHandler(async (req, res) => {
       `Cannot deliver from status '${found.deliveryAssignment.status}'`
     );
   }
+  // The doorstep code: proof the customer was there to take the order.
+  const expectedOtp = found.deliveryAssignment.deliveryOtp;
+  if (expectedOtp) {
+    if ((found.deliveryAssignment.deliveryOtpAttempts ?? 0) >= DELIVERY_OTP_MAX_ATTEMPTS) {
+      throw new ApiError(
+        423,
+        'DELIVERY_OTP_LOCKED',
+        'Too many wrong codes. Call support to close this delivery.'
+      );
+    }
+    if (!otp) {
+      throw new ApiError(400, 'DELIVERY_OTP_REQUIRED', 'Ask the customer for their 4-digit delivery code');
+    }
+    if (!otpMatches(otp, expectedOtp)) {
+      const after = await Order.findOneAndUpdate(
+        { _id: found._id },
+        { $inc: { 'deliveryAssignment.deliveryOtpAttempts': 1 } },
+        { new: true, projection: { 'deliveryAssignment.deliveryOtpAttempts': 1 } }
+      ).lean();
+      const left = Math.max(0, DELIVERY_OTP_MAX_ATTEMPTS - (after?.deliveryAssignment?.deliveryOtpAttempts ?? DELIVERY_OTP_MAX_ATTEMPTS));
+      if (left === 0) {
+        throw new ApiError(
+          423,
+          'DELIVERY_OTP_LOCKED',
+          'Too many wrong codes. Call support to close this delivery.'
+        );
+      }
+      throw new ApiError(400, 'INVALID_OTP', `Incorrect delivery code — ${left} ${left === 1 ? 'try' : 'tries'} left`, {
+        attemptsLeft: left,
+      });
+    }
+  }
+
   const isCod = found.paymentMethod === 'cash';
   if (isCod && codCollected === undefined) {
     throw new ApiError(400, 'VALIDATION_ERROR', 'codCollected is required for COD orders');
@@ -372,7 +424,12 @@ export const deliverOrder = asyncHandler(async (req, res) => {
       'deliveryAssignment.status': 'picked_up',
       'deliveryAssignment.partnerId': req.partner._id,
     },
-    { $set: { 'deliveryAssignment.status': 'delivered' } },
+    {
+      $set: {
+        'deliveryAssignment.status': 'delivered',
+        ...(expectedOtp ? { 'deliveryAssignment.deliveryOtpVerifiedAt': new Date() } : {}),
+      },
+    },
     { new: true }
   );
   if (!order) await refuseChangedOrder(found._id);

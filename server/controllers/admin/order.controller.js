@@ -125,3 +125,55 @@ export const cancelOrder = asyncHandler(async (req, res) => {
 
   sendSuccess(res, 200, 'Order cancelled', { order: withoutInternalMoney(order) });
 });
+
+const markDeliveredSchema = z.object({ reason: z.string().trim().min(3).max(300) });
+
+// PATCH /api/admin/orders/:id/mark-delivered { reason } — support closing a delivery the rider
+// can't: the customer can't be reached for their delivery code, or the rider was locked out after
+// too many wrong codes. The order goes through updateOrderStatus like every other delivery, so
+// the bill, the restaurant's credit and the rider's delivery count follow exactly as if the rider
+// had entered the code; the reason is kept in the activity log.
+export const markDelivered = asyncHandler(async (req, res) => {
+  const result = markDeliveredSchema.safeParse(req.body ?? {});
+  if (!result.success) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'A reason (3–300 characters) is required', result.error.flatten());
+  }
+  const { reason } = result.data;
+  if (!mongoose.isValidObjectId(req.params.id)) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid order id');
+
+  const current = await Order.findById(req.params.id).select('status type deliveryAssignment.status').lean();
+  if (!current) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
+  if (current.type !== 'delivery' || current.deliveryAssignment?.status !== 'picked_up') {
+    throw new ApiError(
+      409,
+      'ORDER_NOT_DELIVERABLE',
+      'Only a delivery order the rider has already collected can be marked delivered'
+    );
+  }
+
+  let order;
+  try {
+    order = await updateOrderStatus({
+      orderId: current._id,
+      currentStatus: current.status,
+      newStatus: 'delivered',
+      actor: { role: 'admin', staffName: req.user.name || 'Yulo support' },
+      reason,
+    });
+  } catch (err) {
+    if (['CONCURRENT_UPDATE', 'INVALID_TRANSITION'].includes(err.code)) {
+      throw new ApiError(409, 'ORDER_NOT_DELIVERABLE', 'The order was just updated — refresh and try again');
+    }
+    throw err;
+  }
+
+  await logActivity({
+    adminId: req.user._id,
+    action: 'ORDER_MARKED_DELIVERED',
+    targetType: 'order',
+    targetId: order._id,
+    metadata: { reason, previousStatus: current.status, partnerId: order.deliveryAssignment?.partnerId ?? null },
+  });
+
+  sendSuccess(res, 200, 'Order marked delivered', { order: withoutInternalMoney(order) });
+});

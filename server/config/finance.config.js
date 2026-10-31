@@ -6,8 +6,9 @@ import { env } from './env.js';
 
 export const maxConcurrentOrdersPerPartner = env.DELIVERY_PARTNER_MAX_CONCURRENT_ORDERS;
 // How long a partner has to accept/reject a pushed order offer before it's treated as missed
-// and re-offered to the next candidate — matches the Delivery-Partner app's ~18-22s countdown
-// (see Delivery-Partner/src/mocks/fixtures.js's mockOrders.countdownSeconds).
+// and re-offered to the next candidate. The rider app counts down to the server's expiry, so
+// this is the only place the length lives. 45s by default: at 20s a rider whose phone was locked
+// in a pocket usually reached the offer after it had already lapsed.
 export const offerWindowSeconds = env.DELIVERY_OFFER_WINDOW_SECONDS;
 
 // Suggested delivery-tip amounts (rupees) shown on the checkout page. A plain constant,

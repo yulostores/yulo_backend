@@ -169,7 +169,8 @@ test('chef status-update response carries no financials / Razorpay fee', async (
     phone: '9000000001',
   });
   const headers = { authorization: `Bearer ${generateStaffToken(chef._id, 'chef', restaurant._id, 0)}` };
-  const order = await pricedOrder();
+  // A delivery the restaurant runs itself (no Yulo rider) — the kitchen may close that one.
+  const order = await pricedOrder({ fields: { deliveryAssignment: { partnerId: null, status: 'unassigned' } } });
   const res = await srv.request('PATCH', `/api/staff/${restaurant._id}/kitchen/orders/${order._id}/status`, {
     headers,
     body: { newStatus: 'delivered' },

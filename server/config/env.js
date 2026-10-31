@@ -82,7 +82,7 @@ const schema = z.object({
   CART_PLATFORM_FEE: z.coerce.number().min(0).optional(), // → customerPlatformFee
   CART_TAX_PERCENT: z.coerce.number().min(0).max(100).optional(), // → foodGstPercent
   DELIVERY_PARTNER_MAX_CONCURRENT_ORDERS: z.coerce.number().default(1),
-  DELIVERY_OFFER_WINDOW_SECONDS: z.coerce.number().default(20),
+  DELIVERY_OFFER_WINDOW_SECONDS: z.coerce.number().default(45),
   MESSAGECENTRAL_CUSTOMER_ID: z.string().optional(),
   MESSAGECENTRAL_KEY: z.string().optional(),
   MESSAGECENTRAL_EMAIL: z.string().email().optional(),

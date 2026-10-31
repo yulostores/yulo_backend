@@ -106,12 +106,14 @@ const paidOnlineOrder = async (overrides = {}) => {
   });
 };
 
+// The non-rider delivered path (updateOrderStatus). A rider holds these orders, so only Yulo
+// support may close one this way — the kitchen is refused (RIDER_CONFIRMS_DELIVERY).
 const deliverViaKitchen = (order) =>
   kitchenService.updateOrderStatus({
     orderId: order._id,
     currentStatus: 'out_for_delivery',
     newStatus: 'delivered',
-    actor: { role: 'chef' },
+    actor: { role: 'admin' },
   });
 
 // ── Orders ────────────────────────────────────────────────────────────────────
