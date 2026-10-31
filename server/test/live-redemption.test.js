@@ -214,6 +214,24 @@ describe('apply-offer', () => {
     assert.equal((await offerNow(offer)).offerStatus, 'viewed');
   });
 
+  test('a promo code can be taken off the cart; removing it leaves a personal offer alone', async () => {
+    const f = await setup();
+    await Discount.create({ restaurantId: f.restaurant._id, offerName: 'Code', type: 'flat_amount', flatAmount: 20, code: 'TWENTY', status: 'active' });
+    await add(f.customer, f.paneer, 2);
+    assert.equal(ok(await call('POST', '/api/cart/apply-promo', f.customer, { code: 'TWENTY' })).bill.discountAmount, 20);
+    assert.equal(ok(await call('GET', '/api/cart', f.customer)).bill.appliedCode, 'TWENTY', 'a later read still names the code');
+    const removed = ok(await call('DELETE', '/api/cart/promo', f.customer));
+    assert.equal(removed.bill.discountAmount, 0);
+    assert.equal(removed.bill.appliedCode, null);
+    assert.equal(removed.cart.appliedDiscountId ?? null, null);
+
+    const offer = await makeOffer(f);
+    ok(await applyOffer(f.customer, offer));
+    const kept = ok(await call('DELETE', '/api/cart/promo', f.customer));
+    assert.equal(String(kept.cart.appliedDiscountId), String(offer._id), 'DELETE /promo never drops a personal offer');
+    assert.equal(kept.bill.appliedCode, null, 'a personal offer has no code to show');
+  });
+
   test('guests can\'t apply; with the switch off every offer route is a plain 404', async () => {
     const f = await setup();
     const guest = await makeGuest();
@@ -374,8 +392,9 @@ describe('GET /api/offers/mine and viewed', () => {
     assert.equal(offers[2].status, 'applied');
     assert.deepEqual(offers[1].restaurant, { id: String(other.restaurant._id), name: 'Tandoor House' });
     assert.deepEqual(Object.keys(offers[0]).sort(), [
-      'applicableItems', 'expiresAt', 'flatAmount', 'id', 'maxDiscountAmount', 'minimumOrderValue', 'percentage', 'restaurant', 'status', 'title', 'type',
+      'applicableItemNames', 'applicableItems', 'expiresAt', 'flatAmount', 'id', 'maxDiscountAmount', 'minimumOrderValue', 'percentage', 'restaurant', 'status', 'title', 'type',
     ]);
+    assert.deepEqual(offers[0].applicableItemNames, []);
     assert.ok(offers.slice(0, 2).every((o) => o.status === 'delivered'));
     const stored = await offerNow(newer);
     assert.equal(stored.offerStatus, 'delivered');
@@ -387,6 +406,16 @@ describe('GET /api/offers/mine and viewed', () => {
     assert.equal((await offerNow(newer)).offerStatus, 'applied');
 
     assert.deepEqual(ok(await call('GET', '/api/offers/mine', await makeGuest())).offers, []);
+  });
+
+  test('a dish-only offer names its dishes, in the list and once viewed', async () => {
+    const f = await setup();
+    const naanOnly = await makeOffer(f, { applicableItems: [f.naan._id] });
+    const { offers } = ok(await call('GET', '/api/offers/mine', f.customer));
+    assert.deepEqual(offers[0].applicableItems, [String(f.naan._id)]);
+    assert.deepEqual(offers[0].applicableItemNames, [f.naan.name]);
+    const viewed = ok(await call('POST', `/api/offers/${naanOnly._id}/viewed`, f.customer));
+    assert.deepEqual(viewed.offer.applicableItemNames, [f.naan.name]);
   });
 
   test('viewed: once (one event), idempotent after; another user\'s offer → 404', async () => {

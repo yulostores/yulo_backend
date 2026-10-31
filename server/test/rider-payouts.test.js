@@ -116,6 +116,26 @@ test('a paid payout is never recomputed or adjusted; the current week and monthl
   assert.match(monthlyPay.skipped[0].reason, /statements/);
 });
 
+test('deductions can take a rider\'s week to zero but never below it', async () => {
+  const at = lastWeekMidpoint();
+  await delivered(at, { basePay: 20, tip: 10 });
+  await delivered(at, { basePay: 20 });
+  const payout = await payoutService.ensurePayoutForPeriod(partner._id, 'weekly', at);
+  assert.equal(payout.netPayable, 50);
+
+  const tooMuch = await srv.request('PATCH', `/api/admin/delivery-partners/${partner._id}/payouts/${payout._id}`, {
+    headers: adminHeaders(),
+    body: { incentives: 5, deductions: 500 },
+  });
+  assert.equal(tooMuch.status, 400, JSON.stringify(tooMuch.body));
+  assert.equal(tooMuch.body.code, 'DEDUCTION_EXCEEDS_EARNINGS');
+  assert.match(tooMuch.body.message, /₹55\.00/, 'names the most that can be deducted');
+  assert.equal((await Payout.findById(payout._id).lean()).netPayable, 50, 'nothing saved');
+
+  const toZero = await payoutService.adjustPayout(payout._id, { incentives: 5, deductions: 55, adjustedBy: admin._id });
+  assert.equal(toZero.netPayable, 0);
+});
+
 test('weekly and monthly rows starting the same day do not collide; platform total counts weekly only', async () => {
   // Monday 1 June 2026 (IST) starts both a week and a month.
   const at = new Date('2026-06-02T06:00:00Z');

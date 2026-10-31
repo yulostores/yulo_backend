@@ -231,7 +231,19 @@ export const adjustPayout = async (payoutId, { incentives, deductions, notes, ad
   if (incentives !== undefined) payout.incentives = incentives;
   if (deductions !== undefined) payout.deductions = deductions;
   if (notes !== undefined) payout.notes = notes;
-  payout.netPayable = round2(payout.grossEarnings + (payout.tips ?? 0) + payout.incentives - payout.deductions);
+  const netPayable = round2(payout.grossEarnings + (payout.tips ?? 0) + payout.incentives - payout.deductions);
+  // A rider's week can't go below zero: unlike a restaurant statement there is no carry-forward,
+  // so a negative week was simply "paid" as negative and the rest of the deduction was lost
+  // (and the platform's rider spend understated by it).
+  if (netPayable < 0) {
+    const maxDeduction = round2(payout.grossEarnings + (payout.tips ?? 0) + payout.incentives);
+    throw new ApiError(
+      400,
+      'DEDUCTION_EXCEEDS_EARNINGS',
+      `Deductions can't be more than this week's earnings — at most ₹${maxDeduction.toFixed(2)}`
+    );
+  }
+  payout.netPayable = netPayable;
   payout.adjustedBy = adjustedBy;
 
   await payout.save();

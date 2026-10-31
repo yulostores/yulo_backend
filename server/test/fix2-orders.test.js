@@ -204,6 +204,26 @@ test('cancelled after the rider collected the food: assignment failed, deliver r
   await assertReleased(orderId, null, { expectedAssignment: 'failed' });
 });
 
+test('the rider\'s verified pickup moves a ready order to out_for_delivery, once', async () => {
+  const { orderId, otp } = await assignedOrder('ready');
+  ok(await pickup(orderId, otp));
+  const order = await Order.findById(orderId).lean();
+  assert.equal(order.status, 'out_for_delivery');
+  assert.equal(order.deliveryAssignment.status, 'picked_up');
+  const handoffs = order.statusHistory.filter((e) => e.status === 'out_for_delivery');
+  assert.equal(handoffs.length, 1);
+  assert.equal(handoffs[0].byRole, 'delivery_partner');
+
+  // The kitchen got there first: pickup leaves its status and history alone.
+  const second = await assignedOrder('ready');
+  ok(await chef(second.orderId, 'out_for_delivery'));
+  ok(await pickup(second.orderId, second.otp));
+  const after = await Order.findById(second.orderId).lean();
+  assert.equal(after.status, 'out_for_delivery');
+  assert.equal(after.statusHistory.filter((e) => e.status === 'out_for_delivery').length, 1);
+  assert.equal(after.statusHistory.at(-1).byRole, 'chef');
+});
+
 test('a pending offer is withdrawn on cancel; accepting it afterwards is refused', async () => {
   const orderId = await checkoutAndPay();
   await accept(orderId);

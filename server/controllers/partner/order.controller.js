@@ -296,6 +296,27 @@ export const verifyPickup = asyncHandler(async (req, res) => {
   order.deliveryAssignment.pickupOtpVerifiedAt = pickedUpAt;
   notifyService.deliveryAssignmentUpdated(order, req.partner);
 
+  // The verified pickup OTP is the handoff itself, so it moves the order on to
+  // 'out_for_delivery'. Before, only the kitchen's "Out for Delivery" button did — when the
+  // chef didn't press it, the customer kept seeing "Ready for pickup" while the food was on
+  // its way. Conditional on 'ready': a kitchen that already pressed the button (or a
+  // cancellation) wins, and the history entry is written once.
+  const historyEntry = {
+    status: 'out_for_delivery',
+    at: pickedUpAt,
+    byStaffName: req.partner.fullName ?? null,
+    byRole: 'delivery_partner',
+  };
+  const handedOff = await Order.updateOne(
+    { _id: order._id, status: 'ready' },
+    { $set: { status: 'out_for_delivery' }, $push: { statusHistory: historyEntry } }
+  );
+  if (handedOff.modifiedCount) {
+    order.status = 'out_for_delivery';
+    order.statusHistory.push(historyEntry);
+    notifyService.orderStatusUpdated(order);
+  }
+
   sendSuccess(res, 200, 'Pickup confirmed', { order: withoutInternalMoney(order) });
 });
 

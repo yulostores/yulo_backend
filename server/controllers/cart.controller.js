@@ -74,6 +74,11 @@ export const removeOffer = asyncHandler(async (req, res) => {
   sendSuccess(res, 200, 'Offer removed', { cart, bill });
 });
 
+export const removePromo = asyncHandler(async (req, res) => {
+  const { cart, bill } = await cartService.removePromo(req.user._id);
+  sendSuccess(res, 200, 'Promo removed', { cart, bill });
+});
+
 export const applyPromo = asyncHandler(async (req, res) => {
   const { cart, bill } = await cartService.applyPromo(req.user._id, req.body.code);
   sendSuccess(res, 200, 'Promo applied', { cart, bill });

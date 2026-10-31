@@ -18,6 +18,8 @@ import RestaurantLedgerEntry from '../models/RestaurantLedgerEntry.js';
 import Order from '../models/Order.js';
 import Bill from '../models/Bill.js';
 import Restaurant from '../models/Restaurant.js';
+import User from '../models/User.js';
+import DeliveryPartner from '../models/DeliveryPartner.js';
 import { nextSequence } from '../models/Counter.js';
 import * as uploadService from './upload.service.js';
 import { streamDocument } from './restaurantDocument.service.js';
@@ -501,9 +503,51 @@ export const ownerTicketView = async (t, { full = false, linkedRecord } = {}) =>
  * Admin view. Lists mask the contact phone; the detail (`full`) shows it so support can call.
  * Attachments never carry the storage URL.
  */
+// Who raised the ticket and the order it is about, for the admin detail view only (`full`):
+// the ticket stores bare ids, so support could see neither who to call back nor what was
+// ordered — "one butter naan was missing" with no order or customer attached.
+const raiserOf = async (t) => {
+  if (t.raisedByType === 'customer') {
+    const u = await User.findById(t.raisedBy).select('name phone email').lean();
+    return u ? { name: u.name || null, phone: u.phone ?? null, email: u.email ?? null } : null;
+  }
+  if (t.raisedByType === 'delivery_partner') {
+    const d = await DeliveryPartner.findById(t.raisedBy).select('fullName phone').lean();
+    return d ? { name: d.fullName ?? null, phone: d.phone ?? null, email: null } : null;
+  }
+  if (t.raisedByType === 'owner') {
+    const u = await User.findById(t.raisedBy).select('name phone email').lean();
+    return u ? { name: u.name || null, phone: u.phone ?? null, email: u.email ?? null } : null;
+  }
+  return null;
+};
+const orderSummaryOf = async (orderId) => {
+  if (!orderId) return null;
+  const o = await Order.findById(orderId)
+    .select('restaurantId type status paymentStatus refundStatus grandTotal items createdAt deliveredAt')
+    .lean();
+  if (!o) return null;
+  const restaurant = await Restaurant.findById(o.restaurantId).select('name').lean();
+  return {
+    _id: o._id,
+    ref: String(o._id).slice(-6).toUpperCase(),
+    restaurant: restaurant ? { _id: restaurant._id, name: restaurant.name } : null,
+    type: o.type,
+    status: o.status,
+    paymentStatus: o.paymentStatus,
+    refundStatus: o.refundStatus,
+    grandTotal: o.grandTotal,
+    items: (o.items ?? []).map((i) => ({ name: i.name, quantity: i.quantity })),
+    createdAt: o.createdAt,
+    deliveredAt: o.deliveredAt ?? null,
+  };
+};
+
 export const adminTicketView = async (t, { full = false } = {}) => {
+  const [raisedByUser, order] = full ? await Promise.all([raiserOf(t), orderSummaryOf(t.orderId)]) : [undefined, undefined];
   const base = {
     ...t,
+    ...(full ? { raisedByUser, order } : {}),
     status: normaliseStatus(t.status),
     contactPhone: t.contactPhone ? (full ? t.contactPhone : maskPhone(t.contactPhone)) : null,
     attachments: (t.attachments ?? []).map(attachmentView),

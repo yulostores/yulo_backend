@@ -1,4 +1,5 @@
 import MenuItem from '../../models/MenuItem.js';
+import Category from '../../models/Category.js';
 import * as uploadService from '../../services/upload.service.js';
 import * as menuService from '../../services/menu.service.js';
 import { ApiError } from '../../utils/ApiError.js';
@@ -18,9 +19,47 @@ const parseArrayField = (raw) => {
   try { return JSON.parse(raw); } catch { return [raw]; }
 };
 
+// Prices are what customers are charged, so they are checked here rather than trusted from
+// the form: an MRP must be a real positive amount, and a "discounted" price must be a real
+// discount — positive and not above the MRP. A discount above the MRP was accepted before,
+// and the customer was charged it (₹300 for a ₹280-MRP dish). An empty discount means none.
+const parsePrice = (raw, label) => {
+  const n = Number(raw);
+  if (raw === '' || raw == null || !Number.isFinite(n) || n <= 0) {
+    throw new ApiError(400, 'VALIDATION_ERROR', `${label} must be a positive amount`);
+  }
+  return Math.round(n * 100) / 100;
+};
+const parseDiscount = (raw) => (raw === '' || raw == null || raw === 'null' ? null : parsePrice(raw, 'Discounted price'));
+const assertDiscountWithinMrp = (sellingPrice, discountedPrice) => {
+  if (discountedPrice != null && discountedPrice > sellingPrice) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Discounted price cannot be more than the selling price (MRP)');
+  }
+};
+
+// The item's category has to be one of this restaurant's own.
+const assertOwnCategory = async (restaurantId, categoryId) => {
+  if (!categoryId || !(await Category.exists({ _id: categoryId, restaurantId }))) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Choose one of your own menu categories');
+  }
+};
+
+// What the owner's item form may change. The update used to $set the whole request body, so
+// any field could be written — restaurantId included, moving an item into another
+// restaurant's menu.
+const EDITABLE_FIELDS = [
+  'name', 'description', 'foodType', 'sellingPrice', 'discountedPrice', 'categoryId',
+  'subCategoryId', 'prepTime', 'ingredients', 'badges', 'vegVariantId',
+];
+
 export const create = asyncHandler(async (req, res) => {
   const { name, description, foodType, sellingPrice, discountedPrice, categoryId,
     subCategoryId, prepTime, ingredients, badges, vegVariantId } = req.body;
+
+  const price = parsePrice(sellingPrice, 'Selling price');
+  const discount = parseDiscount(discountedPrice);
+  assertDiscountWithinMrp(price, discount);
+  await assertOwnCategory(req.restaurant._id, categoryId);
 
   const itemData = {
     restaurantId: req.restaurant._id,
@@ -29,8 +68,8 @@ export const create = asyncHandler(async (req, res) => {
     name,
     description,
     foodType,
-    sellingPrice: Number(sellingPrice),
-    discountedPrice: discountedPrice != null ? Number(discountedPrice) : null,
+    sellingPrice: price,
+    discountedPrice: discount,
     prepTime: prepTime != null ? Number(prepTime) : undefined,
     ingredients: parseArrayField(ingredients),
     badges: parseArrayField(badges),
@@ -80,9 +119,17 @@ export const update = asyncHandler(async (req, res) => {
   }).lean();
   if (!existing) throw new ApiError(404, 'NOT_FOUND', 'Menu item not found');
 
-  const updates = { ...req.body };
-  if (updates.sellingPrice != null) updates.sellingPrice = Number(updates.sellingPrice);
-  if (updates.discountedPrice != null) updates.discountedPrice = Number(updates.discountedPrice);
+  const updates = Object.fromEntries(
+    EDITABLE_FIELDS.filter((key) => req.body[key] !== undefined).map((key) => [key, req.body[key]])
+  );
+  if (updates.sellingPrice !== undefined) updates.sellingPrice = parsePrice(updates.sellingPrice, 'Selling price');
+  if (updates.discountedPrice !== undefined) updates.discountedPrice = parseDiscount(updates.discountedPrice);
+  assertDiscountWithinMrp(
+    updates.sellingPrice ?? existing.sellingPrice,
+    updates.discountedPrice !== undefined ? updates.discountedPrice : existing.discountedPrice
+  );
+  if (updates.categoryId !== undefined) await assertOwnCategory(req.restaurant._id, updates.categoryId);
+  if (updates.subCategoryId === '') updates.subCategoryId = null;
   if (updates.prepTime != null) updates.prepTime = Number(updates.prepTime);
   if (updates.ingredients != null) updates.ingredients = parseArrayField(updates.ingredients);
   if (updates.badges != null) updates.badges = parseArrayField(updates.badges);

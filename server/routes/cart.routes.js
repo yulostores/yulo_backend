@@ -14,6 +14,7 @@ import {
   applyPromo,
   applyOffer,
   removeOffer,
+  removePromo,
 } from '../controllers/cart.controller.js';
 
 const router = Router();
@@ -56,6 +57,7 @@ router.patch('/items/:lineItemId', validate(updateItemSchema), updateItem);
 router.delete('/items/:lineItemId', removeItem);
 router.delete('/', clearCart);
 router.post('/apply-promo', validate(applyPromoSchema), applyPromo);
+router.delete('/promo', removePromo);
 router.post('/apply-offer', liveActivityOnly, requireCustomerAccount, validate(applyOfferSchema), applyOffer);
 router.delete('/offer', liveActivityOnly, removeOffer);
 

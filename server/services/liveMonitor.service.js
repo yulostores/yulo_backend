@@ -3,6 +3,8 @@ import Order from '../models/Order.js';
 import TableSession from '../models/TableSession.js';
 import CustomerSession from '../models/CustomerSession.js';
 import { redis } from '../config/redis.js';
+import { dayBounds } from '../utils/week.js';
+import { now } from '../utils/clock.js';
 import { LIST_LIMITS, OPEN_SESSION_STATUSES, isLiveActivityEnabledFor } from '../config/liveActivity.config.js';
 import { displayNameFor, liveSessionScope } from './activity.service.js';
 import { toSessionRow } from './liveSession.serializer.js';
@@ -36,14 +38,22 @@ export const getActiveVisitors = async (restaurantId) => {
   return { visitors, count: visitors.length };
 };
 
-export const getStats = async (restaurantId) => {
-  const today = new Date().toISOString().slice(0, 10);
+// Today's GMV is read from the orders themselves — the food value of today's paid, uncancelled
+// orders, the same figure as the owner dashboard's "Revenue" for today, so the two screens agree.
+// It used to be a Redis counter nothing ever incremented, so it always read ₹0. The day is
+// India's, not the server's UTC one.
+export const getStats = async (restaurantId, at = now()) => {
+  const rid = new mongoose.Types.ObjectId(restaurantId);
+  const { start } = dayBounds(at, { timezone: 'Asia/Kolkata' });
 
-  const [openSessions, pendingOrders, countRaw, gmvRaw] = await Promise.all([
+  const [openSessions, pendingOrders, countRaw, gmvRows] = await Promise.all([
     TableSession.countDocuments({ restaurantId, status: 'open' }),
     Order.countDocuments({ restaurantId, status: { $in: ['placed', 'confirmed', 'preparing'] } }),
     redis ? redis.get(`live:count:${restaurantId}`) : null,
-    redis ? redis.get(`live:gmv:${restaurantId}:${today}`) : null,
+    Order.aggregate([
+      { $match: { restaurantId: rid, paymentStatus: 'paid', status: { $ne: 'cancelled' }, createdAt: { $gte: start } } },
+      { $group: { _id: null, total: { $sum: '$subtotal' } } },
+    ]),
   ]);
 
   return {
@@ -51,16 +61,8 @@ export const getStats = async (restaurantId) => {
     openSessions,
     pendingOrders,
     activeVisitors: parseInt(countRaw, 10) || 0,
-    gmv: parseFloat(gmvRaw) || 0,
+    gmv: Math.round((gmvRows[0]?.total ?? 0) * 100) / 100,
   };
-};
-
-export const updateGMV = async (restaurantId, amount) => {
-  const today = new Date().toISOString().slice(0, 10);
-  if (!redis) return;
-  const key = `live:gmv:${restaurantId}:${today}`;
-  await redis.incrbyfloat(key, amount);
-  await redis.expire(key, 86400);
 };
 
 // Customers with more than one order here: first name and order count only — never email or

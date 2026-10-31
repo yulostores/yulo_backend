@@ -525,7 +525,9 @@ export const getMetrics = async (restaurantId, range = 'today', at = now()) => {
 // ─── Customer side ─────────────────────────────────────────────────────────
 
 /** An offer as its customer sees it — whitelisted; nothing about the owner or the session. */
-const toCustomerOfferView = (offer, restaurantName) => ({
+// `applicableItemNames` lets the app say which dishes a dish-only offer covers ("25% off Butter
+// Naan") — the ids alone left it reading as an offer on the whole order.
+const toCustomerOfferView = (offer, restaurantName, dishName = new Map()) => ({
   id: String(offer._id),
   restaurant: { id: String(offer.restaurantId), name: restaurantName ?? null },
   title: offer.offerName,
@@ -535,9 +537,18 @@ const toCustomerOfferView = (offer, restaurantName) => ({
   maxDiscountAmount: offer.maxDiscountAmount ?? null,
   minimumOrderValue: offer.minimumOrderValue ?? 0,
   applicableItems: (offer.applicableItems ?? []).map(String),
+  applicableItemNames: (offer.applicableItems ?? []).map((id) => dishName.get(String(id))).filter(Boolean),
   status: offer.offerStatus,
   expiresAt: iso(offer.endDate),
 });
+
+/** Names of the dishes these offers are limited to, in one read: id → name. */
+const dishNamesFor = async (offers) => {
+  const ids = [...new Set(offers.flatMap((o) => (o.applicableItems ?? []).map(String)))];
+  if (ids.length === 0) return new Map();
+  const items = await MenuItem.find({ _id: { $in: ids } }).select('name').lean();
+  return new Map(items.map((item) => [String(item._id), item.name]));
+};
 
 /**
  * The customer's open personal offers that haven't run out, newest first. Fetching them is
@@ -554,8 +565,9 @@ export const listMyOffers = async (user, at = now()) => {
   if (rows.length === 0) return [];
 
   const sent = rows.filter((o) => o.offerStatus === 'sent').map((o) => o._id);
-  const [restaurants] = await Promise.all([
+  const [restaurants, dishName] = await Promise.all([
     Restaurant.find({ _id: { $in: rows.map((o) => o.restaurantId) } }).select('name').lean(),
+    dishNamesFor(rows),
     sent.length
       ? Discount.updateMany({ _id: { $in: sent }, offerStatus: 'sent' }, { $set: { offerStatus: 'delivered', deliveredAt: at } })
       : null,
@@ -567,7 +579,8 @@ export const listMyOffers = async (user, at = now()) => {
   return rows.map((offer) =>
     toCustomerOfferView(
       offer.offerStatus === 'sent' ? { ...offer, offerStatus: 'delivered' } : offer,
-      nameOf.get(String(offer.restaurantId))
+      nameOf.get(String(offer.restaurantId)),
+      dishName
     )
   );
 };
@@ -590,8 +603,11 @@ export const markOfferViewed = async (user, offerId, at = now()) => {
   );
   const offer = updated ?? mine;
   if (updated) await publishOffer(updated, { at });
-  const restaurant = await Restaurant.findById(offer.restaurantId).select('name').lean();
-  return { offer: toCustomerOfferView(offer, restaurant?.name), firstView: Boolean(updated) };
+  const [restaurant, dishName] = await Promise.all([
+    Restaurant.findById(offer.restaurantId).select('name').lean(),
+    dishNamesFor([offer]),
+  ]);
+  return { offer: toCustomerOfferView(offer, restaurant?.name, dishName), firstView: Boolean(updated) };
 };
 
 // ─── Cancellation ──────────────────────────────────────────────────────────

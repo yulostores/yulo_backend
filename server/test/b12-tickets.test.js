@@ -266,6 +266,26 @@ test('admin queue: kind=payment filter, per-status counts, masked phone in the l
   assert.equal(byLegacy.body.data.total, 1);
 });
 
+test('admin ticket detail names the customer and summarises the linked order; the list does not', async () => {
+  const order = await Order.collection.insertOne({
+    restaurantId: restA._id, userId: customer._id, type: 'delivery', status: 'delivered',
+    paymentStatus: 'paid', grandTotal: 321, items: [{ name: 'Butter Naan', quantity: 2, price: 40 }],
+    createdAt: new Date(), deliveredAt: new Date(),
+  });
+  const ticket = await SupportTicket.create({
+    raisedByType: 'customer', raisedBy: customer._id, orderId: order.insertedId,
+    subject: 'Wrong or missing items', description: 'One naan missing', category: 'wrong_missing_items',
+  });
+  const detail = (await srv.get(`/api/admin/tickets/${ticket._id}`, asAdmin())).body.data.ticket;
+  assert.deepEqual(detail.raisedByUser, { name: 'Asha', phone: '9876543210', email: null });
+  assert.equal(detail.order.ref, String(order.insertedId).slice(-6).toUpperCase());
+  assert.equal(detail.order.restaurant.name, restA.name);
+  assert.equal(detail.order.grandTotal, 321);
+  assert.deepEqual(detail.order.items, [{ name: 'Butter Naan', quantity: 2 }]);
+  const listed = (await srv.get('/api/admin/tickets', asAdmin())).body.data.tickets.find((x) => String(x._id) === String(ticket._id));
+  assert.equal('raisedByUser' in listed, false, 'the list stays light');
+});
+
 test('attachments: owner report and admin reply, type and size checked, streamed not linked', async () => {
   const pdf = { bytes: Buffer.from('%PDF-1.4 fake'), type: 'application/pdf', name: 'bank-statement-5-12-oct.pdf' };
   const res = await multipart(

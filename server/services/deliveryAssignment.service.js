@@ -12,7 +12,7 @@ import { getIO } from '../socket.js';
 import { notifyService } from './notify.service.js';
 import { pushToPartner, PUSH_CHANNELS } from './push.service.js';
 import logger from '../utils/logger.js';
-import { computeDropKm, computePickupKm, isLocationFresh, LOCATION_FRESHNESS_SECONDS } from './geo.service.js';
+import { computeDropKm, computePickupKm, estimateEtaMinutes, isLocationFresh, LOCATION_FRESHNESS_SECONDS } from './geo.service.js';
 import { formatAddress as formatPostalAddress } from './geocode.service.js';
 
 // How long a strict veg-fleet-only search runs before the customer is asked to decide
@@ -218,10 +218,12 @@ export const buildOfferPayload = async (order, candidate, { offerExpiresAt = ord
         .filter(Boolean)
         .join(', ') || null,
     customerLandmark: order.deliveryAddress?.landmark || null,
-    // Still no real routing/ETA engine (straight-line distance ≠ travel time) — see the
-    // geo.service.js file comment on why that's a separate, larger capability than this step adds.
-    customerEtaMin: null,
-    pickupEtaMin: null,
+    // The same straight-line estimate the customer's "Arriving in about N mins" uses
+    // (geo.service.js estimateEtaMinutes) — these were hard-coded null, so the rider's
+    // navigation screens read "ETA · —" on every order. pickup: rider → restaurant (only with
+    // a fresh ping, like pickupKm); customer: the restaurant → customer leg.
+    customerEtaMin: estimateEtaMinutes(dropKm),
+    pickupEtaMin: estimateEtaMinutes(pickupKm),
     offerExpiresAt,
     // What is actually left of the window — an offer reopened from a notification or on return
     // to the app must not restart a full countdown on an offer that lapses sooner.

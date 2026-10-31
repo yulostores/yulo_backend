@@ -159,8 +159,13 @@ export const computeBill = async (cart, restaurant, { dropCoordinates } = {}) =>
 
   let discountAmount = 0;
   let offerIssue = null;
+  // The applied coupon's code, so the app can name it — and offer Remove — after a restart.
+  // Only the cart's own state remembered it, and the app kept it in memory; reopened, the cart
+  // still took the discount off while showing "Apply coupon". Null for a personal offer.
+  let appliedCode = null;
   if (cart.appliedDiscountId) {
     const discount = await Discount.findById(cart.appliedDiscountId).lean();
+    if (discount && discount.kind !== 'personal') appliedCode = discount.code ?? null;
     // Re-validated on every read, not just at apply-time — if items were removed since
     // and the cart no longer meets minimumOrderValue (or the discount has since expired),
     // it silently stops applying rather than showing a stale total. appliedDiscountId is
@@ -211,6 +216,7 @@ export const computeBill = async (cart, restaurant, { dropCoordinates } = {}) =>
     charges,
     deliveryIssue: issue,
     ...(offerIssue ?? {}),
+    appliedCode,
   };
 };
 
@@ -480,6 +486,21 @@ export const applyOffer = async (userId, offerId, at = now()) => {
 };
 
 /** Takes the personal offer off the cart (back to `viewed`); a promo code is left alone. */
+// The customer takes a coupon (a public promo code) back off their cart. Before this there was
+// no way to: DELETE /offer only clears personal offers, so a code once applied stayed until the
+// cart was emptied. A personal offer on the cart is left alone — it has its own route above.
+export const removePromo = async (userId) => {
+  const cart = await getOrCreateCart(userId);
+  if (cart.appliedDiscountId) {
+    const applied = await Discount.findById(cart.appliedDiscountId).select('kind').lean();
+    if (applied?.kind !== 'personal') {
+      cart.appliedDiscountId = null;
+      await cart.save();
+    }
+  }
+  return buildCartResponse(cart);
+};
+
 export const removeOffer = async (userId) => {
   const cart = await getOrCreateCart(userId);
   const appliedId = cart.appliedDiscountId;
