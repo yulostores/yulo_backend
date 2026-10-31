@@ -220,8 +220,16 @@ export const updateSettings = asyncHandler(async (req, res) => {
     // miss leaves the existing coordinates alone rather than failing the whole save.
     // Geocode the merged address, not the patch: "12 Main Road" on its own rarely
     // resolves, "12 Main Road, Delhi, 110001" does.
-    const coords = await geocodeAddress(mergedAddress);
-    if (coords) patch.location = { type: 'Point', coordinates: coords };
+    // Only when the address actually changed: the settings form sends the address on every
+    // save, and re-geocoding an unchanged one would replace a point the owner pinned with
+    // "Use my current location" by the geocoder's rougher guess.
+    const addressChanged = ['street', 'city', 'state', 'pincode'].some(
+      (key) => String(mergedAddress[key] ?? '').trim() !== String(existingAddress[key] ?? '').trim()
+    );
+    if (addressChanged || addressIsStringified) {
+      const coords = await geocodeAddress(mergedAddress);
+      if (coords) patch.location = { type: 'Point', coordinates: coords };
+    }
   }
   const settingsPatch = {};
   for (const key of ['legalEntityType', 'ownerName', 'panNumber', 'gstNumber', 'healthPermitId', 'registrationNo']) {

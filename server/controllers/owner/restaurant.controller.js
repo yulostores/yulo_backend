@@ -1,5 +1,5 @@
 import Restaurant from '../../models/Restaurant.js';
-import { geocodeAddress, resolveRestaurantCoordinates } from '../../services/geocode.service.js';
+import { geocodeAddress, isUsableCoordinatePair, resolveRestaurantCoordinates } from '../../services/geocode.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
@@ -66,6 +66,17 @@ export const updateRestaurant = asyncHandler(async (req, res) => {
   const updates = {};
   for (const key of allowed) {
     if (req.body[key] !== undefined) updates[key] = req.body[key];
+  }
+
+  // An explicit point — the owner's "Use my current location" in store settings. Checked here
+  // because it goes straight onto the 2dsphere index: a malformed pair would fail the write
+  // obscurely, and [0, 0] would quietly drop the restaurant off the map.
+  if (updates.location !== undefined) {
+    const coordinates = updates.location?.coordinates?.map(Number);
+    if (!isUsableCoordinatePair(coordinates)) {
+      throw new ApiError(400, 'VALIDATION_ERROR', 'location.coordinates must be [longitude, latitude]');
+    }
+    updates.location = { type: 'Point', coordinates };
   }
 
   // Address moved but no explicit point supplied — re-geocode so location doesn't keep
