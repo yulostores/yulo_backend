@@ -11,6 +11,7 @@ import { listRefunds, retryRefund } from '../../controllers/admin/refund.control
 import * as settlements from '../../controllers/admin/settlement.controller.js';
 import * as payoutBatches from '../../controllers/admin/payoutBatch.controller.js';
 import * as payouts from '../../controllers/admin/payout.controller.js';
+import * as moneyReport from '../../controllers/admin/moneyReport.controller.js';
 
 const router = Router();
 
@@ -39,6 +40,12 @@ router.get('/refunds', listRefunds);
 router.post('/refunds/:orderId/retry', retryRefund);
 
 // Weekly restaurant settlements. Literal paths before '/:id'.
+// Orders & Money and the Weekly Report (services/moneyReport.service.js).
+router.get('/money', moneyReport.money);
+router.get('/weekly-report', moneyReport.weekly);
+router.post('/weekly-report/restaurants/:settlementId/mark-paid', moneyReport.payRestaurant);
+router.post('/weekly-report/riders/:payoutId/mark-paid', moneyReport.payRider);
+
 router.get('/settlements', settlements.list);
 router.post('/settlements/generate', settlements.generate);
 router.post('/settlements/adjustments', settlements.adjust);
@@ -54,6 +61,7 @@ router.patch('/settlements/:id/carry-forward', payoutBatches.carryForward);
 
 // Restaurant Payouts (B12): the screens' reads and the manual lifecycle — schedule → release →
 // mark paid / mark failed → reschedule; hold / update reason / release hold. Literal paths first.
+router.get('/payouts/live', moneyReport.live);
 router.get('/payouts/weekly', payouts.weekly);
 router.get('/payouts/clearance', payouts.clearance);
 router.get('/payouts/history', payouts.history);
