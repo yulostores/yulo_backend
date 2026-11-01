@@ -375,6 +375,9 @@ export const weeklyReport = async ({ weekStart, now = new Date() } = {}) => {
       restaurant: { _id: s.restaurantId, name: r?.name ?? null },
       orders: s.entryCount ?? 0,
       netPayablePaise: s.totals?.netPayable ?? 0,
+      // What the week left the restaurant owing Yulo (counter dues, refund fees beyond its
+      // earnings) — moved to next week's statement, so netPayable shows 0.
+      carriedForwardPaise: s.totals?.carryForwardOut ?? 0,
       status: s.status,
       transfer: { status: t.status, label: t.label, paidAt: t.paidAt, reference: t.bankReference },
       holdReason: s.holdReason ?? null,
@@ -386,7 +389,9 @@ export const weeklyReport = async ({ weekStart, now = new Date() } = {}) => {
       canMarkPaid: ['draft', 'approved', 'processing'].includes(s.status) && (s.totals?.netPayable ?? 0) > 0 && weekEnded,
     };
   });
-  const riderRows = payouts.map((p) => {
+  // Riders with nothing for the week (no deliveries, ₹0) are left out: the old "Clear Pending
+  // Payments" marked every rider's row paid, ₹0 ones included, which read as "10 paid · ₹0".
+  const riderRows = payouts.filter((p) => (p.deliveriesCount ?? 0) > 0 || Math.abs(p.netPayable ?? 0) > 0).map((p) => {
     const partner = pMap.get(String(p.partnerId));
     return {
       payoutId: p._id,
@@ -407,9 +412,12 @@ export const weeklyReport = async ({ weekStart, now = new Date() } = {}) => {
   });
 
   const sum = (list, key) => list.reduce((n, r) => n + (r[key] ?? 0), 0);
-  const restaurantsPaid = restaurantRows.filter((r) => r.transfer.status === 'paid');
+  const restaurantsPaid = restaurantRows.filter((r) => r.transfer.status === 'paid' && r.netPayablePaise > 0);
+  // A week whose counter dues / refund fees outweigh its earnings: nothing to pay — the balance is
+  // owed to Yulo and carried into the next statement.
+  const restaurantsOwing = restaurantRows.filter((r) => r.netPayablePaise < 0 || r.holdReason === 'NEGATIVE_BALANCE_CARRIED_FORWARD');
   const restaurantsOwed = restaurantRows.filter((r) => r.transfer.status !== 'paid' && r.netPayablePaise > 0 && r.status !== 'carried_forward');
-  const ridersPaid = riderRows.filter((r) => r.status === 'paid');
+  const ridersPaid = riderRows.filter((r) => r.status === 'paid' && r.netPayablePaise > 0);
   const ridersOwed = riderRows.filter((r) => r.status !== 'paid' && r.netPayablePaise > 0);
 
   return {
@@ -425,6 +433,9 @@ export const weeklyReport = async ({ weekStart, now = new Date() } = {}) => {
         owedCount: restaurantsOwed.length,
         paidPaise: sum(restaurantsPaid, 'netPayablePaise'),
         paidCount: restaurantsPaid.length,
+        owesYuloPaise: restaurantsOwing.reduce((n, r) => n + r.carriedForwardPaise + Math.max(0, -r.netPayablePaise), 0),
+        owesYuloCount: restaurantsOwing.length,
+        statements: restaurantRows.length,
       },
       riders: {
         owedPaise: sum(ridersOwed, 'netPayablePaise'),

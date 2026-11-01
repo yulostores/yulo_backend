@@ -310,3 +310,27 @@ test('Payouts → Live: this week\'s orders show per restaurant as they happen, 
   assert.equal(live.latest.length, 2);
   assert.equal((await srv.get('/api/admin/finance/payouts/live', h.owner)).status, 403);
 });
+
+test('Weekly Report: ₹0 riders are not listed or counted; a restaurant owing Yulo is shown as such', async () => {
+  const lastWeek = new Date(Date.now() - 8 * DAY);
+  const { weekBounds } = await import('../utils/week.js');
+  const { start, end } = weekBounds(lastWeek, { timezone: 'Asia/Kolkata', weekStartsOn: 'monday' });
+  // A rider with no deliveries whose ₹0 row the old "Clear Pending Payments" marked paid.
+  const idle = await DeliveryPartner.create({ phone: '9222222222', fullName: 'Idle Rider', status: 'active', verificationStatus: 'approved' });
+  await Payout.create({ partnerId: idle._id, periodType: 'weekly', periodStart: start, periodEnd: end, perDeliveryRate: 20, netPayable: 0, status: 'paid', paidAt: new Date() });
+  // The restaurant's only money that week: platform fee owed on a counter-paid bill.
+  await RestaurantLedgerEntry.create({
+    restaurantId: restaurant._id, type: 'counter_platform_fee', direction: 'debit', amountPaise: 1242,
+    eligibleAt: new Date(start.getTime() + DAY), clearsAt: new Date(start.getTime() + DAY), note: 'counter bill',
+  });
+  await generateWeeklySettlements(lastWeek);
+
+  const report = ok(await srv.get(`/api/admin/finance/weekly-report?weekStart=${lastWeek.toISOString()}`, h.admin));
+  assert.equal(report.riders.length, 0, 'the ₹0 rider is not listed');
+  assert.equal(report.summary.riders.paidCount, 0);
+  assert.equal(report.summary.restaurants.owedPaise, 0);
+  assert.equal(report.summary.restaurants.owesYuloCount, 1);
+  assert.equal(report.summary.restaurants.owesYuloPaise, 1242);
+  assert.equal(report.restaurants[0].carriedForwardPaise, 1242);
+  assert.equal(report.restaurants[0].canMarkPaid, false);
+});
