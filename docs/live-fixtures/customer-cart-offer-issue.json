@@ -18,8 +18,8 @@
           "foodType": "veg",
           "selectedOptions": [],
           "_id": "<id>",
-          "image": null,
-          "resolvedOptions": []
+          "resolvedOptions": [],
+          "image": null
         }
       ],
       "restaurantId": "<id>",
@@ -53,6 +53,7 @@
         "delivery": {
           "pending": false,
           "distanceKm": 1,
+          "measuredKm": 1,
           "base": 800,
           "gst": 144,
           "total": 944,

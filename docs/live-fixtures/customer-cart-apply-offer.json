@@ -65,6 +65,7 @@
         "delivery": {
           "pending": false,
           "distanceKm": 1,
+          "measuredKm": 1,
           "base": 800,
           "gst": 144,
           "total": 944,

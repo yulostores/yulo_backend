@@ -334,3 +334,17 @@ test('Weekly Report: ₹0 riders are not listed or counted; a restaurant owing Y
   assert.equal(report.restaurants[0].carriedForwardPaise, 1242);
   assert.equal(report.restaurants[0].canMarkPaid, false);
 });
+
+test('rider pay uses the distance frozen at checkout, even if the restaurant pin moves afterwards', async () => {
+  const orderId = await checkoutAndPay();
+  const placed = await Order.findById(orderId).lean();
+  assert.ok(placed.charges.delivery.measuredKm > 0, 'the exact distance is stored at checkout');
+  await accept(orderId);
+  // The owner re-pins the restaurant ~1,300 km away before a rider accepts (the production case).
+  await Restaurant.updateOne({ _id: restaurant._id }, { $set: { 'location.coordinates': [85.36734, 23.99885] } });
+  await riderAccepts(orderId);
+  const e = (await Order.findById(orderId).lean()).deliveryAssignment.earningsBreakdown;
+  assert.equal(e.distanceKm, placed.charges.delivery.measuredKm);
+  assert.ok(e.distanceKm < 10, `paid for ${e.distanceKm} km, not the moved pin`);
+  assert.ok(e.basePay + e.distancePay < 100);
+});

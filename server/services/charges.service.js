@@ -132,6 +132,9 @@ export const computeCustomerCharges = ({
       delivery = {
         pending: false,
         distanceKm: chargedKm,
+        // The straight-line distance as measured (chargedKm is it rounded up for pricing) — what
+        // the rider is paid for (deliveryAssignment.service.js computeRiderEarningsBreakdown).
+        measuredKm: Number(Number(distanceKm).toFixed(1)),
         base,
         gst,
         total: base + gst,

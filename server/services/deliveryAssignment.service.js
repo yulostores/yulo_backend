@@ -131,8 +131,25 @@ export const countCompletedDelivery = async (orderId) => {
 };
 
 export const computeRiderEarningsBreakdown = async (order) => {
-  const restaurant = await Restaurant.findById(order.restaurantId).select('location').lean();
-  const distanceKm = computeDropKm(restaurant, order);
+  // The distance the customer was charged delivery for, frozen on the order at checkout — the same
+  // trip the rider is paid for. Re-measuring from the restaurant's CURRENT pin made the two
+  // disagree whenever the pin moved after the order was placed: one address edit turned a 4 km
+  // delivery into 1,343 km and ₹8,065 of rider pay. Measured afresh only for orders priced before
+  // the distance was frozen.
+  // measuredKm is the exact distance; distanceKm the rounded-up one the fee was priced on (orders
+  // placed before measuredKm was stored).
+  const delivery = order.charges?.delivery;
+  const frozen = [delivery?.measuredKm, delivery?.distanceKm]
+    .filter((km) => km != null)
+    .map(Number)
+    .find((km) => Number.isFinite(km) && km >= 0);
+  let distanceKm;
+  if (frozen != null && delivery?.pending !== true) {
+    distanceKm = frozen;
+  } else {
+    const restaurant = await Restaurant.findById(order.restaurantId).select('location').lean();
+    distanceKm = computeDropKm(restaurant, order);
+  }
   const tipPaise = order.charges?.tip ?? toPaise(order.tip ?? 0);
   const pay = computeRiderPay({ distanceKm, tipPaise, settings: await getActiveSettings() });
   return {
