@@ -438,7 +438,8 @@ export const weeklyReport = async ({ weekStart, now = new Date() } = {}) => {
   // A week whose counter dues / refund fees outweigh its earnings: nothing to pay — the balance is
   // owed to Yulo and carried into the next statement.
   const restaurantsOwing = restaurantRows.filter((r) => r.netPayablePaise < 0 || r.holdReason === 'NEGATIVE_BALANCE_CARRIED_FORWARD');
-  const restaurantsOwed = restaurantRows.filter((r) => !r.live && r.transfer.status !== 'paid' && r.netPayablePaise > 0 && r.status !== 'carried_forward');
+  // Running restaurants (no statement yet) count too, at what they have earned so far — like riders.
+  const restaurantsOwed = restaurantRows.filter((r) => r.transfer.status !== 'paid' && r.netPayablePaise > 0 && r.status !== 'carried_forward');
   const ridersPaid = riderRows.filter((r) => r.status === 'paid' && r.netPayablePaise > 0);
   const ridersOwed = riderRows.filter((r) => r.status !== 'paid' && r.netPayablePaise > 0);
 
