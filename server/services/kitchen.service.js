@@ -2,7 +2,7 @@ import Order from '../models/Order.js';
 import { ApiError } from '../utils/ApiError.js';
 import { notifyService } from './notify.service.js';
 import { assertRoundCancellable, createOrderBill } from './billing.service.js';
-import { autoAssign, countCompletedDelivery, keepWaitingForVegFleet, releaseAssignmentForCancelledOrder } from './deliveryAssignment.service.js';
+import { autoAssign, countCompletedDelivery, freeRiderIfIdle, keepWaitingForVegFleet, releaseAssignmentForCancelledOrder } from './deliveryAssignment.service.js';
 import { enrichOrders } from './orderView.service.js';
 import { onOrderCancelled } from './refund.service.js';
 import { onOrderDelivered } from './ledger.service.js';
@@ -304,7 +304,11 @@ export const updateOrderStatus = async ({ orderId, currentStatus, newStatus, sta
     await createOrderBill(order);
     // The restaurant's credit for an order paid online (services/ledger.service.js).
     await onOrderDelivered(order);
-    if (order.type === 'delivery') await countCompletedDelivery(order._id);
+    if (order.type === 'delivery') {
+      await countCompletedDelivery(order._id);
+      // Closed by support (or a restaurant's own delivery): the rider it was assigned to is free again.
+      await freeRiderIfIdle(order.deliveryAssignment?.partnerId);
+    }
   }
 
   notifyService.orderStatusUpdated(order);

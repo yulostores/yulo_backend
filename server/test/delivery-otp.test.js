@@ -240,6 +240,8 @@ test('support closes a delivery the rider could not: reason required, logged, cr
   const log = await AdminActivityLog.findOne({ action: 'ORDER_MARKED_DELIVERED' }).lean();
   assert.equal(log.metadata.reason, 'Customer phone off, left with security');
 
+  assert.equal((await DeliveryPartner.findById(partner._id).lean()).status, 'active', 'the rider is free for new offers again');
+
   const again = await req('PATCH', path, { headers: h.admin, body: { reason: 'twice' } });
   assert.equal(again.status, 409);
   assert.equal((await deliver(orderId, { otp: '1234' })).status, 400, 'the rider can no longer deliver it');

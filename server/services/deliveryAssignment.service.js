@@ -100,6 +100,20 @@ const rankCandidates = async (restaurant, { requireFleetType } = {}) => {
  * report the same delivery — the rider's deliver, the kitchen marking it delivered — it is
  * counted exactly once. A delivery with no rider assigned is not counted.
  */
+/**
+ * Frees a rider an order was holding at their concurrency limit (busy → active). The rider's own
+ * deliver and a cancellation did this inline; an order closed any other way (Yulo support's "Mark
+ * delivered", the kitchen) left the rider 'busy' for good — no new offers, and duty.controller.js
+ * refuses any status change while busy. Query-gated: a no-op unless they are busy and now under
+ * the limit.
+ */
+export const freeRiderIfIdle = async (partnerId) => {
+  if (!partnerId) return;
+  if ((await countActiveAssignments(partnerId)) < maxConcurrentOrdersPerPartner) {
+    await DeliveryPartner.updateOne({ _id: partnerId, status: 'busy' }, { $set: { status: 'active' } });
+  }
+};
+
 export const countCompletedDelivery = async (orderId) => {
   const claimed = await Order.findOneAndUpdate(
     {
