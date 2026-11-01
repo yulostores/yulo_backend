@@ -411,12 +411,34 @@ export const weeklyReport = async ({ weekStart, now = new Date() } = {}) => {
     };
   });
 
+  // Restaurants with orders this week but no statement yet (the week is running, or Monday's run
+  // hasn't happened): shown live from their orders so the table is never empty while money moves.
+  const live = await liveWeek({ weekStart: start, now });
+  const withStatement = new Set(restaurantRows.map((r) => String(r.restaurant._id)));
+  for (const g of live.restaurants) {
+    if (withStatement.has(String(g.restaurant?._id))) continue;
+    restaurantRows.push({
+      settlementId: null,
+      live: true,
+      restaurant: g.restaurant,
+      orders: g.orders,
+      netPayablePaise: g.earnedPaise,
+      projectedPaise: g.projectedPaise,
+      carriedForwardPaise: 0,
+      status: 'live',
+      transfer: { status: 'not_scheduled', label: 'In progress', paidAt: null, reference: null },
+      holdReason: null,
+      account: { verified: true, label: null },
+      canMarkPaid: false,
+    });
+  }
+
   const sum = (list, key) => list.reduce((n, r) => n + (r[key] ?? 0), 0);
   const restaurantsPaid = restaurantRows.filter((r) => r.transfer.status === 'paid' && r.netPayablePaise > 0);
   // A week whose counter dues / refund fees outweigh its earnings: nothing to pay — the balance is
   // owed to Yulo and carried into the next statement.
   const restaurantsOwing = restaurantRows.filter((r) => r.netPayablePaise < 0 || r.holdReason === 'NEGATIVE_BALANCE_CARRIED_FORWARD');
-  const restaurantsOwed = restaurantRows.filter((r) => r.transfer.status !== 'paid' && r.netPayablePaise > 0 && r.status !== 'carried_forward');
+  const restaurantsOwed = restaurantRows.filter((r) => !r.live && r.transfer.status !== 'paid' && r.netPayablePaise > 0 && r.status !== 'carried_forward');
   const ridersPaid = riderRows.filter((r) => r.status === 'paid' && r.netPayablePaise > 0);
   const ridersOwed = riderRows.filter((r) => r.status !== 'paid' && r.netPayablePaise > 0);
 
