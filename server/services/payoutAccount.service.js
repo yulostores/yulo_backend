@@ -2,6 +2,7 @@ import { z } from 'zod';
 import mongoose from 'mongoose';
 import Restaurant from '../models/Restaurant.js';
 import RestaurantSettlement from '../models/RestaurantSettlement.js';
+import logger from '../utils/logger.js';
 import { ApiError } from '../utils/ApiError.js';
 import { encryptField, decryptField } from '../utils/fieldEncryption.js';
 import { logActivity } from './activityLog.service.js';
@@ -292,8 +293,30 @@ const decide = async (restaurantId, adminId, { status, reason, submittedAt }) =>
   return payoutAccountView(updated);
 };
 
-export const verifyPayoutAccount = (restaurantId, adminId, { submittedAt } = {}) =>
-  decide(restaurantId, adminId, { status: 'verified', submittedAt });
+// A newly verified account makes the restaurant's held statements payable: each open one (still
+// draft or on hold) is re-totalled, so a week held only for "bank account not verified" turns
+// eligible on its own instead of waiting for someone to regenerate it. Never fails the verify.
+const refreshOpenSettlements = async (restaurantId) => {
+  try {
+    const { generateWeeklySettlements } = await import('./settlement.service.js');
+    const open = await RestaurantSettlement.find({
+      restaurantId,
+      status: { $in: ['draft', 'on_hold'] },
+      holdReason: { $ne: 'MANUAL' },
+    })
+      .select('periodStart')
+      .lean();
+    for (const s of open) await generateWeeklySettlements(s.periodStart, { restaurantIds: [restaurantId] });
+  } catch (err) {
+    logger.error({ err, restaurantId }, 'Could not re-total settlements after a bank verification — regenerate the week');
+  }
+};
+
+export const verifyPayoutAccount = async (restaurantId, adminId, { submittedAt } = {}) => {
+  const view = await decide(restaurantId, adminId, { status: 'verified', submittedAt });
+  await refreshOpenSettlements(restaurantId);
+  return view;
+};
 
 export const rejectPayoutAccount = (restaurantId, adminId, reason, { submittedAt } = {}) => {
   if (!reason || !String(reason).trim()) {
@@ -382,6 +405,7 @@ export const verifyChangeRequest = async (restaurantId, adminId, { requestedAt }
     targetId: restaurant._id,
     metadata: { fromLast4: pa.accountNumberLast4, toLast4: pc.accountNumberLast4 },
   });
+  await refreshOpenSettlements(restaurant._id);
   return payoutAccountView(changeProof ? await Restaurant.findById(restaurant._id).select(VIEW_PROJECTION).lean() : updated);
 };
 

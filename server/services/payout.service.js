@@ -292,6 +292,68 @@ export const markPayoutsPaid = async (payoutIds) => {
   return { modifiedCount, skipped };
 };
 
+/**
+ * One rider's weekly payout marked paid by the admin, with the bank / UPI reference of the
+ * transfer (the weekly report's "Mark paid"). Same rules as markPayoutsPaid — weekly rows only,
+ * the week must be over, recomputed first so it is paid on its final figures — and refused when
+ * there is nothing to pay. The rider sees "Paid on … · Ref …" in the app.
+ */
+export const markPayoutPaid = async (payoutId, { reference, paidAt, adminId } = {}) => {
+  if (!mongoose.isValidObjectId(payoutId)) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid payout id');
+  const ref = String(reference ?? '').trim();
+  if (ref.length < 4) throw new ApiError(400, 'VALIDATION_ERROR', 'Enter the bank or UPI reference of the transfer');
+  const when = paidAt ? new Date(paidAt) : new Date();
+  if (Number.isNaN(when.getTime()) || when.getTime() > Date.now() + 60_000) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'The payment date cannot be in the future');
+  }
+
+  const p = await Payout.findById(payoutId).lean();
+  if (!p) throw new ApiError(404, 'NOT_FOUND', 'Payout not found');
+  if (p.periodType !== PAYABLE_PERIOD) throw new ApiError(409, 'NOT_PAYABLE', 'Monthly payouts are statements — pay the weekly payout');
+  if (FROZEN.includes(p.status)) throw new ApiError(409, 'ALREADY_PAID', `This payout is already ${p.status}`);
+  if (new Date(p.periodEnd).getTime() >= Date.now()) throw new ApiError(409, 'WEEK_NOT_ENDED', 'This week has not ended yet');
+  const { settlementCycle } = await getActiveSettings();
+  if (!isCanonicalPeriod(p, settlementCycle)) {
+    throw new ApiError(409, 'NOT_PAYABLE', 'Old-format period — run scripts/migratePayoutPeriods.js, then pay the current row');
+  }
+  // A reference already used for another rider's payout is almost always a copy-paste slip.
+  if (await Payout.exists({ _id: { $ne: p._id }, paymentReference: ref })) {
+    throw new ApiError(409, 'DUPLICATE_REFERENCE', 'That reference is already recorded for another payout');
+  }
+
+  const fresh = await ensurePayoutForPeriod(p.partnerId, PAYABLE_PERIOD, p.periodStart);
+  if (!(fresh.netPayable > 0)) throw new ApiError(409, 'NOTHING_TO_PAY', 'This payout has nothing to pay');
+
+  const updated = await Payout.findOneAndUpdate(
+    { _id: p._id, status: 'pending' },
+    { $set: { status: 'paid', paidAt: when, paymentReference: ref, paidBy: adminId ?? null } },
+    { new: true }
+  ).lean();
+  if (!updated) throw new ApiError(409, 'CONCURRENT_UPDATE', 'The payout changed — please refresh');
+  return updated;
+};
+
+/** A rider's weekly payouts, newest first, for the rider app (what was paid, when, and the reference). */
+export const partnerPayoutHistory = async (partnerId, { limit = 12 } = {}) => {
+  const { rows } = await listPayoutsForPartner(partnerId, { periodType: PAYABLE_PERIOD, page: 1, limit });
+  return rows.map((r) => ({
+    _id: r._id,
+    periodStart: r.periodStart,
+    periodEnd: r.periodEnd,
+    deliveriesCount: r.deliveriesCount ?? 0,
+    basePay: r.basePay ?? 0,
+    distancePay: r.distancePay ?? 0,
+    tips: r.tips ?? 0,
+    incentives: r.incentives ?? 0,
+    deductions: r.deductions ?? 0,
+    netPayable: r.netPayable ?? 0,
+    status: r.status,
+    weekEnded: new Date(r.periodEnd).getTime() < Date.now(),
+    paidAt: r.status === 'paid' ? r.paidAt ?? null : null,
+    paymentReference: r.status === 'paid' ? r.paymentReference ?? null : null,
+  }));
+};
+
 // Ensures every partner has a current-period (and previous-period) payout row, then aggregates
 // for the PartnersList stat cards (Total Payable / Already Paid / Pending Payments count).
 //

@@ -16,6 +16,7 @@
         "maxDiscountAmount": 100,
         "minimumOrderValue": 0,
         "applicableItems": [],
+        "applicableItemNames": [],
         "status": "delivered",
         "expiresAt": "<date>"
       }

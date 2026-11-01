@@ -25,6 +25,10 @@ const payoutSchema = new mongoose.Schema(
     status: { type: String, enum: ['pending', 'processing', 'paid'], default: 'pending' },
     computedAt: { type: Date, default: null },
     paidAt: { type: Date },
+    // The bank / UPI reference the admin recorded when paying this rider (weekly report's "Mark
+    // paid") — shown to the rider in the app. Null for payouts cleared before references existed.
+    paymentReference: { type: String, default: null },
+    paidBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     notes: { type: String },
     adjustedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },

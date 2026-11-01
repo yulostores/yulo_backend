@@ -18,8 +18,8 @@
           "foodType": "veg",
           "selectedOptions": [],
           "_id": "<id>",
-          "resolvedOptions": [],
-          "image": null
+          "image": null,
+          "resolvedOptions": []
         }
       ],
       "restaurantId": "<id>",
@@ -106,7 +106,8 @@
         ]
       },
       "deliveryIssue": null,
-      "offerIssue": "OFFER_ALREADY_USED"
+      "offerIssue": "OFFER_ALREADY_USED",
+      "appliedCode": null
     }
   }
 }
