@@ -57,6 +57,10 @@ const discountSchema = new mongoose.Schema(
     redeemedAt: { type: Date, default: null },
     revokedAt: { type: Date, default: null },
     orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
+    // Dine-in personal offers (sent to a diner at a table): the table it was sent to, and the
+    // table bill that redeemed it. It comes off that diner's sitting's bill, never an app order.
+    tableId: { type: mongoose.Schema.Types.ObjectId, ref: 'Table', default: null },
+    billId: { type: mongoose.Schema.Types.ObjectId, ref: 'Bill', default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   },
   { timestamps: true }
@@ -81,5 +85,10 @@ discountSchema.index(
   { unique: true, partialFilterExpression: { isOpen: true }, name: 'one_open_personal_offer' }
 );
 discountSchema.index({ kind: 1, isOpen: 1, endDate: 1 });
+// At most one open dine-in offer per table: every diner's offer would land on the same bill.
+discountSchema.index(
+  { tableId: 1 },
+  { unique: true, partialFilterExpression: { isOpen: true, tableId: { $type: 'objectId' } }, name: 'one_open_table_offer' }
+);
 
 export default mongoose.model('Discount', discountSchema);

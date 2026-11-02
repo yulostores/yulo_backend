@@ -7,6 +7,8 @@ import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { publicSessionView } from '../utils/publicMask.js';
 import { withoutInternalMoney } from '../services/ledger.service.js';
+import * as activityService from '../services/activity.service.js';
+import { toPaise } from '../utils/money.js';
 
 // Public, table-scoped guest ordering — the QR self-order flow (yulo_menu). Mounted
 // alongside controllers/request.controller.js's guest-assistance routes: optionalAuthenticate
@@ -98,11 +100,16 @@ export const placeOrder = asyncHandler(async (req, res) => {
     ? { userId: req.user._id }
     : { guestName, guestPhone };
 
+  // A yulo_menu diner (live customer activity): their offer comes off this sitting's bill.
+  const dineIn = activityService.dineInOf(req, req.publicRestaurant._id);
+  const dinerId = dineIn && dineIn.tableId === String(req.params.tableId) ? req.user._id : undefined;
+
   const { order, tableSessionId } = await guestOrderService.placeGuestOrder({
     restaurantId: req.publicRestaurant._id,
     tableId: req.params.tableId,
     ...orderData,
     ...identity,
+    dinerId,
     idempotencyKey,
   });
 
@@ -111,4 +118,13 @@ export const placeOrder = asyncHandler(async (req, res) => {
   }
 
   sendSuccess(res, 201, 'Order placed', { order: withoutInternalMoney(order), tableSessionId });
+  // The round went to the kitchen and the phone's cart is now empty.
+  if (dinerId) {
+    void activityService.record(req, req.publicRestaurant._id, 'order_placed', {
+      orderId: order._id,
+      totalPaise: toPaise(order.subtotal ?? 0),
+      cart: { items: [] },
+      bill: { charges: { grandTotal: 0 } },
+    });
+  }
 });

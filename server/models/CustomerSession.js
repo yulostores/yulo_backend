@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import {
   EVENT_TYPES,
   RETENTION,
+  SESSION_CHANNELS,
   SESSION_STATUSES,
   TEXT_LIMITS,
   isOpenSessionStatus,
@@ -41,6 +42,12 @@ const customerSessionSchema = new mongoose.Schema(
     restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Restaurant', required: true },
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     isGuest: { type: Boolean, default: false },
+    // 'dine_in': a diner at a table (yulo_menu's table QR) — `table` says which one.
+    channel: { type: String, enum: SESSION_CHANNELS, default: 'app' },
+    table: {
+      id: { type: mongoose.Schema.Types.ObjectId, ref: 'Table', default: null },
+      number: { type: String, default: null },
+    },
     // First name only, "Customer" or "Guest" — never phone or email.
     displayName: { type: String, required: true, maxlength: TEXT_LIMITS.displayNameMax },
     pastOrderCount: { type: Number, default: 0, min: 0 },
@@ -92,6 +99,8 @@ customerSessionSchema.index(
   { restaurantId: 1, userId: 1 },
   { unique: true, partialFilterExpression: { isOpen: true } }
 );
+// A table's open dine-in sessions (closing them when its bill is paid).
+customerSessionSchema.index({ 'table.id': 1, isOpen: 1 }, { partialFilterExpression: { channel: 'dine_in' } });
 // Opting out hides every session of one customer.
 customerSessionSchema.index({ userId: 1 });
 customerSessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });

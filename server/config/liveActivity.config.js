@@ -29,7 +29,15 @@ export const EVENT_TYPES = [
   'offer_viewed',
   'offer_applied',
   'order_placed',
+  // Dine-in (yulo_menu, a diner at a table): the table's own moments.
+  'waiter_called',
+  'bill_viewed',
+  'bill_paid',
 ];
+
+// Where a session's customer is: the customer app ('app') or at a table, ordering from the
+// table QR in yulo_menu ('dine_in' — the session carries the table).
+export const SESSION_CHANNELS = ['app', 'dine_in'];
 
 export const OFFER_STATUSES = ['sent', 'delivered', 'viewed', 'applied', 'redeemed', 'expired', 'revoked'];
 // An offer in one of these is "open" (Discount.isOpen): at most one per restaurant + customer.
@@ -40,7 +48,9 @@ export const OPEN_OFFER_STATUSES = ['sent', 'delivered', 'viewed', 'applied'];
 const MINUTE = 60 * 1000;
 
 /**
- * All timings are measured from a session's `lastActivityAt`. `closeAfterMs` is both when an
+ * All timings are measured from a session's `lastActivityAt`. `dineInCloseAfterMs` replaces
+ * `closeAfterMs` for a diner who has ordered at their table: they are eating, not leaving, so
+ * their session stays open until the table's bill is paid (which closes it) or this long passes. `closeAfterMs` is both when an
  * idle session becomes abandoned/ended and when the next event opens a new session instead.
  * `testTimings` (LIVE_ACTIVITY_TEST_TIMINGS) shortens them for walking timeouts by hand; it is
  * refused in production here as well as at startup (config/env.js).
@@ -50,8 +60,8 @@ export const resolveSessionTimings = ({ testTimings = false, nodeEnv = 'developm
     throw new Error('LIVE_ACTIVITY_TEST_TIMINGS is a local-only setting and is refused in production');
   }
   return testTimings
-    ? { idleAfterMs: 30 * 1000, closeAfterMs: 2 * MINUTE, checkoutLeftAfterMs: 1 * MINUTE }
-    : { idleAfterMs: 5 * MINUTE, closeAfterMs: 30 * MINUTE, checkoutLeftAfterMs: 10 * MINUTE };
+    ? { idleAfterMs: 30 * 1000, closeAfterMs: 2 * MINUTE, checkoutLeftAfterMs: 1 * MINUTE, dineInCloseAfterMs: 5 * MINUTE }
+    : { idleAfterMs: 5 * MINUTE, closeAfterMs: 30 * MINUTE, checkoutLeftAfterMs: 10 * MINUTE, dineInCloseAfterMs: 4 * 60 * MINUTE };
 };
 
 export const SESSION_TIMINGS = Object.freeze(

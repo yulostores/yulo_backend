@@ -26,6 +26,8 @@ const activityEventSchema = new mongoose.Schema(
       query: { type: String, maxlength: TEXT_LIMITS.menuQueryMax },
       offerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Discount' },
       orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
+      // waiter_called: what the diner asked for (request.service.js REQUEST_TYPES).
+      requestType: { type: String, maxlength: 20 },
     },
     at: { type: Date, required: true },
     expiresAt: { type: Date, required: true },

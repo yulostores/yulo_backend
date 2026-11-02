@@ -60,6 +60,16 @@ export const apiLimiter = rateLimit({
 // JWT, and it writes an order straight to the kitchen. It still sits under the global
 // apiLimiter above, but gets its own tighter per-IP budget on top — one prankster
 // refreshing a checkout button shouldn't be able to flood a restaurant's kitchen queue.
+// A diner token per table-QR scan (yulo_menu). Generous: a full restaurant shares one public IP.
+export const dinerLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  message: { status: 'error', code: 'RATE_LIMITED', message: 'Too many scans — please wait a moment' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipPreflight,
+});
+
 export const guestOrderLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 20,

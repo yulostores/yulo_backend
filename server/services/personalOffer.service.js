@@ -7,6 +7,8 @@ import Cart from '../models/Cart.js';
 import Order from '../models/Order.js';
 import User from '../models/User.js';
 import Restaurant from '../models/Restaurant.js';
+import TableSession from '../models/TableSession.js';
+import Bill from '../models/Bill.js';
 import { LIST_LIMITS, OFFER_LIMITS, isLiveActivityEnabledFor } from '../config/liveActivity.config.js';
 import { appendSessionEvent, liveSessionScope } from './activity.service.js';
 import { personalOfferSavingPaise } from './discount.service.js';
@@ -35,6 +37,9 @@ export const NOT_ELIGIBLE = Object.freeze({
   GUEST: 'GUEST',
   OPTED_OUT: 'OPTED_OUT',
   OFFER_OPEN: 'OFFER_OPEN',
+  // Dine-in: someone else at the same table already has an open offer — it would land on the
+  // same bill.
+  TABLE_OFFER_OPEN: 'TABLE_OFFER_OPEN',
   DAILY_LIMIT: 'DAILY_LIMIT',
   SESSION_CLOSED: 'SESSION_CLOSED',
 });
@@ -125,11 +130,24 @@ const istDay = (at) => dayBounds(at);
  * users, open offers, today's counts) — never one per row. Returns `session → { eligible,
  * reason }`, reasons in the order of NOT_ELIGIBLE.
  */
+// A diner at a table can be sent an offer even as a guest: it comes off their table's bill,
+// which they pay there and then. An app guest can't — they must sign in to check out.
+const isDiner = (session) => session.channel === 'dine_in' && Boolean(session.table?.id);
+const canTarget = (session) => !session.isGuest || isDiner(session);
+
 export const eligibilityFor = async (restaurantId, sessions, at) => {
-  const userIds = [...new Set(sessions.filter((s) => !s.isGuest).map((s) => String(s.userId)))].map(oid);
+  const userIds = [...new Set(sessions.filter(canTarget).map((s) => String(s.userId)))].map(oid);
+  const tableIds = [...new Set(sessions.filter(isDiner).map((s) => String(s.table.id)))].map(oid);
   let optedOut = new Set();
   let open = new Set();
   let today = new Map();
+  const openTables = new Set(
+    tableIds.length
+      ? (await Discount.find({ restaurantId, tableId: { $in: tableIds }, isOpen: true }).select('tableId').lean()).map((d) =>
+          String(d.tableId)
+        )
+      : []
+  );
   if (userIds.length > 0) {
     const { start, end } = istDay(at);
     const [optedOutRows, openRows, todayRows] = await Promise.all([
@@ -153,12 +171,14 @@ export const eligibilityFor = async (restaurantId, sessions, at) => {
   }
   return (session) => {
     const user = String(session.userId);
-    const reason = session.isGuest
+    const reason = !canTarget(session)
       ? NOT_ELIGIBLE.GUEST
       : optedOut.has(user)
         ? NOT_ELIGIBLE.OPTED_OUT
         : open.has(user)
           ? NOT_ELIGIBLE.OFFER_OPEN
+          : isDiner(session) && openTables.has(String(session.table.id))
+            ? NOT_ELIGIBLE.TABLE_OFFER_OPEN
           : (today.get(user) ?? 0) >= OFFER_LIMITS.maxPerCustomerPerDay
             ? NOT_ELIGIBLE.DAILY_LIMIT
             : !session.isOpen
@@ -299,6 +319,28 @@ const checkItems = async (restaurantId, items = []) => {
 const alreadyActive = () =>
   new ApiError(409, 'OFFER_ALREADY_ACTIVE', 'This customer already has an open offer from you');
 
+const tableAlreadyHasOffer = () =>
+  new ApiError(409, 'TABLE_OFFER_OPEN', 'This table already has an open offer from you');
+
+/**
+ * What a diner's table offer would be priced against, in the cart shape offerSaving takes: the
+ * rounds already ordered in the table's open sitting plus what is in the diner's cart now.
+ */
+const tableCart = async (restaurantId, session) => {
+  const sitting = await TableSession.findOne({ restaurantId, tableId: session.table.id, status: { $in: ['open', 'bill_requested'] } })
+    .populate({ path: 'orders', select: 'items status' })
+    .lean();
+  const ordered = (sitting?.orders ?? [])
+    .filter((o) => o && o.status !== 'cancelled')
+    .flatMap((o) => o.items.map((i) => ({ menuItemId: i.menuItemId, unitPrice: i.price, qty: i.quantity })));
+  const inCart = (session.cart?.items ?? []).map((line) => ({
+    menuItemId: line.menuItemId,
+    unitPrice: line.unitPricePaise / 100,
+    qty: line.qty,
+  }));
+  return { restaurantId: oid(restaurantId), items: [...ordered, ...inCart] };
+};
+
 /**
  * Sends (or, with `preview`, prices) one personal offer. Checks run in a fixed order so errors
  * are predictable: session → guest → opted-out → closed → value/cap/expiry → items → open
@@ -314,7 +356,8 @@ const alreadyActive = () =>
 export const createOffer = async ({ restaurantId, ownerId, body }, at = now()) => {
   const session = await findSession(restaurantId, body.sessionId);
   if (!session) throw sessionNotFound();
-  if (session.isGuest) throw new ApiError(409, 'GUEST_NOT_ELIGIBLE', 'Guests can\'t receive offers — they need to sign in');
+  const atTable = isDiner(session);
+  if (!canTarget(session)) throw new ApiError(409, 'GUEST_NOT_ELIGIBLE', 'Guests can\'t receive offers — they need to sign in');
   const user = await User.findById(session.userId).select('preferences.shareActivity').lean();
   if (!user || user.preferences?.shareActivity === false) {
     throw new ApiError(409, 'OPTED_OUT', 'This customer has turned activity sharing off');
@@ -326,6 +369,7 @@ export const createOffer = async ({ restaurantId, ownerId, body }, at = now()) =
 
   const targetUserId = session.userId;
   if (await Discount.exists({ restaurantId, targetUserId, isOpen: true })) throw alreadyActive();
+  if (atTable && (await Discount.exists({ restaurantId, tableId: session.table.id, isOpen: true }))) throw tableAlreadyHasOffer();
   const { start, end } = istDay(at);
   const todays = await Discount.countDocuments({
     restaurantId,
@@ -349,7 +393,9 @@ export const createOffer = async ({ restaurantId, ownerId, body }, at = now()) =
   };
 
   if (body.preview) {
-    const cart = await Cart.findOne({ userId: targetUserId }).select('restaurantId items.menuItemId items.unitPrice items.qty').lean();
+    const cart = atTable
+      ? await tableCart(restaurantId, session)
+      : await Cart.findOne({ userId: targetUserId }).select('restaurantId items.menuItemId items.unitPrice items.qty').lean();
     const { issue, ...saving } = offerSaving(terms, cart);
     return { preview: { ...saving, ...(issue ? { issue } : {}) } };
   }
@@ -358,8 +404,10 @@ export const createOffer = async ({ restaurantId, ownerId, body }, at = now()) =
   try {
     offer = await Discount.create({
       ...terms,
-      // Delivery only: the model's default `both` would let it apply to a dine-in bill.
-      applicableTo: 'delivery',
+      // One or the other, never `both`: an app customer's offer is for delivery/takeaway
+      // checkout; a diner's comes off their table's bill (billing.service.js assembleBill).
+      applicableTo: atTable ? 'dine_in' : 'delivery',
+      tableId: atTable ? session.table.id : null,
       startDate: at,
       endDate: new Date(at.getTime() + body.expiresInMinutes * MINUTE_MS),
       kind: 'personal',
@@ -375,7 +423,7 @@ export const createOffer = async ({ restaurantId, ownerId, body }, at = now()) =
       createdAt: at,
     });
   } catch (err) {
-    if (err?.code === 11000) throw alreadyActive();
+    if (err?.code === 11000) throw err.keyPattern?.tableId ? tableAlreadyHasOffer() : alreadyActive();
     throw err;
   }
 
@@ -443,18 +491,27 @@ export const listOffers = async (restaurantId, { from, to, page = 1, limit = 20 
 
   const sessionIds = [...new Set(offers.map((o) => String(o.sessionId)).filter((id) => id !== 'null'))].map(oid);
   const orderIds = offers.filter((o) => o.orderId).map((o) => o.orderId);
-  const [sessions, orders] = await Promise.all([
-    sessionIds.length ? CustomerSession.find({ _id: { $in: sessionIds } }).select('displayName').lean() : [],
+  const billIds = offers.filter((o) => o.billId).map((o) => o.billId);
+  const [sessions, orders, bills] = await Promise.all([
+    sessionIds.length ? CustomerSession.find({ _id: { $in: sessionIds } }).select('displayName table').lean() : [],
     orderIds.length ? Order.find({ _id: { $in: orderIds } }).select('charges.grandTotal status').lean() : [],
+    billIds.length ? Bill.find({ _id: { $in: billIds } }).select('grandTotal').lean() : [],
   ]);
-  const nameOf = new Map(sessions.map((s) => [String(s._id), s.displayName]));
+  const sessionOf = new Map(sessions.map((s) => [String(s._id), s]));
   const orderOf = new Map(orders.map((o) => [String(o._id), o]));
+  const billOf = new Map(bills.map((b) => [String(b._id), b]));
+  const totalOf = (o) => {
+    if (o.orderId) return orderOf.get(String(o.orderId))?.charges?.grandTotal ?? null;
+    const bill = o.billId ? billOf.get(String(o.billId)) : null;
+    return bill ? toPaise(bill.grandTotal) : null;
+  };
 
   return {
     offers: offers.map((o) => ({
       ...toOfferView(o),
-      customerName: nameOf.get(String(o.sessionId)) ?? 'Customer',
-      orderTotalPaise: o.orderId ? orderOf.get(String(o.orderId))?.charges?.grandTotal ?? null : null,
+      customerName: sessionOf.get(String(o.sessionId))?.displayName ?? 'Customer',
+      tableNumber: o.tableId ? sessionOf.get(String(o.sessionId))?.table?.number ?? null : null,
+      orderTotalPaise: totalOf(o),
     })),
     from: istYmd(fromDay.start),
     to: istYmd(toDay.start),
@@ -493,17 +550,24 @@ export const getMetrics = async (restaurantId, range = 'today', at = now()) => {
         expired: { $sum: { $cond: [{ $eq: ['$offerStatus', 'expired'] }, 1, 0] } },
         revoked: { $sum: { $cond: [{ $eq: ['$offerStatus', 'revoked'] }, 1, 0] } },
         redeemedOrderIds: { $push: { $cond: [{ $gt: ['$redeemedAt', null] }, '$orderId', '$$REMOVE'] } },
+        redeemedBillIds: { $push: { $cond: [{ $gt: ['$redeemedAt', null] }, '$billId', '$$REMOVE'] } },
       },
     },
   ]);
-  const counts = row ?? { sent: 0, delivered: 0, viewed: 0, applied: 0, redeemed: 0, expired: 0, revoked: 0, redeemedOrderIds: [] };
+  const counts = row ?? { sent: 0, delivered: 0, viewed: 0, applied: 0, redeemed: 0, expired: 0, revoked: 0, redeemedOrderIds: [], redeemedBillIds: [] };
 
   const orderIds = counts.redeemedOrderIds.filter(Boolean);
   const orders = orderIds.length
     ? await Order.find({ _id: { $in: orderIds }, status: { $ne: 'cancelled' } }).select('charges discountAmount').lean()
     : [];
-  const revenuePaise = orders.reduce((sum, o) => sum + (o.charges?.grandTotal ?? 0), 0);
-  const discountPaise = orders.reduce((sum, o) => sum + (o.charges?.food?.discount ?? toPaise(o.discountAmount ?? 0)), 0);
+  // Dine-in offers are redeemed by a paid table bill: its total, and that offer's line on it.
+  const billIds = (counts.redeemedBillIds ?? []).filter(Boolean);
+  const bills = billIds.length ? await Bill.find({ _id: { $in: billIds }, status: 'paid' }).select('grandTotal discountsApplied').lean() : [];
+  const revenuePaise =
+    orders.reduce((sum, o) => sum + (o.charges?.grandTotal ?? 0), 0) + bills.reduce((sum, b) => sum + toPaise(b.grandTotal ?? 0), 0);
+  const discountPaise =
+    orders.reduce((sum, o) => sum + (o.charges?.food?.discount ?? toPaise(o.discountAmount ?? 0)), 0) +
+    bills.reduce((sum, b) => sum + (b.discountsApplied ?? []).filter((d) => d.personal).reduce((s, d) => s + toPaise(d.amount ?? 0), 0), 0);
 
   return {
     range,
@@ -527,7 +591,7 @@ export const getMetrics = async (restaurantId, range = 'today', at = now()) => {
 /** An offer as its customer sees it — whitelisted; nothing about the owner or the session. */
 // `applicableItemNames` lets the app say which dishes a dish-only offer covers ("25% off Butter
 // Naan") — the ids alone left it reading as an offer on the whole order.
-const toCustomerOfferView = (offer, restaurantName, dishName = new Map()) => ({
+export const toCustomerOfferView = (offer, restaurantName, dishName = new Map()) => ({
   id: String(offer._id),
   restaurant: { id: String(offer.restaurantId), name: restaurantName ?? null },
   title: offer.offerName,
@@ -543,7 +607,7 @@ const toCustomerOfferView = (offer, restaurantName, dishName = new Map()) => ({
 });
 
 /** Names of the dishes these offers are limited to, in one read: id → name. */
-const dishNamesFor = async (offers) => {
+export const dishNamesFor = async (offers) => {
   const ids = [...new Set(offers.flatMap((o) => (o.applicableItems ?? []).map(String)))];
   if (ids.length === 0) return new Map();
   const items = await MenuItem.find({ _id: { $in: ids } }).select('name').lean();

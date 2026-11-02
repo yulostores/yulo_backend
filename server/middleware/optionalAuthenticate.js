@@ -21,6 +21,10 @@ export const optionalAuthenticate = asyncHandler(async (req, res, next) => {
     const user = await User.findById(decoded.userId).lean();
     if (user && user.isActive) {
       req.user = { _id: user._id, role: user.role, name: user.name, email: user.email };
+      // A yulo_menu diner's token (auth.service.js generateDinerToken): the table it was issued at.
+      if (user.role === 'guest' && decoded.dineIn?.restaurantId && decoded.dineIn?.tableId) {
+        req.user.dineIn = { restaurantId: String(decoded.dineIn.restaurantId), tableId: String(decoded.dineIn.tableId) };
+      }
     }
   } catch {
     // Invalid/expired token on a public endpoint — fall through as anonymous.

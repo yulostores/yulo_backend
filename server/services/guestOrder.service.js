@@ -59,9 +59,12 @@ export const placeGuestOrder = async ({
   userId,
   guestName,
   guestPhone,
+  // A yulo_menu diner's guest user (live customer activity), remembered on the sitting.
+  dinerId,
   idempotencyKey,
 }) => {
   const { session } = await getOrOpenSession({ restaurantId, tableId, guestName, guestPhone });
+  if (dinerId) await TableSession.updateOne({ _id: session._id }, { $addToSet: { dinerIds: dinerId } });
 
   // orderService.createOrder's dine-in branch (tableSessionId set) already does the item
   // snapshot/pricing, batchCount increment, TableSession.orders push and newOrder

@@ -23,6 +23,7 @@
         "redemptionCount": 1,
         "orderId": "<id>",
         "customerName": "Meera",
+        "tableNumber": null,
         "orderTotalPaise": 48000
       }
     ],

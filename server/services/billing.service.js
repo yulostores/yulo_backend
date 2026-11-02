@@ -16,6 +16,10 @@ import { percentOf, toPaise, toRupees } from '../utils/money.js';
 import { onBillPaid } from './ledger.service.js';
 import { flagCancelledPaidDineInRound } from './refund.service.js';
 import logger from '../utils/logger.js';
+import { publishOffer } from './liveBroadcast.service.js';
+import { closeDineInTable } from './activity.service.js';
+import { isLiveActivityEnabledFor } from '../config/liveActivity.config.js';
+import { now as clockNow } from '../utils/clock.js';
 
 // Rupees, to the paisa. Percentage maths on floats produces figures like
 // 37.500000000000004, which then reach the guest's receipt and the revenue aggregates as
@@ -252,6 +256,69 @@ export const assertRoundCancellable = async (order) => {
 };
 
 /**
+ * The personal offer (live customer activity) that comes off this sitting's bill, as a
+ * `discountsApplied` line — or null. It is the table's open dine-in offer, sent to a diner who
+ * has ordered in this sitting (TableSession.dinerIds), priced by the same maths as an app
+ * checkout (discount.service.js personalOfferSavingPaise) on the billed rounds. Re-priced on
+ * every assemble, so a later round, a cancelled one, an expiry or a revoke is reflected. The
+ * first time it lands on the bill the offer moves to `applied`.
+ */
+const tableOfferLine = async (session, orders, subtotal, at = clockNow()) => {
+  if (!session.tableId || !session.dinerIds?.length || !isLiveActivityEnabledFor(session.restaurantId)) return null;
+  const offer = await Discount.findOne({
+    kind: 'personal',
+    restaurantId: session.restaurantId,
+    tableId: session.tableId,
+    targetUserId: { $in: session.dinerIds },
+    isOpen: true,
+    endDate: { $gt: at },
+  }).lean();
+  if (!offer || toPaise(subtotal) < toPaise(offer.minimumOrderValue ?? 0)) return null;
+  const lines = orders
+    .filter(isBilledOrder)
+    .flatMap((o) => (o.items ?? []).map((i) => ({ menuItemId: i.menuItemId, amountPaise: toPaise(i.price) * i.quantity })));
+  const { savingPaise } = discountService.personalOfferSavingPaise(offer, lines);
+  if (savingPaise <= 0) return null;
+  if (['sent', 'delivered', 'viewed'].includes(offer.offerStatus)) {
+    const applied = await Discount.findOneAndUpdate(
+      { _id: offer._id, offerStatus: { $in: ['sent', 'delivered', 'viewed'] } },
+      { $set: { offerStatus: 'applied', appliedAt: at } },
+      { new: true, lean: true }
+    );
+    if (applied) void publishOffer(applied, { at });
+  }
+  return { discountId: offer._id, code: null, description: offer.offerName, amount: toRupees(savingPaise), personal: true };
+};
+
+/**
+ * A paid bill redeems the personal offer on it — whatever happened to the offer since (it may
+ * have run out while the guest was paying): it is in the total they paid. Once, by a
+ * conditional update on `redemptionCount: 0`.
+ */
+const redeemTableOffer = async (bill, at) => {
+  const line = (bill.discountsApplied ?? []).find((d) => d.personal && d.discountId);
+  if (!line) return;
+  const offer = await Discount.findOneAndUpdate(
+    { _id: line.discountId, kind: 'personal', redemptionCount: 0 },
+    [
+      {
+        $set: {
+          redemptionCount: 1,
+          offerStatus: 'redeemed',
+          redeemedAt: at,
+          appliedAt: { $ifNull: ['$appliedAt', at] },
+          isOpen: false,
+          status: 'expired',
+          billId: bill._id,
+        },
+      },
+    ],
+    { new: true, lean: true }
+  );
+  if (offer) await publishOffer(offer, { toCustomer: true, at });
+};
+
+/**
  * Builds (or refreshes) the bill for a dine-in table session.
  *
  * Idempotent, and deliberately frozen once settled: the guest-facing GET and the waiter's
@@ -308,8 +375,13 @@ export const assembleBill = async (tableSessionId) => {
 
   // Discounts already applied to this bill survive a re-assemble. Recomputing the total
   // without them used to silently un-apply every discount the moment anything re-read the
-  // bill — which every bill screen does on open.
-  const discountsApplied = existing?.discountsApplied ?? [];
+  // bill — which every bill screen does on open. A diner's personal offer is the exception:
+  // it is re-priced each time (tableOfferLine).
+  const offerLine = await tableOfferLine(session, orders, subtotal);
+  const discountsApplied = [
+    ...(existing?.discountsApplied ?? []).filter((d) => !d.personal).map((d) => (d.toObject ? d.toObject() : d)),
+    ...(offerLine ? [offerLine] : []),
+  ];
   const discountTotal = discountsApplied.reduce((s, d) => s + (d.amount ?? 0), 0);
 
   const waiter = session.waiterId ? staffById.get(String(session.waiterId)) : null;
@@ -332,6 +404,7 @@ export const assembleBill = async (tableSessionId) => {
     closedAt: session.closedAt ?? null,
     restaurantSnapshot: restaurantSnapshotOf(restaurant),
     batches,
+    discountsApplied,
     ...(await dineInTotals({
       subtotal,
       restaurant,
@@ -573,6 +646,10 @@ export const markPaid = async ({ billId, restaurantId, paymentMethod, payment = 
 
   // Online → the restaurant's earning; counter → the platform fee it owes Yulo.
   await onBillPaid(bill);
+
+  // Live customer activity: the diner's offer on this bill is used, and the table's visits end.
+  await redeemTableOffer(bill, clockNow()).catch((err) => logger.error({ err, billId: bill._id }, 'Could not redeem the table offer'));
+  if (session?.tableId) await closeDineInTable({ restaurantId, tableId: session.tableId }, clockNow());
 
   // A round billed in this total but cancelled before the payment landed (while the bill was
   // held for the guest): the guest paid Yulo for food they didn't get — flagged for an admin to

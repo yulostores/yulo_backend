@@ -7,6 +7,8 @@
         "id": "<id>",
         "displayName": "Meera",
         "isGuest": false,
+        "channel": "app",
+        "tableNumber": null,
         "pastOrderCount": 0,
         "status": "active",
         "startedAt": "<date>",

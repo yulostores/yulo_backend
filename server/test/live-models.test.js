@@ -420,7 +420,8 @@ describe('switch, per-restaurant access, clock and timings', () => {
   test('test timings are shorter, and refused in production', () => {
     const normal = live.resolveSessionTimings();
     const fast = live.resolveSessionTimings({ testTimings: true, nodeEnv: 'development' });
-    assert.deepEqual(normal, { idleAfterMs: 300_000, closeAfterMs: 1_800_000, checkoutLeftAfterMs: 600_000 });
+    assert.deepEqual(normal, { idleAfterMs: 300_000, closeAfterMs: 1_800_000, checkoutLeftAfterMs: 600_000, dineInCloseAfterMs: 14_400_000 });
+    assert.ok(fast.dineInCloseAfterMs < normal.dineInCloseAfterMs);
     assert.ok(fast.idleAfterMs < normal.idleAfterMs);
     assert.ok(fast.closeAfterMs < normal.closeAfterMs);
     assert.ok(fast.checkoutLeftAfterMs < normal.checkoutLeftAfterMs);

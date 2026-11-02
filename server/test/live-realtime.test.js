@@ -31,8 +31,8 @@ const { ObjectId, authHeader, makeCustomer, makeDeliveryCustomer, makeGuest, mak
 const MINUTE = 60 * 1000;
 const LIVE_EVENTS = ['activity_event', 'session_updated', 'session_removed', 'offer_updated', 'offer_received'];
 const SESSION_ROW_KEYS = [
-  'cameFromSearch', 'cart', 'displayName', 'eventCount', 'id', 'isGuest', 'lastActivityAt', 'lastEvent',
-  'notEligibleReason', 'offerEligible', 'orderId', 'pastOrderCount', 'startedAt', 'status',
+  'cameFromSearch', 'cart', 'channel', 'displayName', 'eventCount', 'id', 'isGuest', 'lastActivityAt', 'lastEvent',
+  'notEligibleReason', 'offerEligible', 'orderId', 'pastOrderCount', 'startedAt', 'status', 'tableNumber',
 ];
 
 let mongo;

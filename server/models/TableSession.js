@@ -21,6 +21,9 @@ const tableSessionSchema = new mongoose.Schema(
     guestName: { type: String },
     guestPhone: { type: String },
     orders: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Order' }],
+    // yulo_menu diners (their guest users, from the table's diner token) who ordered in this
+    // sitting — a personal offer sent to one of them comes off this sitting's bill.
+    dinerIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     batchCount: { type: Number, default: 0 },
     status: {
       type: String,

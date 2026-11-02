@@ -24,6 +24,19 @@ export const generateTokens = (userId, role) => {
   return { accessToken, refreshToken };
 };
 
+// A diner at a table (yulo_menu, live customer activity): a guest user's access token that also
+// names the restaurant + table it was issued at, so their browsing and ordering show on the
+// owner's live dashboard against that table. Long enough for one sitting; never refreshed —
+// scanning the QR again issues a new one.
+export const DINER_TOKEN_SECONDS = 6 * 60 * 60;
+
+export const generateDinerToken = (userId, { restaurantId, tableId }) =>
+  jwt.sign(
+    { userId, role: 'guest', dineIn: { restaurantId: String(restaurantId), tableId: String(tableId) }, jti: randomUUID() },
+    env.JWT_ACCESS_SECRET,
+    { expiresIn: DINER_TOKEN_SECONDS }
+  );
+
 // A staff session is one working day: exactly 24 hours from the OTP login, never refreshed
 // or extended, so every waiter and chef proves they still hold their phone at least daily.
 // Fixed in code on purpose — it is a security rule, not a tunable.

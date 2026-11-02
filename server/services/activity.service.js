@@ -5,6 +5,7 @@ import CustomerSession, { sessionExpiresAt, sessionStatusFields } from '../model
 import ActivityEvent from '../models/ActivityEvent.js';
 import Discount from '../models/Discount.js';
 import Cart from '../models/Cart.js';
+import Table from '../models/Table.js';
 import * as cartService from './cart.service.js';
 import { redis } from '../config/redis.js';
 import {
@@ -40,7 +41,10 @@ const COALESCED = {
   restaurant_viewed: COALESCE.viewMs,
   item_viewed: COALESCE.viewMs,
   checkout_started: COALESCE.checkoutStartedMs,
+  bill_viewed: COALESCE.viewMs,
 };
+
+const REQUEST_LABELS = { call_waiter: 'Called the waiter', water: 'Asked for water', bill: 'Asked for the bill' };
 const PREF_CACHE_SECONDS = 60;
 const LABEL_MAX = 120;
 const LRU_MAX = 10_000;
@@ -189,6 +193,12 @@ export const labelFor = (type, data = {}) => {
       return 'Applied offer';
     case 'order_placed':
       return 'Placed order';
+    case 'waiter_called':
+      return REQUEST_LABELS[data.requestType] ?? 'Asked for help';
+    case 'bill_viewed':
+      return 'Opened the bill';
+    case 'bill_paid':
+      return 'Paid the bill';
     default:
       return type;
   }
@@ -256,11 +266,13 @@ const transition = async (session, { extraFilter = {}, set = {}, event = null, a
 /**
  * Closes an open session by the timeout rule (A2's "new session after 30 min" and the
  * sweeper): items in the cart → `abandoned` plus a `cart_abandoned` event with the cart total,
- * otherwise `ended`. Resolves the new status, or null when the session changed since it was read.
+ * a diner who ordered at their table → `converted`, otherwise `ended`. Resolves the new status, or null when the session changed since it was read.
  */
 export const closeTimedOutSession = async (session, at = now(), batch = null) => {
   const abandoned = (session.cart?.items?.length ?? 0) > 0;
-  const status = abandoned ? 'abandoned' : 'ended';
+  // A diner who ordered at their table and whose bill was never marked paid here still bought.
+  const ate = session.channel === 'dine_in' && Boolean(session.orderId);
+  const status = abandoned ? 'abandoned' : ate ? 'converted' : 'ended';
   const done = await transition(session, {
     at,
     batch,
@@ -360,6 +372,26 @@ export const liveSessionScope = (restaurantId) => ({ restaurantId, hiddenAt: nul
 const findOpenSession = (restaurantId, userId) =>
   CustomerSession.findOne({ restaurantId, userId, isOpen: true }).lean();
 
+/** How long a session may be silent before it closes: much longer for a diner who has ordered. */
+const closeAfterFor = (session) =>
+  session.channel === 'dine_in' && session.orderId ? SESSION_TIMINGS.dineInCloseAfterMs : SESSION_TIMINGS.closeAfterMs;
+
+/**
+ * The table a request comes from: a yulo_menu diner's token names the restaurant + table it was
+ * issued at (auth.service.js generateDinerToken). Null for any other request, or a token issued
+ * at another restaurant.
+ */
+export const dineInOf = (req, restaurantId) => {
+  const dineIn = req?.user?.dineIn;
+  if (!dineIn || String(dineIn.restaurantId) !== String(restaurantId)) return null;
+  return mongoose.isValidObjectId(dineIn.tableId) ? { tableId: String(dineIn.tableId) } : null;
+};
+
+const tableFields = async (restaurantId, dineIn) => {
+  const table = await Table.findOne({ _id: dineIn.tableId, restaurantId }).select('identifier').lean();
+  return table ? { channel: 'dine_in', table: { id: table._id, number: table.identifier ?? null } } : null;
+};
+
 /**
  * The cart a new session starts with: the customer's current server cart when it is for this
  * restaurant (they came back to a cart they filled earlier — I1 found the owner seeing "Empty
@@ -373,11 +405,13 @@ const existingCartSnapshot = async (userId, restaurantId, at) => {
   return cartSnapshot(priced, bill, at);
 };
 
-const openSession = async (user, restaurantId, at) => {
+const openSession = async (user, restaurantId, at, dineIn = null) => {
   const isGuest = user.role === 'guest';
-  const [pastOrderCount, cart] = await Promise.all([
+  const [pastOrderCount, cart, table] = await Promise.all([
     isGuest ? 0 : Order.countDocuments({ userId: user._id, restaurantId, status: 'delivered' }),
-    existingCartSnapshot(user._id, restaurantId, at),
+    // A diner's cart lives on their phone and arrives through the table cart sync.
+    dineIn ? undefined : existingCartSnapshot(user._id, restaurantId, at),
+    dineIn ? tableFields(restaurantId, dineIn) : null,
   ]);
   try {
     const created = await CustomerSession.create({
@@ -390,6 +424,7 @@ const openSession = async (user, restaurantId, at) => {
       startedAt: at,
       lastActivityAt: at,
       ...(cart ? { cart } : {}),
+      ...(table ?? {}),
     });
     return created.toObject();
   } catch (err) {
@@ -400,13 +435,13 @@ const openSession = async (user, restaurantId, at) => {
 };
 
 /** The open session for restaurant + user, closing a timed-out one and opening a new one. */
-const sessionFor = async (user, restaurantId, at) => {
+const sessionFor = async (user, restaurantId, at, dineIn = null) => {
   let session = await findOpenSession(restaurantId, user._id);
-  if (session && at - session.lastActivityAt >= SESSION_TIMINGS.closeAfterMs) {
+  if (session && at - session.lastActivityAt >= closeAfterFor(session)) {
     await closeTimedOutSession(session, at);
     session = null;
   }
-  return session ?? openSession(user, restaurantId, at);
+  return session ?? openSession(user, restaurantId, at, dineIn);
 };
 
 // ─── Search attribution ────────────────────────────────────────────────────
@@ -488,8 +523,10 @@ const recordNow = async (req, restaurantId, type, data) => {
 
   restaurantId = new mongoose.Types.ObjectId(String(restaurantId));
   const at = now();
-  const session = await sessionFor(user, restaurantId, at);
+  const dineIn = dineInOf(req, restaurantId);
+  const session = await sessionFor(user, restaurantId, at, dineIn);
   if (!session) return null;
+  const atTable = session.channel === 'dine_in';
 
   const coalesceMs = COALESCED[type];
   if (coalesceMs && !(await claimWindow(key.coalesce(session._id, type, data.menuItemId), coalesceMs))) {
@@ -510,8 +547,14 @@ const recordNow = async (req, restaurantId, type, data) => {
     lastActivityAt: at,
     expiresAt: sessionExpiresAt(at),
     lastEvent: { type, label, at },
-    ...sessionStatusFields(type === 'order_placed' ? 'converted' : 'active'),
+    // A diner orders round after round at their table: ordering doesn't end their visit — the
+    // bill being paid does (closeDineInTable).
+    ...sessionStatusFields(type === 'order_placed' && !atTable ? 'converted' : 'active'),
   };
+  // A session opened in the app, then the same guest scanned a table (or moved table).
+  if (dineIn && String(session.table?.id ?? '') !== dineIn.tableId) {
+    Object.assign(set, (await tableFields(restaurantId, dineIn)) ?? {});
+  }
   if (cart !== undefined) set.cart = cartSnapshot(cart, bill, at);
   if (type === 'checkout_started') {
     if (!session.checkoutStartedAt) set.checkoutStartedAt = at;
@@ -558,10 +601,82 @@ export const record = (req, restaurantId, type, data = {}) =>
     type,
   });
 
+// ─── Dine-in (yulo_menu) ───────────────────────────────────────────────────
+
+/**
+ * A diner's cart, as their phone holds it now (yulo_menu keeps the cart on the phone until an
+ * order is placed). `lines` are already priced by the server from the menu —
+ * `[{ menuItemId, name, qty, unitPrice }]` in rupees — never the phone's prices. Compared with
+ * the session's last snapshot, each difference is recorded as its own cart event (added /
+ * quantity changed / removed, or one `cart_cleared` when everything went), carrying the new
+ * snapshot. Nothing changed → nothing recorded. Same rules as record(): never rejects.
+ */
+export const recordDineInCart = (req, restaurantId, lines) =>
+  track(
+    async () => {
+      if (!restaurantId || !isLiveActivityEnabledFor(restaurantId) || !isTrackableUser(req)) return null;
+      if (!dineInOf(req, restaurantId)) return null;
+      const open = await findOpenSession(new mongoose.Types.ObjectId(String(restaurantId)), req.user._id);
+      const before = new Map((open?.cart?.items ?? []).map((line) => [String(line.menuItemId), line]));
+      const after = new Map(lines.map((line) => [String(line.menuItemId), line]));
+      const totalPaise = lines.reduce((sum, line) => sum + toPaise(line.unitPrice) * line.qty, 0);
+      const snapshot = { cart: { items: lines }, bill: { charges: { grandTotal: totalPaise } } };
+
+      const changes = [];
+      if (lines.length === 0 && before.size > 1) {
+        changes.push(['cart_cleared', {}]);
+      } else {
+        for (const [id, line] of after) {
+          const was = before.get(id);
+          if (!was) changes.push(['cart_item_added', { menuItemId: id, itemName: line.name, qty: line.qty, deltaQty: line.qty }]);
+          else if (was.qty !== line.qty) {
+            changes.push(['cart_qty_changed', { menuItemId: id, itemName: line.name, qty: line.qty, deltaQty: line.qty - was.qty }]);
+          }
+        }
+        for (const [id, was] of before) {
+          if (!after.has(id)) changes.push(['cart_item_removed', { menuItemId: id, itemName: was.name, qty: 0, deltaQty: -was.qty }]);
+        }
+      }
+      let last = null;
+      for (const [type, data] of changes) last = await recordNow(req, restaurantId, type, { ...data, totalPaise, ...snapshot });
+      return last;
+    },
+    req,
+    { restaurantId: String(restaurantId), type: 'dine_in_cart' }
+  );
+
+/**
+ * A table's bill was paid: the visits of everyone who scanned that table end — `converted`
+ * (with a `bill_paid` event) for diners who ordered, `ended` for those who only looked.
+ * Called by billing.service.js markPaid; never throws.
+ */
+export const closeDineInTable = async ({ restaurantId, tableId }, at = now()) => {
+  try {
+    if (!tableId || !isLiveActivityEnabledFor(restaurantId)) return 0;
+    const sessions = await CustomerSession.find({ channel: 'dine_in', 'table.id': tableId, restaurantId, isOpen: true })
+      .select(SWEEP_FIELDS)
+      .lean();
+    let closed = 0;
+    for (const session of sessions) {
+      const ordered = Boolean(session.orderId);
+      const done = await transition(session, {
+        at,
+        set: { ...sessionStatusFields(ordered ? 'converted' : 'ended'), checkoutStartedAt: null },
+        event: ordered ? { type: 'bill_paid', label: labelFor('bill_paid') } : null,
+      });
+      if (done) closed += 1;
+    }
+    return closed;
+  } catch (err) {
+    logger.warn({ err: err.message, tableId: String(tableId) }, 'live activity: closing a paid table failed');
+    return 0;
+  }
+};
+
 // ─── Sweeper ───────────────────────────────────────────────────────────────
 
 // Only what the transitions need from each session.
-const SWEEP_FIELDS = '_id restaurantId userId status lastActivityAt cart checkoutStartedAt';
+const SWEEP_FIELDS = '_id restaurantId userId status lastActivityAt cart checkoutStartedAt channel orderId';
 
 /**
  * Moves sessions along on their own, oldest first, at most SWEEP.batchSize per call:
@@ -573,7 +688,7 @@ const SWEEP_FIELDS = '_id restaurantId userId status lastActivityAt cart checkou
  * `{ idled, abandoned, ended, checkoutLeft, expired, scanned }`.
  */
 export const sweepSessions = async (at = now()) => {
-  const summary = { idled: 0, abandoned: 0, ended: 0, checkoutLeft: 0, expired: 0, scanned: 0 };
+  const summary = { idled: 0, abandoned: 0, ended: 0, converted: 0, checkoutLeft: 0, expired: 0, scanned: 0 };
   // Owners hear about this tick once, at the end: one session_updated per changed session.
   const batch = createBatch();
   const before = (ms) => new Date(at.getTime() - ms);
@@ -585,19 +700,23 @@ export const sweepSessions = async (at = now()) => {
     return rows;
   };
 
-  // Uses { status, lastActivityAt } (models/CustomerSession.js).
-  for (const session of await fetch(
-    { status: { $in: OPEN_SESSION_STATUSES }, lastActivityAt: { $lte: before(SESSION_TIMINGS.closeAfterMs) } },
-    { lastActivityAt: 1 }
-  )) {
-    const closed = await closeTimedOutSession(session, at, batch);
-    if (closed) summary[closed] += 1;
+  // Uses { status, lastActivityAt } (models/CustomerSession.js). A diner who has ordered at
+  // their table is eating, not gone: they get the much longer dine-in window (closeAfterFor).
+  const eating = { channel: 'dine_in', orderId: { $ne: null } };
+  for (const filter of [
+    { $nor: [eating], lastActivityAt: { $lte: before(SESSION_TIMINGS.closeAfterMs) } },
+    { ...eating, lastActivityAt: { $lte: before(SESSION_TIMINGS.dineInCloseAfterMs) } },
+  ]) {
+    for (const session of await fetch({ status: { $in: OPEN_SESSION_STATUSES }, ...filter }, { lastActivityAt: 1 })) {
+      const closed = await closeTimedOutSession(session, at, batch);
+      if (closed) summary[closed] += 1;
+    }
   }
 
   for (const session of await fetch(
     {
       status: 'active',
-      lastActivityAt: { $lte: before(SESSION_TIMINGS.idleAfterMs), $gt: before(SESSION_TIMINGS.closeAfterMs) },
+      lastActivityAt: { $lte: before(SESSION_TIMINGS.idleAfterMs) },
     },
     { lastActivityAt: 1 }
   )) {
@@ -628,7 +747,7 @@ export const runSessionSweep = async () => {
   sweeping = true;
   try {
     const summary = await sweepSessions();
-    const changed = summary.idled + summary.abandoned + summary.ended + summary.checkoutLeft + summary.expired;
+    const changed = summary.idled + summary.abandoned + summary.ended + summary.converted + summary.checkoutLeft + summary.expired;
     if (changed > 0) logger.debug({ ...summary }, 'live activity: sessions swept');
     return summary;
   } catch (err) {

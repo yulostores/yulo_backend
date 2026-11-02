@@ -14,6 +14,9 @@ export const toSessionRow = (session, { offerEligibility } = {}) => {
     id: String(session._id),
     displayName: session.displayName,
     isGuest: Boolean(session.isGuest),
+    // 'dine_in' for a diner at a table (yulo_menu) — `tableNumber` is the table they scanned.
+    channel: session.channel ?? 'app',
+    tableNumber: session.channel === 'dine_in' ? session.table?.number ?? null : null,
     pastOrderCount: session.pastOrderCount ?? 0,
     status: session.status,
     startedAt: iso(session.startedAt),

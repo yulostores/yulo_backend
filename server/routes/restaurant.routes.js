@@ -18,9 +18,10 @@ import {
   cancelBillPayment,
   getBillPaymentStatus,
 } from '../controllers/publicBill.controller.js';
+import { startDiner, syncCart, getTableOffer, viewTableOffer } from '../controllers/dineIn.controller.js';
 import { optionalAuthenticate } from '../middleware/optionalAuthenticate.js';
 import { loadPublicRestaurant } from '../middleware/loadPublicRestaurant.js';
-import { guestOrderLimiter } from '../middleware/rateLimiter.js';
+import { dinerLimiter, guestOrderLimiter } from '../middleware/rateLimiter.js';
 
 const router = Router();
 
@@ -49,6 +50,11 @@ router.get('/:id/requests', loadPublicRestaurant, listMyRequests);
 // carries its own tighter rate limit (see middleware/rateLimiter.js#guestOrderLimiter).
 router.get('/:id/tables/:tableId', loadPublicRestaurant, getTable);
 router.get('/:id/tables/:tableId/session', loadPublicRestaurant, getSession);
+// Live customer activity at the table (controllers/dineIn.controller.js).
+router.post('/:id/tables/:tableId/diner', dinerLimiter, loadPublicRestaurant, startDiner);
+router.put('/:id/tables/:tableId/cart', optionalAuthenticate, loadPublicRestaurant, syncCart);
+router.get('/:id/tables/:tableId/offer', optionalAuthenticate, loadPublicRestaurant, getTableOffer);
+router.post('/:id/tables/:tableId/offer/:offerId/view', optionalAuthenticate, loadPublicRestaurant, viewTableOffer);
 router.post(
   '/:id/tables/:tableId/orders',
   guestOrderLimiter,
@@ -60,7 +66,7 @@ router.post(
 // Guest-initiated "pay the bill online" (yulo_menu) — a counterpart to the staff-side
 // bill endpoints in routes/staff/waiter.routes.js, not a replacement for them; a waiter
 // can still open/settle the same bill in cash from their side at any point up to payment.
-router.get('/:id/tables/:tableId/bill', loadPublicRestaurant, getBill);
+router.get('/:id/tables/:tableId/bill', optionalAuthenticate, loadPublicRestaurant, getBill);
 router.post('/:id/tables/:tableId/bill/pay', guestOrderLimiter, loadPublicRestaurant, payBill);
 router.post('/:id/tables/:tableId/bill/pay/retry', guestOrderLimiter, loadPublicRestaurant, payBill);
 router.post('/:id/tables/:tableId/bill/pay/simulate', loadPublicRestaurant, simulateBillPayment);

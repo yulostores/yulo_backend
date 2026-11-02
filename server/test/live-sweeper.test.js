@@ -58,7 +58,7 @@ describe('transitions', () => {
     const session = await makeSession({ lastActivityAt: at(0) });
 
     t = T0 + 4 * MINUTE;
-    assert.deepEqual(await sweep(), { idled: 0, abandoned: 0, ended: 0, checkoutLeft: 0, expired: 0, scanned: 0 });
+    assert.deepEqual(await sweep(), { idled: 0, abandoned: 0, ended: 0, converted: 0, checkoutLeft: 0, expired: 0, scanned: 0 });
     assert.equal((await reload(session)).status, 'active');
 
     t = T0 + 6 * MINUTE;
@@ -154,7 +154,7 @@ describe('transitions', () => {
     t = T0 + 2 * 60 * MINUTE;
     const summary = await sweep();
 
-    assert.deepEqual(summary, { idled: 0, abandoned: 0, ended: 0, checkoutLeft: 0, expired: 0, scanned: 0 });
+    assert.deepEqual(summary, { idled: 0, abandoned: 0, ended: 0, converted: 0, checkoutLeft: 0, expired: 0, scanned: 0 });
     assert.deepEqual(await Promise.all(closed.map(reload)), beforeRows);
     assert.equal(await ActivityEvent.countDocuments(), 0);
   });
@@ -302,6 +302,7 @@ describe('toSessionRow', () => {
   const KEYS = [
     'cameFromSearch',
     'cart',
+    'channel',
     'displayName',
     'eventCount',
     'id',
@@ -314,6 +315,7 @@ describe('toSessionRow', () => {
     'pastOrderCount',
     'startedAt',
     'status',
+    'tableNumber',
   ];
 
   test('only the whitelisted keys — never the userId or anything else on the document', async () => {

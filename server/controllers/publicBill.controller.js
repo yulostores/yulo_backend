@@ -11,6 +11,7 @@ import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { toPaise } from '../utils/money.js';
 import { publicBillView } from '../utils/publicMask.js';
+import * as activityService from '../services/activity.service.js';
 
 // Public, table-scoped "pay the bill online" flow (yulo_menu) — a guest-initiated
 // counterpart to the staff-side GET/POST .../bill endpoints in controllers/staff/
@@ -53,6 +54,9 @@ export const getBill = asyncHandler(async (req, res) => {
   // the restaurant's own tax/licence details, every round they ordered, and the same
   // charge breakdown (services/billView.service.js) — minus other people's details.
   sendSuccess(res, 200, 'Bill', { bill: await publicView(bill) });
+  if (activityService.dineInOf(req, req.publicRestaurant._id)?.tableId === String(req.params.tableId)) {
+    void activityService.record(req, req.publicRestaurant._id, 'bill_viewed', { totalPaise: toPaise(bill.grandTotal ?? 0) });
+  }
 });
 
 // POST /api/restaurants/:id/tables/:tableId/bill/pay   (also …/bill/pay/retry)

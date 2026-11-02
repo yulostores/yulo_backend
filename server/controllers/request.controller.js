@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as requestService from '../services/request.service.js';
+import * as activityService from '../services/activity.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -27,6 +28,10 @@ export const create = asyncHandler(async (req, res) => {
   });
 
   sendSuccess(res, 201, 'Request raised', { request });
+  const dineIn = activityService.dineInOf(req, req.publicRestaurant._id);
+  if (dineIn?.tableId === String(result.data.tableId)) {
+    void activityService.record(req, req.publicRestaurant._id, 'waiter_called', { requestType: result.data.type });
+  }
 });
 
 // GET /api/restaurants/:id/requests?tableId= — the guest's own requests for the table

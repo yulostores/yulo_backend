@@ -41,6 +41,9 @@ const discountAppliedSchema = new mongoose.Schema(
     code: { type: String },
     description: { type: String },
     amount: { type: Number },
+    // A personal offer the owner sent a diner at this table (live customer activity): re-priced
+    // on every assemble while the bill is open, and redeemed when the bill is paid.
+    personal: { type: Boolean, default: false },
   },
   { _id: false }
 );
