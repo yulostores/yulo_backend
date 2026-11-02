@@ -3,6 +3,7 @@ import { env } from '../../config/env.js';
 import Order from '../../models/Order.js';
 import * as orderViewService from '../../services/orderView.service.js';
 import * as orderApprovalService from '../../services/orderApproval.service.js';
+import * as kitchenService from '../../services/kitchen.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
@@ -128,5 +129,71 @@ export const rejectOrder = asyncHandler(async (req, res) => {
   });
   sendSuccess(res, 200, 'Order rejected', {
     order: await orderViewService.enrichOrder(order.toObject()),
+  });
+});
+
+// The owner can do everything the chef and the waiter do to an order once it is accepted — so
+// when the kitchen or the floor is busy, the restaurant doesn't have to wait for them. QR
+// (dine-in) and customer-app (delivery / takeaway) orders alike; the same transitions and
+// side effects as the chef KDS and the waiter portal (kitchen.service.js updateOrderStatus:
+// refunds, bills, the ledger, the customer's notifications), recorded as the owner's.
+//
+// What stays out of the owner's hands: a 'placed' order (that is Accept / Reject), 'served'
+// on anything but dine-in, and, once a rider has accepted a delivery, 'out_for_delivery' and
+// 'delivered' — the rider's pickup code and the customer's delivery code move those.
+const ownerStatusSchema = z
+  .object({
+    newStatus: z.enum(['preparing', 'ready', 'served', 'out_for_delivery', 'delivered', 'cancelled']),
+    // Shown to the customer; required to cancel.
+    reason: z.string().trim().max(200).optional(),
+  })
+  .refine((b) => b.newStatus !== 'cancelled' || (b.reason ?? '').length >= 3, {
+    message: 'Give the customer a reason',
+    path: ['reason'],
+  });
+
+const RIDER_HOLDS = ['assigned', 'picked_up'];
+
+// PATCH /api/owner/:restaurantId/orders/:orderId/status { newStatus, reason? }
+export const updateOrderStatus = asyncHandler(async (req, res) => {
+  const result = ownerStatusSchema.safeParse(req.body ?? {});
+  if (!result.success) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid status', result.error.flatten());
+  }
+  const { newStatus, reason } = result.data;
+
+  const existing = await Order.findOne({ _id: req.params.orderId, restaurantId: req.restaurant._id })
+    .select('status type deliveryAssignment.status')
+    .lean();
+  if (!existing) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
+  kitchenService.assertNotAwaitingApproval(existing);
+
+  if (newStatus === 'served' && existing.type !== 'dine_in') {
+    throw new ApiError(400, 'INVALID_TRANSITION', "Only dine-in orders can be marked 'served'");
+  }
+  if (newStatus === 'out_for_delivery' && existing.type !== 'delivery') {
+    throw new ApiError(400, 'INVALID_TRANSITION', "Only delivery orders go 'out for delivery'");
+  }
+  if (
+    existing.type === 'delivery' &&
+    ['out_for_delivery', 'delivered'].includes(newStatus) &&
+    RIDER_HOLDS.includes(existing.deliveryAssignment?.status)
+  ) {
+    throw new ApiError(
+      409,
+      'RIDER_HANDLES_DELIVERY',
+      'A rider has this order — it goes out for delivery with their pickup code and is delivered with the customer’s code'
+    );
+  }
+
+  const order = await kitchenService.updateOrderStatus({
+    orderId: req.params.orderId,
+    currentStatus: existing.status,
+    newStatus,
+    actor: { staffId: null, staffName: req.user?.name || 'Restaurant', role: 'owner' },
+    reason,
+  });
+  sendSuccess(res, 200, 'Order status updated', {
+    order: await orderViewService.enrichOrder(order.toObject ? order.toObject() : order),
   });
 });

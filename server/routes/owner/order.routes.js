@@ -6,6 +6,7 @@ import {
   getOrder,
   acceptOrder,
   rejectOrder,
+  updateOrderStatus,
 } from '../../controllers/owner/order.controller.js';
 import { getBillForOrder } from '../../controllers/owner/bill.controller.js';
 
@@ -19,6 +20,9 @@ router.get('/pending', listPendingOrders);
 router.get('/:orderId', getOrder);
 router.patch('/:orderId/accept', acceptOrder);
 router.patch('/:orderId/reject', rejectOrder);
+// Kitchen and floor steps (preparing, ready, served, out for delivery, delivered, cancel) for
+// when the chef or waiter is busy — controllers/owner/order.controller.js updateOrderStatus.
+router.patch('/:orderId/status', updateOrderStatus);
 // The order -> bill lookup. Lives here rather than under /bills because it is keyed by an
 // order id, and it is what lets any order row open the receipt it ended up on.
 router.get('/:orderId/bill', getBillForOrder);
