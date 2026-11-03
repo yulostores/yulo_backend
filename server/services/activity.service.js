@@ -43,6 +43,10 @@ const COALESCED = {
   checkout_started: COALESCE.checkoutStartedMs,
   bill_viewed: COALESCE.viewMs,
 };
+// The QR menu app polls the bill while it is on screen, so a fixed window wrote one
+// "Opened the bill" row a minute for as long as the guest kept it open. This window slides:
+// one row per visit to the bill, a new one only after a minute away from it.
+const SLIDING = new Set(['bill_viewed']);
 
 const REQUEST_LABELS = { call_waiter: 'Called the waiter', water: 'Asked for water', bill: 'Asked for the bill' };
 const PREF_CACHE_SECONDS = 60;
@@ -74,19 +78,28 @@ export const __setRedisForTests = (client) => {
 // Map keeps insertion order, so the first key is the oldest; past LRU_MAX it is dropped.
 const windows = new Map();
 
-/** Claims `k` for `ms` — true the first time inside the window, false while it is held. */
-const claimWindow = async (k, ms) => {
+/**
+ * Claims `k` for `ms` — true the first time inside the window, false while it is held.
+ * With `slide`, every repeat inside the window pushes its end out again, so a stream of
+ * repeats less than `ms` apart folds into the one event that opened it.
+ */
+const claimWindow = async (k, ms, { slide = false } = {}) => {
   const client = liveRedis();
   if (client) {
     try {
-      return (await client.set(k, '1', 'EX', Math.ceil(ms / 1000), 'NX')) === 'OK';
+      const claimed = (await client.set(k, '1', 'EX', Math.ceil(ms / 1000), 'NX')) === 'OK';
+      if (!claimed && slide) await client.set(k, '1', 'EX', Math.ceil(ms / 1000));
+      return claimed;
     } catch (err) {
       logger.warn({ err: err.message }, 'live activity: coalesce key failed, using in-process window');
     }
   }
   const at = now().getTime();
   const heldUntil = windows.get(k);
-  if (heldUntil !== undefined && heldUntil > at) return false;
+  if (heldUntil !== undefined && heldUntil > at) {
+    if (slide) windows.set(k, at + ms);
+    return false;
+  }
   windows.delete(k);
   windows.set(k, at + ms);
   if (windows.size > LRU_MAX) windows.delete(windows.keys().next().value);
@@ -529,7 +542,7 @@ const recordNow = async (req, restaurantId, type, data) => {
   const atTable = session.channel === 'dine_in';
 
   const coalesceMs = COALESCED[type];
-  if (coalesceMs && !(await claimWindow(key.coalesce(session._id, type, data.menuItemId), coalesceMs))) {
+  if (coalesceMs && !(await claimWindow(key.coalesce(session._id, type, data.menuItemId), coalesceMs, { slide: SLIDING.has(type) }))) {
     // Folded into the earlier event; still counts as activity, at most every 30 s.
     if (await claimWindow(key.touch(session._id), COALESCE.lastActivityRefreshMs)) {
       const { modifiedCount } = await CustomerSession.updateOne(

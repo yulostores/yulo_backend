@@ -52,6 +52,12 @@ const PINCODE_PATTERN = '^[1-9][0-9]{5}$';
 const PAN_PATTERN = '^[A-Z]{5}[0-9]{4}[A-Z]$';
 // GSTIN: 2-digit state code, the holder's PAN, entity number, 'Z', checksum character.
 export const GSTIN_PATTERN = '^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$';
+// A web address, with or without http(s)://. The storefront renders it as a link, so
+// anything that isn't one ("javascript:…", free text) is refused.
+const WEBSITE_PATTERN = '^(https?://)?[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+(:[0-9]{1,5})?([/?#][^\\s]*)?$';
+// Delivery money is in rupees; past these it is a typo, not a price.
+export const MAX_DELIVERY_CHARGE = 1000;
+export const MAX_FREE_DELIVERY_THRESHOLD = 100000;
 
 // Every field the store-settings screen edits, addressed by its path in the PATCH payload
 // (which is also its path on the Restaurant document). `section` is the card it sits in;
@@ -81,6 +87,8 @@ export const STORE_SETTINGS_FIELDS = [
     section: 'profile',
     type: 'tags',
     required: false,
+    maxItems: 20,
+    itemMaxLength: 40,
   },
   {
     path: 'email',
@@ -112,6 +120,8 @@ export const STORE_SETTINGS_FIELDS = [
     type: 'url',
     required: false,
     maxLength: 200,
+    pattern: WEBSITE_PATTERN,
+    patternMessage: 'Enter a web address, e.g. https://example.com',
     placeholder: 'https://example.com',
   },
   {
@@ -320,6 +330,7 @@ export const STORE_SETTINGS_FIELDS = [
     type: 'number',
     required: false,
     min: 0,
+    max: MAX_DELIVERY_CHARGE,
   },
   {
     path: 'delivery.freeThreshold',
@@ -328,6 +339,7 @@ export const STORE_SETTINGS_FIELDS = [
     type: 'number',
     required: false,
     min: 0,
+    max: MAX_FREE_DELIVERY_THRESHOLD,
     placeholder: 'Leave blank for none',
   },
   {
@@ -395,6 +407,23 @@ export const validateField = (field, rawValue) => {
     return null;
   }
 
+  if (field.type === 'tags') {
+    if (!Array.isArray(value)) return `${field.label} must be a list`;
+    if (field.maxItems && value.length > field.maxItems) return `${field.label}: at most ${field.maxItems}`;
+    for (const item of value) {
+      if (typeof item !== 'string' || !item.trim()) return `${field.label} must be text`;
+      if (field.itemMaxLength && item.trim().length > field.itemMaxLength) {
+        return `Each of ${field.label.toLowerCase()} must be at most ${field.itemMaxLength} characters`;
+      }
+    }
+    return null;
+  }
+
+  if (field.type === 'date') {
+    const d = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(d.getTime()) ? `Enter a valid date for ${field.label}` : null;
+  }
+
   // A text rule can't be checked on a number/object — and must not wave it through either
   // (a GSTIN sent as a number would otherwise pass its pattern unchecked).
   if (typeof value !== 'string') {
@@ -426,27 +455,48 @@ export const effectiveField = (field, doc) => {
   return { ...field, required: true, ...condition.rules };
 };
 
-// Server-side gate for PATCH /owner/:rId/settings. Only the required fields are checked
-// here, and deliberately so: an owner whose *optional* GST number was captured in some
-// older format must still be able to save a phone-number correction, so a legacy value
-// they aren't touching can't be what blocks the form. The portal runs the full rule set
-// over what is on screen, and the required fields — the ones this gate exists for — are
-// enforced in both places.
-//
-// `doc` is the restaurant as it *would* be after the patch, so leaving a required field out
-// of the request doesn't slip past the check by simply not being mentioned.
-export const validateRequiredStoreSettings = (doc) => {
+// Values compared the way an owner sees them: trimmed text, blank = absent, dates by instant.
+const comparable = (v) => {
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === 'string') {
+    const t = v.trim();
+    if (!t) return null;
+    const asDate = /^\d{4}-\d{2}-\d{2}/.test(t) ? new Date(t) : null;
+    return asDate && !Number.isNaN(asDate.getTime()) ? asDate.toISOString() : t;
+  }
+  if (Array.isArray(v)) return v.length ? JSON.stringify(v.map(comparable)) : null;
+  return v ?? null;
+};
+const isBlankValue = (v) => comparable(v) === null;
+
+/**
+ * The gate for an edit of an existing restaurant (PATCH /owner/:rId/settings and
+ * /restaurant): every field the save CHANGES is checked against its full rules, required or
+ * optional; a field it leaves alone only blocks the save when it is required and missing.
+ * A value saved in an older format (a GSTIN, a year, a website from before a rule existed)
+ * therefore never stops an owner fixing something else — it is checked when it is edited.
+ * `paths` limits the check to the fields the endpoint writes; `onlyChanged` skips the
+ * required-and-missing check too, for a route that is not the settings form.
+ */
+export const validateStoreSettingsChanges = (before, after, { paths, onlyChanged = false } = {}) => {
   const fieldErrors = {};
-  for (const baseField of STORE_SETTINGS_FIELDS) {
-    const field = effectiveField(baseField, doc);
-    if (!field.required) continue;
-    const message = validateField(field, getByPath(doc, field.path));
-    if (message) fieldErrors[field.path] = message;
+  for (const listed of STORE_SETTINGS_FIELDS) {
+    if (paths && !paths.includes(listed.path)) continue;
+    const baseField = listed.path === 'establishedYear' ? { ...listed, max: new Date().getFullYear() } : listed;
+    const value = getByPath(after, baseField.path);
+    const condition = baseField.requiredWhen;
+    const changed =
+      comparable(getByPath(before, baseField.path)) !== comparable(value) ||
+      Boolean(condition && comparable(getByPath(before, condition.path)) !== comparable(getByPath(after, condition.path)));
+    let message = null;
+    if (changed) message = validateField(effectiveField(baseField, after), value);
+    else if (!onlyChanged && baseField.required && isBlankValue(value)) message = validateField(baseField, value);
+    if (message) fieldErrors[baseField.path] = message;
   }
   return fieldErrors;
 };
 
-// The same gate for POST /owner/restaurants, which accepts only the `onCreate` subset —
+// The gate for POST /owner/restaurants, which accepts only the `onCreate` subset —
 // checking the rest there would reject an application for details the endpoint has no way
 // to receive.
 export const validateCreateRestaurant = (doc) => {

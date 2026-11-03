@@ -160,6 +160,20 @@ describe('diner token and table sessions', () => {
     const sitting = await TableSession.findOne({ tableId: s.table._id }).lean();
     assert.deepEqual(sitting.dinerIds.map(String), [String(session.userId)]);
   });
+
+  test('the bill left open (polled every 15 s for 10 min) is one bill view; a return after a minute away is another', async () => {
+    const s = await setup();
+    const token = await s.diner();
+    await s.order(token, [[s.paneer, 1]]);
+    for (let i = 0; i < 40; i += 1) {
+      ok(await call('GET', `${s.tableBase}/bill`, bearer(token)));
+      t = new Date(t.getTime() + 15_000);
+    }
+    assert.equal(await ActivityEvent.countDocuments({ type: 'bill_viewed' }), 1);
+    t = new Date(t.getTime() + 61_000);
+    ok(await call('GET', `${s.tableBase}/bill`, bearer(token)));
+    assert.equal(await ActivityEvent.countDocuments({ type: 'bill_viewed' }), 2);
+  });
 });
 
 describe('offers to a diner', () => {

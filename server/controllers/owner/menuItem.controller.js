@@ -23,13 +23,54 @@ const parseArrayField = (raw) => {
 // the form: an MRP must be a real positive amount, and a "discounted" price must be a real
 // discount — positive and not above the MRP. A discount above the MRP was accepted before,
 // and the customer was charged it (₹300 for a ₹280-MRP dish). An empty discount means none.
+// ₹1,00,000 is a typo guard, not a business rule: ₹10¹⁵ used to save and go on the menu.
+export const MAX_ITEM_PRICE = 100000;
 const parsePrice = (raw, label) => {
   const n = Number(raw);
   if (raw === '' || raw == null || !Number.isFinite(n) || n <= 0) {
     throw new ApiError(400, 'VALIDATION_ERROR', `${label} must be a positive amount`);
   }
+  if (n > MAX_ITEM_PRICE) {
+    throw new ApiError(400, 'VALIDATION_ERROR', `${label} can be at most ₹${MAX_ITEM_PRICE.toLocaleString('en-IN')}`);
+  }
   return Math.round(n * 100) / 100;
 };
+
+// The rest of the item form, checked like the prices. Only values that change are checked on
+// an edit, so an item saved before a limit existed can still have its price corrected.
+const DESCRIPTION_MAX = 300;
+const INGREDIENTS_MAX = 50;
+const INGREDIENT_MAX_LENGTH = 60;
+const parsePrepTime = (raw) => {
+  if (raw === '' || raw == null) return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 240) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Preparation time must be 1 to 240 whole minutes');
+  }
+  return n;
+};
+const parseIngredients = (raw) => {
+  const list = parseArrayField(raw);
+  if (
+    !Array.isArray(list) ||
+    list.length > INGREDIENTS_MAX ||
+    list.some((i) => typeof i !== 'string' || i.trim().length > INGREDIENT_MAX_LENGTH)
+  ) {
+    throw new ApiError(
+      400,
+      'VALIDATION_ERROR',
+      `Up to ${INGREDIENTS_MAX} ingredients, each at most ${INGREDIENT_MAX_LENGTH} characters`
+    );
+  }
+  return list.map((i) => i.trim()).filter(Boolean);
+};
+const checkDescription = (raw) => {
+  if (raw != null && String(raw).length > DESCRIPTION_MAX) {
+    throw new ApiError(400, 'VALIDATION_ERROR', `Description must be at most ${DESCRIPTION_MAX} characters`);
+  }
+  return raw;
+};
+const sameAs = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const parseDiscount = (raw) => (raw === '' || raw == null || raw === 'null' ? null : parsePrice(raw, 'Discounted price'));
 const assertDiscountWithinMrp = (sellingPrice, discountedPrice) => {
   if (discountedPrice != null && discountedPrice > sellingPrice) {
@@ -58,6 +99,7 @@ export const create = asyncHandler(async (req, res) => {
 
   const price = parsePrice(sellingPrice, 'Selling price');
   const discount = parseDiscount(discountedPrice);
+  checkDescription(description);
   assertDiscountWithinMrp(price, discount);
   await assertOwnCategory(req.restaurant._id, categoryId);
 
@@ -70,8 +112,8 @@ export const create = asyncHandler(async (req, res) => {
     foodType,
     sellingPrice: price,
     discountedPrice: discount,
-    prepTime: prepTime != null ? Number(prepTime) : undefined,
-    ingredients: parseArrayField(ingredients),
+    prepTime: parsePrepTime(prepTime),
+    ingredients: parseIngredients(ingredients),
     badges: parseArrayField(badges),
     vegVariantId: vegVariantId || null,
   };
@@ -130,8 +172,16 @@ export const update = asyncHandler(async (req, res) => {
   );
   if (updates.categoryId !== undefined) await assertOwnCategory(req.restaurant._id, updates.categoryId);
   if (updates.subCategoryId === '') updates.subCategoryId = null;
-  if (updates.prepTime != null) updates.prepTime = Number(updates.prepTime);
-  if (updates.ingredients != null) updates.ingredients = parseArrayField(updates.ingredients);
+  if (updates.prepTime != null && Number(updates.prepTime) !== existing.prepTime) {
+    updates.prepTime = parsePrepTime(updates.prepTime);
+  } else if (updates.prepTime != null) updates.prepTime = existing.prepTime;
+  if (updates.ingredients != null) {
+    const list = parseArrayField(updates.ingredients);
+    updates.ingredients = sameAs(list, existing.ingredients) ? existing.ingredients : parseIngredients(list);
+  }
+  if (updates.description !== undefined && updates.description !== existing.description) {
+    checkDescription(updates.description);
+  }
   if (updates.badges != null) updates.badges = parseArrayField(updates.badges);
   if (updates.vegVariantId === '') updates.vegVariantId = null;
   let uploadedPublicId;
@@ -152,7 +202,9 @@ export const update = asyncHandler(async (req, res) => {
 
   let updated;
   try {
-    updated = await MenuItem.findByIdAndUpdate(existing._id, { $set: updates }, { new: true });
+    // runValidators: the model caps the name at 100 and the food type to its enum; an edit
+    // skipped both, so a 10 000-character name or foodType "meat" saved through PATCH.
+    updated = await MenuItem.findByIdAndUpdate(existing._id, { $set: updates }, { new: true, runValidators: true });
   } catch (err) {
     if (uploadedPublicId) await uploadService.deleteImage(uploadedPublicId);
     throw err;
@@ -193,12 +245,14 @@ export const toggle = asyncHandler(async (req, res) => {
 });
 
 export const updateIngredients = asyncHandler(async (req, res) => {
-  const { ingredients } = req.body;
+  const ingredients = parseIngredients(req.body?.ingredients);
   const item = await MenuItem.findOneAndUpdate(
     { _id: req.params.itemId, restaurantId: req.restaurant._id },
     { $set: { ingredients } },
     { new: true }
   );
   if (!item) throw new ApiError(404, 'NOT_FOUND', 'Menu item not found');
+  // Guests read the menu through this cache; the item form's own save already clears it.
+  await menuService.invalidateMenu(req.restaurant._id);
   sendSuccess(res, 200, 'Ingredients updated', { item });
 });

@@ -8,8 +8,10 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 
 const updateProfileSchema = z
   .object({
-    name: z.string().min(2).optional(),
-    phone: z.string().optional(),
+    // Bounded and shaped like everywhere else: a 300-character name and a phone of "12" both
+    // saved from the owner's Profile screen. `phone: null` removes it (see updateMe).
+    name: z.string().trim().min(2, 'Name must be at least 2 characters').max(80, 'Name must be at most 80 characters').optional(),
+    phone: z.string().trim().regex(/^\d{10}$/, 'Enter a valid 10-digit phone number').nullable().optional(),
     profilePicture: z.string().url().optional(),
     // `avatarUrl` is an accepted alias for `profilePicture`, not a second field — see the
     // comment on User.js's `preferences` field for why no separate avatarUrl column exists.
@@ -29,16 +31,26 @@ export const updateMe = asyncHandler(async (req, res) => {
   // untouched Name doesn't trip `min(2)` and an untouched avatar URL isn't parsed as a
   // malformed URL. JSON callers are unchanged — they simply omit the keys.
   const body = { ...req.body };
+  // A JSON `phone: ""` is the Profile screen clearing the number on purpose; dropping it with
+  // the multipart blanks below made "remove my phone" a silent no-op.
+  const clearsPhone = !req.is('multipart/form-data') && typeof body.phone === 'string' && body.phone.trim() === '';
   for (const [key, value] of Object.entries(body)) {
     if (typeof value === 'string' && value.trim() === '') delete body[key];
   }
+  if (clearsPhone) body.phone = null;
 
   const result = updateProfileSchema.safeParse(body);
   if (!result.success) {
-    throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid input', result.error.flatten());
+    const flat = result.error.flatten();
+    throw new ApiError(400, 'VALIDATION_ERROR', Object.values(flat.fieldErrors).flat()[0] ?? 'Invalid input', flat);
   }
 
   const updates = { ...result.data };
+  const unset = {};
+  if (updates.phone === null) {
+    delete updates.phone;
+    unset.phone = 1; // sparse unique index: a stored null would still collide
+  }
 
   // `authenticate` puts only _id/role/name/email on req.user, so the outgoing avatar has
   // to be read before the write to know what to reap afterwards. Only worth a query on
@@ -66,7 +78,11 @@ export const updateMe = asyncHandler(async (req, res) => {
 
   let user;
   try {
-    user = await User.findByIdAndUpdate(req.user._id, { $set: updates }, { new: true });
+    user = await User.findByIdAndUpdate(
+      req.user._id,
+      { $set: updates, ...(Object.keys(unset).length && { $unset: unset }) },
+      { new: true }
+    );
   } catch (err) {
     // The DB write failed — don't strand the image we just pushed to Cloudinary.
     if (uploadedPublicId) await uploadService.deleteImage(uploadedPublicId).catch(() => {});

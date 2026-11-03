@@ -6,11 +6,21 @@ import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 
 // Base fields without refine — extend first, then refine per branch (Zod v4 requirement)
+// Money caps are typo guards, in rupees: no restaurant offer is worth ₹1 lakh off.
+export const OFFER_LIMITS = Object.freeze({ nameMax: 100, codeMax: 30, descriptionMax: 300, amountMax: 100000 });
+const COUPON_CODE = /^[A-Za-z0-9_-]+$/;
+
 const baseFields = {
-  offerName: z.string().min(1),
-  code: z.string().optional(),
+  offerName: z.string().trim().min(1, 'Add an offer name').max(OFFER_LIMITS.nameMax, `Offer name must be at most ${OFFER_LIMITS.nameMax} characters`),
+  code: z
+    .string()
+    .trim()
+    .max(OFFER_LIMITS.codeMax, `Coupon code must be at most ${OFFER_LIMITS.codeMax} characters`)
+    .regex(COUPON_CODE, 'Coupon codes use only letters, numbers, - and _')
+    .optional(),
+  description: z.string().trim().max(OFFER_LIMITS.descriptionMax, `Description must be at most ${OFFER_LIMITS.descriptionMax} characters`).optional(),
   applicableTo: z.enum(['dine_in', 'delivery', 'both']).default('both'),
-  minimumOrderValue: z.number().min(0).default(0),
+  minimumOrderValue: z.number().min(0).max(OFFER_LIMITS.amountMax).default(0),
   startDate: z.coerce.date(),
   endDate: z.coerce.date(),
   applicableTableNumbers: z.array(z.string()).optional(),
@@ -26,11 +36,11 @@ const dateRefineOpts = { message: 'endDate must be after startDate', path: ['end
 const discountSchema = z.discriminatedUnion('type', [
   z.object({ ...baseFields, type: z.literal('percentage'), percentage: z.number().min(1).max(100) })
     .refine(dateRefine, dateRefineOpts),
-  z.object({ ...baseFields, type: z.literal('flat_amount'), flatAmount: z.number().positive() })
+  z.object({ ...baseFields, type: z.literal('flat_amount'), flatAmount: z.number().positive().max(OFFER_LIMITS.amountMax) })
     .refine(dateRefine, dateRefineOpts),
   z.object({ ...baseFields, type: z.literal('free_item'), freeItemId: z.string().min(1), freeItemName: z.string().optional() })
     .refine(dateRefine, dateRefineOpts),
-  z.object({ ...baseFields, type: z.literal('tablewise'), flatAmount: z.number().positive(), applicableTableNumbers: z.array(z.string()).min(1) })
+  z.object({ ...baseFields, type: z.literal('tablewise'), flatAmount: z.number().positive().max(OFFER_LIMITS.amountMax), applicableTableNumbers: z.array(z.string().trim().min(1).max(30)).min(1).max(100) })
     .refine(dateRefine, dateRefineOpts),
 ]);
 

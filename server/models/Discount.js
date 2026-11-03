@@ -11,6 +11,9 @@ const discountSchema = new mongoose.Schema(
     },
     offerName: { type: String, required: true },
     code: { type: String, default: null },
+    // What the owner wrote for guests in the offer composer. It was typed, previewed and then
+    // dropped: neither this model nor the route had the field.
+    description: { type: String, default: null, maxlength: 300 },
     // Cloudinary secure URL of the offer artwork (yulostores/discounts/<restaurantId>),
     // uploaded with the create/update request as the `image` file part.
     image: { type: String, default: null },

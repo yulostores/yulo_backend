@@ -14,6 +14,36 @@ const isClientHttpError = (err) =>
   Boolean(err?.expose) && Number.isInteger(err.status) && err.status >= 400 && err.status < 500;
 
 // eslint-disable-next-line no-unused-vars
+const SCOPE_KEYS = new Set(['restaurantId', 'ownerId', 'userId', '_id']);
+const DUPLICATE_MESSAGES = {
+  code: 'This coupon code is already in use',
+  identifier: 'A table with this number already exists',
+  name: 'Something with this name already exists',
+  email: 'email already exists',
+  phone: 'This phone number is already in use',
+};
+
+const humanField = (path) => {
+  const last = String(path).split('.').pop();
+  const words = last.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ').toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+};
+const readableValidation = (path, e) => {
+  // A schema's own message ("Enter a valid 6-digit PIN code") is already written for people.
+  if (e?.message && !/Path `/.test(e.message) && e.name !== 'CastError') return e.message;
+  const label = humanField(path);
+  const p = e?.properties ?? {};
+  switch (e?.kind) {
+    case 'required': return `${label} is required`;
+    case 'maxlength': return `${label} must be at most ${p.maxlength} characters`;
+    case 'minlength': return `${label} must be at least ${p.minlength} characters`;
+    case 'max': return `${label} must be ${p.max} or less`;
+    case 'min': return `${label} must be ${p.min} or more`;
+    case 'enum': return `Choose a valid ${label.toLowerCase()}`;
+    default: return e?.name === 'CastError' ? `${label} has an invalid value` : `${label} is invalid`;
+  }
+};
+
 export const errorHandler = (err, req, res, next) => {
   // Expected, deliberate failures (a wrong OTP, an expired token, a validation miss) were
   // logged at error level with a full stack, which buried the ones that actually need
@@ -87,19 +117,30 @@ export const errorHandler = (err, req, res, next) => {
   }
 
   if (err.name === 'ValidationError') {
+    // Mongoose's own text ("MenuItem validation failed: name: Path `name` (`…`, length 150) is
+    // longer than…") reached the screen as-is. Say it the way a person would.
+    const fieldErrors = Object.fromEntries(
+      Object.entries(err.errors ?? {}).map(([path, e]) => [path, readableValidation(path, e)])
+    );
+    const first = Object.values(fieldErrors)[0];
     return res.status(400).json({
       status: 'error',
       code: 'VALIDATION_ERROR',
-      message: err.message,
+      message: first ?? err.message,
+      ...(first && { details: { fieldErrors } }),
     });
   }
 
   if (err.code === 11000) {
-    const field = Object.keys(err.keyPattern)[0];
+    // Name the field the person typed. Most unique indexes are scoped per restaurant, and
+    // naming the first key gave "restaurantId already exists" for a duplicate table number.
+    const keys = Object.keys(err.keyPattern ?? {});
+    const field = keys.find((k) => !SCOPE_KEYS.has(k)) ?? keys[0] ?? 'value';
     return res.status(409).json({
       status: 'error',
       code: 'DUPLICATE_KEY',
-      message: `${field} already exists`,
+      field,
+      message: DUPLICATE_MESSAGES[field] ?? `${field} already exists`,
     });
   }
 

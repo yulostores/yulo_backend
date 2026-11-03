@@ -6,9 +6,35 @@ import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import {
+  STORE_SETTINGS_FIELDS,
   buildStoreSettingsRequirements,
-  validateRequiredStoreSettings,
+  effectiveField,
+  validateField,
+  validateStoreSettingsChanges,
 } from '../../config/storeSettings.config.js';
+
+const LOCKED_SECTIONS = new Set(['business', 'licenses']);
+const IST_DAY = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
+// A date round-trips through <input type="date"> as the calendar day the owner saw, so the
+// stored instant and the sent YYYY-MM-DD are the same date if they name the same day in
+// India or in UTC.
+const sameSavedValue = (field, saved, sent) => {
+  if (field.type === 'date') {
+    const a = new Date(saved);
+    const b = new Date(sent);
+    if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return String(saved) === String(sent);
+    const utc = (d) => d.toISOString().slice(0, 10);
+    return IST_DAY.format(a) === IST_DAY.format(b) || utc(a) === utc(b) || IST_DAY.format(a) === utc(b);
+  }
+  const norm = (v) => String(v ?? '').trim().toUpperCase();
+  return norm(saved) === norm(sent);
+};
+
+// The fields PATCH /settings writes — delivery has its own endpoint, the brand images ride
+// along as files.
+const SETTINGS_FORM_PATHS = STORE_SETTINGS_FIELDS
+  .map((f) => f.path)
+  .filter((path) => !path.startsWith('delivery.') && path !== 'logo' && path !== 'bannerImage');
 
 const invalidateRestaurantCache = (restaurantId) =>
   cacheService.invalidate(`cache:restaurant:${restaurantId}`);
@@ -117,8 +143,9 @@ export const updateSettings = asyncHandler(async (req, res) => {
   const existingSettings = asObject(existing.settings);
   const addressIsStringified = typeof existing.address === 'string';
   const settingsIsStringified = typeof existing.settings === 'string';
-  const fieldErrors = validateRequiredStoreSettings({
-    ...existing,
+  const before = { ...existing, address: existingAddress, settings: existingSettings };
+  const after = {
+    ...before,
     ...(name !== undefined && { name }),
     ...(email !== undefined && { email }),
     ...(phone !== undefined && { phone }),
@@ -129,20 +156,42 @@ export const updateSettings = asyncHandler(async (req, res) => {
     ...(gstRegistered !== undefined && { gstRegistered }),
     address: { ...existingAddress, ...address },
     settings: { ...existingSettings, ...settings },
-  });
-  // The GST number's extra rules (required, real GSTIN) apply once the restaurant is
-  // GST-registered — but only to a save that touches the GST details. A registered restaurant
-  // holding a number captured in an older format must still be able to fix its phone number;
-  // the number is checked again the moment either GST field is edited.
-  const touchesGst = gstRegistered !== undefined || settings?.gstNumber !== undefined;
-  if (!touchesGst) delete fieldErrors['settings.gstNumber'];
+  };
+  // Every field this save changes is checked in full — optional ones included, which this
+  // gate used to skip (a website of "javascript:…", a 600-character description, a year of
+  // 3000 all saved). A field it leaves alone only blocks when it is required and missing, so
+  // a value saved in an older format (the GST number, a legal entity type from before the
+  // list) never stops an owner correcting their phone number.
+  const fieldErrors = validateStoreSettingsChanges(before, after, { paths: SETTINGS_FORM_PATHS });
   if (Object.keys(fieldErrors).length > 0) {
     throw new ApiError(
       400,
       'VALIDATION_ERROR',
-      'Some required details are missing or invalid',
+      'Some details are missing or invalid',
       { fieldErrors }
     );
+  }
+
+  // "Once saved they can only be changed by platform support" — the portal shows saved
+  // business and licence details read-only, but this route took a new PAN, legal entity or
+  // GST number from anyone calling it directly. A value already on file stays as it is;
+  // filling in one that was never saved is still allowed.
+  const lockedErrors = {};
+  for (const field of STORE_SETTINGS_FIELDS) {
+    if (!LOCKED_SECTIONS.has(field.section)) continue;
+    const key = field.path.slice('settings.'.length);
+    if (settings?.[key] === undefined) continue;
+    const saved = existingSettings[key];
+    if (saved === undefined || saved === null || String(saved).trim() === '') continue;
+    // A saved value in an older, now-invalid format (a GSTIN from before the check) may still
+    // be corrected by the owner — only a valid value on file is locked.
+    if (validateField(effectiveField(field, after), saved)) continue;
+    if (!sameSavedValue(field, saved, settings[key])) {
+      lockedErrors[field.path] = `${field.label} is saved — ask Yulo support to change it`;
+    }
+  }
+  if (Object.keys(lockedErrors).length > 0) {
+    throw new ApiError(400, 'FIELD_LOCKED', Object.values(lockedErrors)[0], { fieldErrors: lockedErrors });
   }
 
   // Held so the superseded Cloudinary assets can be reaped after a successful write, and

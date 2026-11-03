@@ -126,9 +126,19 @@ export const getPayoutAccount = async (restaurantId) => {
   return payoutAccountView(restaurant);
 };
 
+// A stored number that can't be decrypted (written under an earlier DATA_ENCRYPTION_KEY) is
+// not "the same account" — it must not turn an owner's new account into a 500 either.
+const storedNumber = (encrypted) => {
+  try {
+    return decryptField(encrypted);
+  } catch {
+    return null;
+  }
+};
+
 const sameDetails = (stored, data) =>
   Boolean(stored?.accountNumberEncrypted) &&
-  decryptField(stored.accountNumberEncrypted) === data.accountNumber &&
+  storedNumber(stored.accountNumberEncrypted) === data.accountNumber &&
   stored.accountHolderName === data.accountHolderName &&
   stored.ifsc === data.ifsc &&
   (stored.bankName ?? null) === (data.bankName ?? null) &&

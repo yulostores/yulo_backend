@@ -285,6 +285,49 @@ test('owner can mark a dine-in bill paid by UPI at the counter', async () => {
   assert.equal((await RestaurantLedgerEntry.findOne({ billId: bill._id }).lean()).amountPaise, 1242);
 });
 
+test('a round added after the bill was raised is on the owner\'s bill and is what gets settled', async () => {
+  await seatAndServe();
+  const billing = await import('../services/billing.service.js');
+  const bill = await billing.assembleBill(session._id);
+  const stale = bill.grandTotal;
+  // The waiter rings in another round on the same sitting, and it is served.
+  const round2 = await Order.create({
+    restaurantId: seed.restaurant._id,
+    tableSessionId: session._id,
+    tableId: table._id,
+    type: 'dine_in',
+    placedBy: 'waiter',
+    items: [{ menuItemId: seed.dish._id, name: 'Thali', price: 300, quantity: 1 }],
+    subtotal: 300,
+    status: 'served',
+  });
+  await TableSession.updateOne({ _id: session._id }, { $push: { orders: round2._id } });
+  const owner = { authorization: `Bearer ${generateTokens(seed.owner._id, 'restaurant_owner').accessToken}` };
+
+  const view = await srv.get(`/api/owner/${seed.restaurant._id}/bills/${bill._id}`, owner);
+  assert.equal(view.status, 200);
+  const fresh = view.body.data.bill.charges.grandTotal;
+  assert.ok(fresh > stale, `the owner's copy is re-priced (${stale} → ${fresh})`);
+
+  const refused = await srv.request('POST', `/api/owner/${seed.restaurant._id}/bills/${bill._id}/mark-paid`, {
+    headers: owner,
+    body: { method: 'cash', expectedTotal: stale },
+  });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.code, 'BILL_TOTAL_CHANGED');
+  assert.equal((await Bill.findById(bill._id).lean()).status, 'open');
+
+  // Without the shown total (older clients, the waiter), it is re-priced and settled in full.
+  const paid = await srv.request('POST', `/api/owner/${seed.restaurant._id}/bills/${bill._id}/mark-paid`, {
+    headers: owner,
+    body: { method: 'cash' },
+  });
+  assert.equal(paid.status, 200, JSON.stringify(paid.body));
+  const settled = await Bill.findById(bill._id).lean();
+  assert.equal(settled.grandTotal, fresh);
+  assert.equal(settled.batches.length, 2);
+});
+
 // ── Masking ───────────────────────────────────────────────────────────────────
 
 test('public session and bill never expose other diners\' names, phones or internal ids', async () => {

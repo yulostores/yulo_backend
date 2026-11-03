@@ -111,14 +111,16 @@ export const acceptOrder = asyncHandler(async (req, res) => {
 });
 
 const rejectSchema = z.object({
-  reason: z.string().trim().min(3, 'Give the customer a reason').max(200),
+  reason: z.string({ error: 'A rejection reason is required' }).trim().min(3, 'Give the customer a reason').max(200, 'Keep the reason under 200 characters'),
 });
 
 // PATCH /api/owner/:restaurantId/orders/:orderId/reject { reason }
 export const rejectOrder = asyncHandler(async (req, res) => {
   const result = rejectSchema.safeParse(req.body ?? {});
   if (!result.success) {
-    throw new ApiError(400, 'VALIDATION_ERROR', 'A rejection reason is required', result.error.flatten());
+    // The field's own message: a 5 000-character reason used to answer "…reason is required".
+    const flat = result.error.flatten();
+    throw new ApiError(400, 'VALIDATION_ERROR', flat.fieldErrors.reason?.[0] ?? 'A rejection reason is required', flat);
   }
 
   const order = await orderApprovalService.rejectOrder({

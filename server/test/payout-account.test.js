@@ -182,6 +182,15 @@ test('re-saving identical details keeps it verified; before verification a chang
   assert.equal(decryptField(doc.payoutAccount.accountNumberEncrypted), ACCOUNT);
 });
 
+test('a stored number that no longer decrypts (an older key) does not 500 a new account', async () => {
+  await ownerPut(VALID);
+  assert.equal((await adminVerify()).status, 200);
+  await Restaurant.updateOne({ _id: restaurant._id }, { $set: { 'payoutAccount.accountNumberEncrypted': 'v1:AAAA:BBBB:CCCC' } });
+  const res = await ownerPut({ ...VALID, accountNumber: '5555666677', confirmAccountNumber: '5555666677' });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.data.changeRequested, true);
+});
+
 // ── Admin ─────────────────────────────────────────────────────────────────────
 
 test('admin view is masked; reveal returns the full number once and is audit-logged', async () => {

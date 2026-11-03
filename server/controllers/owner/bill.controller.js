@@ -46,13 +46,22 @@ export const listBills = asyncHandler(async (req, res) => {
   });
 });
 
+// An open dine-in bill is re-priced on read, as the floor's and the guest's bill screens do —
+// a round added after it was raised was otherwise missing from the owner's copy, and the
+// "Mark ₹… as paid" button offered the old total.
+const current = async (bill) => {
+  if (!bill || bill.status !== 'open' || !bill.tableSessionId) return bill;
+  const fresh = await billingService.assembleBill(bill.tableSessionId);
+  return fresh?.toObject ? fresh.toObject() : fresh;
+};
+
 export const getBill = asyncHandler(async (req, res) => {
   const bill = await Bill.findOne({
     _id: req.params.billId,
     restaurantId: req.restaurant._id,
   }).lean();
   if (!bill) throw new ApiError(404, 'NOT_FOUND', 'Bill not found');
-  sendSuccess(res, 200, 'Bill', { bill: await billViewService.buildBillView(bill) });
+  sendSuccess(res, 200, 'Bill', { bill: await billViewService.buildBillView(await current(bill)) });
 });
 
 // GET /api/owner/:restaurantId/orders/:orderId/bill — the order -> bill lookup the portal
@@ -66,6 +75,10 @@ export const getBillForOrder = asyncHandler(async (req, res) => {
     restaurantId: req.restaurant._id,
   });
   if (!order) throw new ApiError(404, 'NOT_FOUND', 'Order not found');
+  if (bill?.status === 'open' && bill.tableSessionId) {
+    const fresh = await current(await Bill.findById(bill._id).lean());
+    return sendSuccess(res, 200, 'Bill', { bill: await billViewService.buildBillView(fresh) });
+  }
   sendSuccess(res, 200, 'Bill', { bill });
 });
 
@@ -85,6 +98,8 @@ export const markBillPaid = asyncHandler(async (req, res) => {
     billId: bill._id,
     restaurantId: req.restaurant._id,
     method: req.body?.method,
+    // The total the owner was shown; a mismatch answers 409 BILL_TOTAL_CHANGED.
+    expectedTotal: req.body?.expectedTotal,
   });
   sendSuccess(res, 200, 'Bill marked as paid', { bill: await billViewService.buildBillView(paid) });
 });
