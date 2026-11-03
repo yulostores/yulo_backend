@@ -90,7 +90,7 @@ export const updateRestaurant = asyncHandler(async (req, res) => {
 
   const updated = await Restaurant.findByIdAndUpdate(
     req.restaurant._id,
-    { $set: updates },
+    { $set: { ...updates, ownerEditedAt: new Date() } },
     { new: true, runValidators: true }
   );
 

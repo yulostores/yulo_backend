@@ -368,7 +368,11 @@ export const getPayoutSummary = async (periodType = PAYABLE_PERIOD) => {
   const current = await getPeriod(periodType);
   const period = periodType === PAYABLE_PERIOD ? await getPeriod(periodType, new Date(current.start.getTime() - 1)) : current;
   const { settlementCycle } = await getActiveSettings();
-  const rows = (await Payout.find({ periodType, periodStart: period.start }).lean()).map((r) => withPayable(r, settlementCycle));
+  // Only partners that still exist: removing a partner deletes the partner, not its payout
+  // rows, and those used to be counted (and sent by "Clear Pending Payments") as if live.
+  const rows = (
+    await Payout.find({ periodType, periodStart: period.start, partnerId: { $in: partners.map((p) => p._id) } }).lean()
+  ).map((r) => withPayable(r, settlementCycle));
 
   const payable = rows.filter((r) => r.payable);
   const totalPayable = payable.reduce((sum, r) => sum + r.netPayable, 0);

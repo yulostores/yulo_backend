@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { toPaise } from '../utils/money.js';
 import RestaurantSettlement from '../models/RestaurantSettlement.js';
 import RestaurantLedgerEntry from '../models/RestaurantLedgerEntry.js';
 import Restaurant from '../models/Restaurant.js';
@@ -165,7 +166,9 @@ export const clearanceQueue = async ({ restaurantId, page = 1, limit = 20, now =
         displayNo: displayNoOfOrder(o),
         restaurantId: o.restaurantId,
         placedAt: o.createdAt,
-        customerPaidPaise: o.charges?.grandTotal ?? o.paymentAmountPaise ?? null,
+        // Orders from before the pricing engine have no `charges` or payment amount — only the
+        // rupee grandTotal they were placed for.
+        customerPaidPaise: o.charges?.grandTotal ?? o.paymentAmountPaise ?? (o.grandTotal != null ? toPaise(o.grandTotal) : null),
         expectedPayoutPaise: expected,
         clearsAt: null, // after delivery + T+2
         stage: 'awaiting_delivery',

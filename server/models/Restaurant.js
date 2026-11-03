@@ -165,6 +165,10 @@ const restaurantSchema = new mongoose.Schema(
     liveActivityEnabled: { type: Boolean, select: false },
     submittedAt: { type: Date, default: Date.now },
     reviewedAt: { type: Date },
+    // The last time the OWNER changed their restaurant's details or documents. Admin actions
+    // (notes, suspend, remove, live activity) bump updatedAt too, so "edited since the
+    // rejection" on the admin store list compares this, not updatedAt.
+    ownerEditedAt: { type: Date },
     reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     rejectionReason: { type: String },
     documents: [restaurantDocumentSchema],

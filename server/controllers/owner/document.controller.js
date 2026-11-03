@@ -150,6 +150,7 @@ export const uploadDocument = asyncHandler(async (req, res) => {
     restaurant.set('payoutAccount.pendingChange.proofDocumentId', proof._id);
   }
 
+  restaurant.ownerEditedAt = new Date();
   try {
     await restaurant.save();
   } catch (err) {
@@ -185,6 +186,7 @@ export const deleteDocument = asyncHandler(async (req, res) => {
   const publicId = doc.publicId ?? uploadService.extractPublicId(doc.url);
   const resourceType = doc.resourceType ?? uploadService.extractResourceType(doc.url);
   doc.deleteOne();
+  restaurant.ownerEditedAt = new Date();
   await restaurant.save();
 
   if (publicId) await uploadService.deleteAsset(publicId, resourceType).catch(() => {});

@@ -13,6 +13,7 @@ import { geocodeAddress, resolveRestaurantCoordinates } from '../../services/geo
 import { STORE_STATUSES, shapeCounts } from '../../services/adminStats.service.js';
 import { setRestaurantLiveActivity } from '../../services/liveActivityAccess.service.js';
 import { isLiveActivityEnabled } from '../../config/liveActivity.config.js';
+import { DELIVERY_FIELDS } from '../../config/storeSettings.config.js';
 import {
   effectiveField,
   getStoreSettingsField,
@@ -46,13 +47,16 @@ const UPDATABLE_FIELDS = [
 
 export const list = asyncHandler(async (req, res) => {
   const { status, plan, search, page = 1, limit = 20 } = req.query;
-  const filter = {};
-  if (status) filter.approvalStatus = status;
+  // A removed store (soft-deleted: isActive false, approval status untouched) is off the
+  // platform: left out of the list and its counts unless asked for with status=removed.
+  const removedOnly = status === 'removed';
+  const filter = removedOnly ? { isActive: false } : { isActive: { $ne: false } };
+  if (status && !removedOnly) filter.approvalStatus = status;
   if (plan) filter.plan = plan;
   if (search) filter.name = { $regex: search, $options: 'i' };
 
   const skip = (Number(page) - 1) * Number(limit);
-  const [stores, total, statusCountsAgg] = await Promise.all([
+  const [stores, total, statusCountsAgg, removedCount] = await Promise.all([
     Restaurant.find(filter)
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -60,7 +64,11 @@ export const list = asyncHandler(async (req, res) => {
       .populate('ownerId', 'name email phone')
       .lean(),
     Restaurant.countDocuments(filter),
-    Restaurant.aggregate([{ $group: { _id: '$approvalStatus', count: { $sum: 1 } } }]),
+    Restaurant.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      { $group: { _id: '$approvalStatus', count: { $sum: 1 } } },
+    ]),
+    Restaurant.countDocuments({ isActive: false }),
   ]);
 
   const revenueAgg = await Bill.aggregate([
@@ -78,7 +86,7 @@ export const list = asyncHandler(async (req, res) => {
     total,
     page: Number(page),
     pages: Math.ceil(total / Number(limit)),
-    statusCounts: shapeCounts(STORE_STATUSES, statusCountsAgg),
+    statusCounts: { ...shapeCounts(STORE_STATUSES, statusCountsAgg), removed: removedCount },
   });
 });
 
@@ -102,16 +110,24 @@ const createSchema = z.object({
       pincode: z.string().optional(),
     })
     .optional(),
+  // [longitude, latitude], each inside its real range.
   location: z
-    .object({ coordinates: z.array(z.number()).length(2) })
+    .object({ coordinates: z.tuple([z.number().min(-180).max(180), z.number().min(-90).max(90)]) })
     .optional(),
+  // The same bounds the owner's own delivery form is held to (config/storeSettings.config.js)
+  // — a negative radius used to be saved here and then read as "unset", i.e. the full 25 km.
   delivery: z
-    .object({
-      radiusKm: z.number().optional(),
-      baseCharge: z.number().optional(),
-      freeThreshold: z.number().optional(),
-      estimatedMinutes: z.number().optional(),
-    })
+    .object(
+      Object.fromEntries(
+        DELIVERY_FIELDS.map((field) => {
+          let schema = z.number();
+          if (field.integer) schema = schema.int();
+          if (field.min !== undefined) schema = schema.min(field.min);
+          if (field.max !== undefined) schema = schema.max(field.max);
+          return [field.path.split('.').pop(), schema.optional()];
+        })
+      )
+    )
     .optional(),
   settings: z.record(z.any()).optional(),
   // HHMM integers, matching Restaurant.operatingHours (900 = 09:00).
@@ -337,6 +353,54 @@ export const update = asyncHandler(async (req, res) => {
     if (req.body[field] !== undefined) data[field] = req.body[field];
   }
 
+  // Held to the same rules as creating a store: delivery fields in range (a negative radius
+  // used to be saved, then read as "unset" — the full 25 km) and well-formed opening hours.
+  for (const field of ['delivery', 'operatingHours']) {
+    if (data[field] === undefined) continue;
+    const checked = createSchema.shape[field].safeParse(data[field]);
+    if (!checked.success) {
+      throw new ApiError(400, 'VALIDATION_ERROR', `Invalid ${field === 'delivery' ? 'delivery charges' : 'opening hours'}`, checked.error.flatten());
+    }
+    data[field] = checked.data;
+  }
+
+  // The fields an admin types by hand, against the same rules as the owner's store settings
+  // (a 10-digit "pincode" used to be saved). Blank optional values stay allowed, so a store
+  // created with gaps can still be edited.
+  const typed = [
+    ['name', data.name],
+    ['email', data.email],
+    ['phone', data.phone],
+    ['description', data.description],
+    ['address.pincode', data.address?.pincode],
+  ];
+  const fieldErrors = {};
+  // Only values that changed: the edit forms send every field back, and a store saved before
+  // these checks (a pincode with a space, a phone with +91) must still accept other edits.
+  const before = await Restaurant.findById(req.params.id).select('name email phone description address.pincode').lean();
+  const stored = (path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), before);
+  for (const [path, value] of typed) {
+    if (value === undefined || (path !== 'name' && String(value).trim() === '')) continue;
+    if (before && value === stored(path)) continue;
+    const message = validateField(getStoreSettingsField(path), value);
+    if (message) fieldErrors[path] = message;
+  }
+  // Business settings: the whole object comes back on every save, so only values that
+  // changed are checked — a store with an old, malformed value can still be edited otherwise.
+  const SETTINGS_CHECKED = ['legalEntityType', 'ownerName', 'panNumber', 'healthPermitId', 'registrationNo'];
+  if (data.settings && typeof data.settings === 'object' && SETTINGS_CHECKED.some((k) => Object.hasOwn(data.settings, k))) {
+    const current = await Restaurant.findById(req.params.id).select('settings').lean();
+    for (const key of SETTINGS_CHECKED) {
+      const value = data.settings[key];
+      if (value === undefined || value === null || String(value).trim() === '' || value === current?.settings?.[key]) continue;
+      const message = validateField(getStoreSettingsField(`settings.${key}`), value);
+      if (message) fieldErrors[`settings.${key}`] = message;
+    }
+  }
+  if (Object.keys(fieldErrors).length) {
+    throw new ApiError(400, 'VALIDATION_ERROR', Object.values(fieldErrors)[0], { fieldErrors });
+  }
+
   // The same rule the owner's store-settings form is held to: a GST-registered restaurant
   // must carry a valid GSTIN. Checked against the store as it would be after this update, so
   // switching the flag on without a number (or clearing the number) is refused.
@@ -403,7 +467,8 @@ export const update = asyncHandler(async (req, res) => {
 // is NOT best-effort — an admin who pressed this button is asking whether the lookup
 // works, so a failure is a 400 that says so rather than a 200 that changed nothing.
 const locationSchema = z.object({
-  coordinates: z.tuple([z.number(), z.number()]).optional(),
+  // [longitude, latitude], each inside its real range.
+  coordinates: z.tuple([z.number().min(-180).max(180), z.number().min(-90).max(90)]).optional(),
 });
 
 export const updateLocation = asyncHandler(async (req, res) => {

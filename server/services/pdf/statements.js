@@ -34,7 +34,10 @@ const STAGE = {
 
 const zone = async () => (await getActiveSettings()).settlementCycle?.timezone ?? 'Asia/Kolkata';
 const restaurantName = async (id) => (await Restaurant.findById(id).select('name').lean())?.name ?? 'Restaurant';
-const fileDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : 'undated');
+// The India calendar date: periods start at IST midnight, which is the previous day in UTC —
+// the UTC date used to name a 2 Nov statement "…-2026-11-01".
+const fileDate = (d) =>
+  d ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(d)) : 'undated';
 
 const ordersTable = (doc, orders, timezone) =>
   table(

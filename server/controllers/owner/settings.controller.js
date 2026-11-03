@@ -251,7 +251,7 @@ export const updateSettings = asyncHandler(async (req, res) => {
     // matches PATCH /owner/:rId/restaurant.
     updated = await Restaurant.findByIdAndUpdate(
       req.restaurant._id,
-      { $set: patch },
+      { $set: { ...patch, ownerEditedAt: new Date() } },
       { new: true, runValidators: true }
     );
   } catch (err) {

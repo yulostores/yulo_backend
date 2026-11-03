@@ -5,6 +5,7 @@ import Order from '../../models/Order.js';
 import FleetChangeRequest from '../../models/FleetChangeRequest.js';
 import * as uploadService from '../../services/upload.service.js';
 import { ApiError } from '../../utils/ApiError.js';
+import { checkPartnerFields } from '../../utils/partnerFieldRules.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { logActivity } from '../../services/activityLog.service.js';
@@ -105,6 +106,8 @@ export const create = asyncHandler(async (req, res) => {
       upiId,
     },
   };
+  // Identity and bank formats (utils/partnerFieldRules.js) — before any file is uploaded.
+  checkPartnerFields(partnerData);
 
   const uploadedPublicIds = [];
   const documents = [];
@@ -154,6 +157,7 @@ export const update = asyncHandler(async (req, res) => {
   for (const field of UPDATABLE_FIELDS) {
     if (req.body[field] !== undefined) data[field] = req.body[field];
   }
+  checkPartnerFields(data, await DeliveryPartner.findById(req.params.id).select('phone emergencyPhone email aadharNumber panNumber bankDetails').lean());
 
   const partner = await DeliveryPartner.findByIdAndUpdate(req.params.id, { $set: data }, { new: true });
   if (!partner) throw new ApiError(404, 'NOT_FOUND', 'Delivery partner not found');
