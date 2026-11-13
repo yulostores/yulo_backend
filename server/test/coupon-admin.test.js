@@ -497,6 +497,10 @@ test('coupon settings: read, save a new version (audit-logged), history kept, ba
   for (const body of [{ perOrderCap: 0 }, { radiusKm: -1 }, { bogus: 1 }, { perOrderCap: '3' }]) {
     assert.equal((await admin('PUT', '/coupon-settings', body)).status, 400, JSON.stringify(body));
   }
+  // Coupon validity is fixed at 30 days (Nov 2026): the admin can't change it either.
+  const validity = await admin('PUT', '/coupon-settings', { defaultValidityDays: 45 });
+  assert.equal(validity.status, 400);
+  assert.match(validity.body.message, /fixed at 30 days/);
   assert.equal(await CouponSettings.countDocuments(), 2);
 });
 

@@ -6,6 +6,7 @@ import SellerSubscription from '../models/SellerSubscription.js';
 import { ApiError } from '../utils/ApiError.js';
 import { logActivity } from './activityLog.service.js';
 import { OFFER_STATUSES } from '../config/coupon.config.js';
+import { COUPON_VALIDITY_DAYS } from '../config/coupon.config.js';
 
 // Coupon categories (the super admin's on/off switches) and the offers sellers write — what a
 // customer's coupon actually gives them. An offer reaches customers only once a super admin
@@ -42,7 +43,8 @@ export const offerView = (o, { category = null, seller = null } = {}) => ({
   _id: o._id,
   title: o.title,
   terms: o.terms ?? '',
-  validityDays: o.validityDays ?? null,
+  // Fixed for every offer (COUPON_VALIDITY_DAYS); a value an older portal sent is ignored.
+  validityDays: COUPON_VALIDITY_DAYS,
   status: o.status,
   rejectionReason: o.status === 'rejected' ? o.rejectionReason ?? null : null,
   categoryId: o.categoryId,
@@ -89,7 +91,7 @@ export const createOffer = async (sellerId, userId, body) => {
     categoryId: seller.categoryId,
     title: body.title,
     terms: body.terms ?? '',
-    validityDays: body.validityDays ?? null,
+    validityDays: null, // fixed at COUPON_VALIDITY_DAYS — whatever was sent is ignored
     createdBy: userId,
   });
   return offerView(offer.toObject());
@@ -101,7 +103,11 @@ const STATUS_AFTER_EDIT = { draft: 'draft', rejected: 'draft', pending_review: '
 
 // An edit is always allowed, so it re-reads and retries when an admin decision lands between its
 // read and its write (the status it was based on is then stale, and so is where the edit leaves it).
-export const updateOffer = async (sellerId, offerId, patch) => {
+export const updateOffer = async (sellerId, offerId, rawPatch) => {
+  // Validity is fixed (COUPON_VALIDITY_DAYS): a value sent by an older portal is dropped, and an
+  // edit that only tried to change it changes nothing (it must not send a live offer to review).
+  const { validityDays: _ignored, ...patch } = rawPatch;
+  if (Object.keys(patch).length === 0) throw new ApiError(400, 'VALIDATION_ERROR', 'Nothing to change');
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const current = await CouponOffer.findOne({ _id: offerId, sellerId }).lean();
     if (!current) throw new ApiError(404, 'NOT_FOUND', 'Offer not found');

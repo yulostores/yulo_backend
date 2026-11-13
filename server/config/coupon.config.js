@@ -28,10 +28,14 @@ export const SEED_COUPON_CATEGORIES = [
 
 // CouponSettings version 1. Every value marked (assumption) in § Business rules lives here so
 // a client answer is a settings change, not a code change.
+// Every coupon is valid for exactly this many days from when it is issued — fixed by the business
+// (Nov 2026): sellers can't set their own validity and Coupon Settings can't change it.
+export const COUPON_VALIDITY_DAYS = 30;
+
 export const SEED_COUPON_SETTINGS = {
   perOrderCap: 3, // most coupons one paid food order can issue (one per enabled category)
   minOrderValuePaise: 0, // orders below this issue nothing
-  defaultValidityDays: 30, // when an offer doesn't set its own validity
+  defaultValidityDays: COUPON_VALIDITY_DAYS, // fixed — see COUPON_VALIDITY_DAYS
   radiusKm: 10, // sellers further than this from the ordering restaurant are not picked
   reminderLeadDays: 3, // reminder SMS this many days before expiry
   smsPricePaise: 300, // ₹3.00 per SMS, GST-exclusive

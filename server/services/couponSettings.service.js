@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import CouponSettings from '../models/CouponSettings.js';
-import { SEED_COUPON_SETTINGS } from '../config/coupon.config.js';
+import { COUPON_VALIDITY_DAYS, SEED_COUPON_SETTINGS } from '../config/coupon.config.js';
 import { ApiError } from '../utils/ApiError.js';
 import logger from '../utils/logger.js';
 
@@ -32,7 +32,8 @@ const int = (min, max) => z.number().int('must be a whole number').min(min).max(
 const fieldShape = {
   perOrderCap: int(1, 20),
   minOrderValuePaise: int(0, 10_000_000), // ≤ ₹1,00,000
-  defaultValidityDays: int(1, 365),
+  // Fixed at 30 days (COUPON_VALIDITY_DAYS): any other value is refused.
+  defaultValidityDays: z.literal(COUPON_VALIDITY_DAYS, { message: `Coupon validity is fixed at ${COUPON_VALIDITY_DAYS} days` }),
   radiusKm: z.number().positive().max(200),
   reminderLeadDays: int(1, 30),
   smsPricePaise: int(1, 10_000), // ≤ ₹100 per SMS
@@ -53,7 +54,10 @@ export const couponSettingsPatchSchema = z.object(fieldShape).partial().strict()
 const SETTING_KEYS = Object.keys(fieldShape);
 // A version saved before a field existed (phoneCheckRequired, CB7) reads as the seed default for
 // it, so the next version still validates as a complete rule set.
-const pickSettings = (doc) => Object.fromEntries(SETTING_KEYS.map((k) => [k, doc[k] ?? SEED_COUPON_SETTINGS[k]]));
+const pickSettings = (doc) => ({
+  ...Object.fromEntries(SETTING_KEYS.map((k) => [k, doc[k] ?? SEED_COUPON_SETTINGS[k]])),
+  defaultValidityDays: COUPON_VALIDITY_DAYS, // a version saved before validity was fixed still reads 30
+});
 
 const deepFreeze = (obj) => {
   for (const value of Object.values(obj)) {
@@ -121,7 +125,8 @@ export const listCouponSettingsVersions = () => CouponSettings.find().sort({ ver
 export const createCouponSettingsVersion = async ({ patch, note = '' }, adminId) => {
   const parsedPatch = couponSettingsPatchSchema.safeParse(patch ?? {});
   if (!parsedPatch.success) {
-    throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid coupon settings', parsedPatch.error.flatten());
+    const flat = parsedPatch.error.flatten();
+    throw new ApiError(400, 'VALIDATION_ERROR', Object.values(flat.fieldErrors).flat()[0] ?? 'Invalid coupon settings', flat);
   }
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -129,7 +134,8 @@ export const createCouponSettingsVersion = async ({ patch, note = '' }, adminId)
     const base = pickSettings(latest);
     const merged = couponSettingsSchema.safeParse({ ...base, ...parsedPatch.data });
     if (!merged.success) {
-      throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid coupon settings', merged.error.flatten());
+      const flat = merged.error.flatten();
+      throw new ApiError(400, 'VALIDATION_ERROR', Object.values(flat.fieldErrors).flat()[0] ?? 'Invalid coupon settings', flat);
     }
     const changes = SETTING_KEYS.filter(
       (key) => JSON.stringify(base[key]) !== JSON.stringify(merged.data[key])

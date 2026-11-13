@@ -212,12 +212,14 @@ test('disabled category, no stock, no approved offer, suspended seller → nothi
   assert.equal(String(coupons[0].sellerId), String(p.seller._id));
 });
 
-test('the offer validity overrides the default; the offer snapshot survives a later edit', async () => {
+// Validity is fixed by the business at 30 days (Nov 2026): an offer stored with its own validity
+// (written before the rule) does not change it.
+test('every coupon is valid for exactly 30 days, whatever the offer says; the offer snapshot survives a later edit', async () => {
   const cat = await category();
   const p = await partner({ cat, offer: { validityDays: 7 } });
   const { order } = await payOrder();
   const [c] = await couponsFor('order', order._id);
-  assert.equal((c.expiresAt - c.issuedAt) / 86_400_000, 7);
+  assert.equal((c.expiresAt - c.issuedAt) / 86_400_000, 30);
 
   await CouponOffer.updateOne({ _id: p.offer._id }, { $set: { title: 'Changed', terms: 'New terms' } });
   const res = await srv.get(`/api/users/me/coupons/${c._id}`, customerHeaders());

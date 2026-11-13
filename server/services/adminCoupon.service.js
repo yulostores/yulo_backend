@@ -7,7 +7,7 @@ import SellerUser from '../models/SellerUser.js';
 import CouponCategory from '../models/CouponCategory.js';
 import CouponOffer from '../models/CouponOffer.js';
 import SellerSubscription from '../models/SellerSubscription.js';
-import { GENDERS, COUPON_KINDS } from '../config/coupon.config.js';
+import { GENDERS, COUPON_KINDS, COUPON_VALIDITY_DAYS } from '../config/coupon.config.js';
 import { getActiveCouponSettings } from './couponSettings.service.js';
 import { takeOne, giveBack } from './sellerSubscription.service.js';
 import { logActivity } from './activityLog.service.js';
@@ -440,7 +440,7 @@ export const manualIssue = async (adminId, body) => {
     ...(issueKey ? { issueKey } : {}),
     status: 'issued',
     issuedAt: now,
-    expiresAt: new Date(now.getTime() + (offer.validityDays ?? settings.defaultValidityDays) * DAY_MS),
+    expiresAt: new Date(now.getTime() + COUPON_VALIDITY_DAYS * DAY_MS),
   };
 
   let created;

@@ -13,6 +13,7 @@ import { takeOne, giveBack } from './sellerSubscription.service.js';
 import { generateCouponCode } from '../utils/couponCode.js';
 import { toPaise } from '../utils/money.js';
 import logger from '../utils/logger.js';
+import { COUPON_VALIDITY_DAYS } from '../config/coupon.config.js';
 
 // The issue engine: a customer's paid food order (or dine-in bill) earns coupons from coupon
 // partners near the restaurant (COUPON_IMPLEMENTATION_PROMPTS.md § CB6).
@@ -158,7 +159,7 @@ const issueOne = async ({ candidate, category, sourceType, sourceId, customer, s
   try {
     const offer = await pickOffer(candidate.offers);
     const now = new Date();
-    const validityDays = offer.validityDays ?? settings.defaultValidityDays;
+    const validityDays = COUPON_VALIDITY_DAYS; // fixed for every coupon
     const doc = {
       kind: 'customer',
       sellerId: candidate.sellerId,

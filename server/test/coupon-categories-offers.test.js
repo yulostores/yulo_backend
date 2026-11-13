@@ -156,6 +156,26 @@ test('a new offer is a draft in the seller\'s own category, whatever the body sa
   assert.equal(list.body.data.offers.length, 1);
 });
 
+// Coupon validity is fixed at 30 days (Nov 2026): a seller can't choose another, and an edit that
+// only tried to change it must not send a live offer back to review.
+test('validity is fixed at 30 days: a value the seller sends is ignored; a validity-only edit is refused', async () => {
+  const { headers } = await activeSeller();
+  const created = await seller$('POST', '', offerBody({ validityDays: 7 }), headers);
+  assert.equal(created.status, 201);
+  const offer = created.body.data.offer;
+  assert.equal(offer.validityDays, 30, 'reported as the fixed 30');
+  assert.equal((await CouponOffer.findById(offer._id).lean()).validityDays, null, 'nothing of its own stored');
+
+  const onlyValidity = await seller$('PATCH', `/${offer._id}`, { validityDays: 90 }, headers);
+  assert.equal(onlyValidity.status, 400);
+  assert.equal(onlyValidity.body.message, 'Nothing to change');
+
+  const withTitle = await seller$('PATCH', `/${offer._id}`, { title: '30% off', validityDays: 90 }, headers);
+  assert.equal(withTitle.status, 200);
+  assert.equal(withTitle.body.data.offer.title, '30% off');
+  assert.equal(withTitle.body.data.offer.validityDays, 30);
+});
+
 test('the full journey: draft → review → approved → paused → running again', async () => {
   const { headers } = await activeSeller();
   const offer = await createOffer(headers);

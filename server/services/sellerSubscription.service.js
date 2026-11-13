@@ -12,8 +12,8 @@ import { generateCouponCode } from '../utils/couponCode.js';
 import logger from '../utils/logger.js';
 import { createRazorpayOrder, confirmCapturedPayment } from './payment.service.js';
 import { recordStrayPayment } from './refund.service.js';
-import { getActiveCouponSettings } from './couponSettings.service.js';
 import { logActivity } from './activityLog.service.js';
+import { COUPON_VALIDITY_DAYS } from '../config/coupon.config.js';
 
 // A coupon partner's plan purchases and the coupon stock they carry (models/SellerSubscription.js).
 //
@@ -127,7 +127,7 @@ const ensureComplimentaryCoupons = async (subscription) => {
   const count = subscription.planSnapshot.complimentaryCount ?? 0;
   if (count > 0) {
     const seller = await Seller.findById(subscription.sellerId).select('categoryId').lean();
-    const { defaultValidityDays } = await getActiveCouponSettings();
+    const defaultValidityDays = COUPON_VALIDITY_DAYS; // complimentary coupons: same fixed 30 days
     const issuedAt = subscription.activatedAt ?? new Date();
     const expiresAt = new Date(issuedAt.getTime() + defaultValidityDays * 864e5);
     const rows = Array.from({ length: count }, (_, i) => ({
