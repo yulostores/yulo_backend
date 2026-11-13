@@ -69,7 +69,10 @@ beforeEach(async () => {
   adminHeaders = { authorization: `Bearer ${auth.generateTokens(admin._id, 'admin').accessToken}` };
 });
 
+// Offline ("Amount Received"): plan price + 18 % GST.
 const TOTALS = { basic: 590_000, plus: 1_770_000, premium: 5_900_000 };
+// Online (Razorpay): price + 3.5 % payment handling fee, then 18 % GST on both.
+const ONLINE_TOTALS = { basic: 610_650, plus: 1_831_950, premium: 6_106_500 };
 const ALLOCATION = { basic: 250, plus: 900, premium: 4_000 };
 
 const seller = (over = {}) => makeCompleteSeller({ status: 'active', categoryId: category._id, ...over });
@@ -145,10 +148,10 @@ test('buying creates a pending subscription and a Razorpay order for the GST-inc
   const data = await buy(headers, 'plus');
   assert.equal(data.subscription.status, 'pending_payment');
   assert.equal(data.subscription.remaining, 0);
-  assert.equal(data.razorpayOrder.amount, TOTALS.plus);
+  assert.equal(data.razorpayOrder.amount, ONLINE_TOTALS.plus);
   assert.equal(data.razorpayOrder.keyId, 'rzp_test_fake');
   const [created] = fake.calls.ordersCreate;
-  assert.equal(created.amount, TOTALS.plus);
+  assert.equal(created.amount, ONLINE_TOTALS.plus);
   assert.equal(created.notes.kind, 'seller_subscription');
   assert.equal(created.notes.subscriptionId, String(data.subscription._id));
   const stored = await SellerSubscription.findById(data.subscription._id).lean();
@@ -180,14 +183,14 @@ test('a gateway failure while creating the order leaves no pending subscription 
 test('verify activates: stock = the plan\'s coupons, plus exactly 5 complimentary; a second verify is a no-op', async () => {
   const { headers } = await seller();
   const { subscription, razorpayOrder } = await buy(headers);
-  const payment = pay(razorpayOrder.id, TOTALS.basic);
+  const payment = pay(razorpayOrder.id, ONLINE_TOTALS.basic);
 
   const res = await verify(headers, subscription._id, razorpayOrder.id, payment.id);
   assert.equal(res.status, 200, JSON.stringify(res.body));
   const s = res.body.data.subscription;
   assert.equal(s.status, 'active');
   assert.deepEqual([s.allocated, s.issued, s.remaining], [250, 0, 250]);
-  assert.equal(s.paidPaise, TOTALS.basic);
+  assert.equal(s.paidPaise, ONLINE_TOTALS.basic);
   noComplimentaryIn(res.body, 'verify');
 
   assert.equal(await complimentaryOf(subscription._id), 5);
@@ -205,7 +208,7 @@ test('verify refuses a bad signature, another order\'s payment, and another sell
   const { headers } = await seller();
   const other = await seller({ phone: '9000000003' });
   const { subscription, razorpayOrder } = await buy(headers);
-  const payment = pay(razorpayOrder.id, TOTALS.basic);
+  const payment = pay(razorpayOrder.id, ONLINE_TOTALS.basic);
 
   assert.equal((await verify(headers, subscription._id, razorpayOrder.id, payment.id, 'f'.repeat(64))).status, 400);
   assert.equal((await verify(headers, subscription._id, 'order_other', payment.id)).status, 400);
@@ -238,7 +241,7 @@ test('a payment for the wrong amount is not activated and is recorded as owed ba
 test('the webhook activates once, whether delivered twice, as two events, or alongside verify', async () => {
   const { headers } = await seller();
   const { subscription, razorpayOrder } = await buy(headers);
-  const payment = pay(razorpayOrder.id, TOTALS.basic);
+  const payment = pay(razorpayOrder.id, ONLINE_TOTALS.basic);
 
   assert.equal((await deliverWebhook(payment, { eventId: 'evt_same' })).status, 200);
   assert.equal((await deliverWebhook(payment, { eventId: 'evt_same' })).status, 200);
@@ -256,7 +259,7 @@ test('the webhook activates once, whether delivered twice, as two events, or alo
 test('verify and the webhook racing each other activate once', async () => {
   const { headers } = await seller();
   const { subscription, razorpayOrder } = await buy(headers);
-  const payment = pay(razorpayOrder.id, TOTALS.basic);
+  const payment = pay(razorpayOrder.id, ONLINE_TOTALS.basic);
   const results = await Promise.all([
     verify(headers, subscription._id, razorpayOrder.id, payment.id),
     deliverWebhook(payment),
@@ -270,8 +273,8 @@ test('verify and the webhook racing each other activate once', async () => {
 test('a second payment for an already-paid plan is owed back, not counted', async () => {
   const { headers } = await seller();
   const { subscription, razorpayOrder } = await buy(headers);
-  const first = pay(razorpayOrder.id, TOTALS.basic);
-  const second = pay(razorpayOrder.id, TOTALS.basic);
+  const first = pay(razorpayOrder.id, ONLINE_TOTALS.basic);
+  const second = pay(razorpayOrder.id, ONLINE_TOTALS.basic);
   await verify(headers, subscription._id, razorpayOrder.id, first.id);
 
   await deliverWebhook(second);
@@ -285,7 +288,7 @@ test('a second payment for an already-paid plan is owed back, not counted', asyn
 test('a payment.failed event for a plan purchase changes nothing', async () => {
   const { headers } = await seller();
   const { subscription, razorpayOrder } = await buy(headers);
-  const failed = pay(razorpayOrder.id, TOTALS.basic, { status: 'failed' });
+  const failed = pay(razorpayOrder.id, ONLINE_TOTALS.basic, { status: 'failed' });
   assert.equal((await deliverWebhook(failed, { type: 'payment.failed' })).status, 200);
   assert.equal((await SellerSubscription.findById(subscription._id).lean()).status, 'pending_payment');
 });
@@ -405,7 +408,7 @@ test('editing a plan changes new purchases only, and is audit-logged', async () 
   assert.equal(old.allocated, 250);
 
   const { razorpayOrder } = await buy(headers);
-  assert.equal(razorpayOrder.amount, 531_000, 'a new purchase pays the new price');
+  assert.equal(razorpayOrder.amount, 549_585, 'a new online purchase pays the new price + 3.5 % fee + GST');
 
   const [log] = await AdminActivityLog.find({ action: 'COUPON_PLAN_UPDATED' }).lean();
   assert.deepEqual(log.metadata.changes.map((c) => c.field).sort(), ['basePricePaise', 'couponAllocation']);

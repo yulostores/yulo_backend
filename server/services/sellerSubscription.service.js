@@ -13,7 +13,7 @@ import logger from '../utils/logger.js';
 import { createRazorpayOrder, confirmCapturedPayment } from './payment.service.js';
 import { recordStrayPayment } from './refund.service.js';
 import { logActivity } from './activityLog.service.js';
-import { COUPON_VALIDITY_DAYS } from '../config/coupon.config.js';
+import { COUPON_VALIDITY_DAYS, PLAN_ONLINE_HANDLING_FEE_PERCENT } from '../config/coupon.config.js';
 
 // A coupon partner's plan purchases and the coupon stock they carry (models/SellerSubscription.js).
 //
@@ -37,7 +37,8 @@ import { COUPON_VALIDITY_DAYS } from '../config/coupon.config.js';
 const rupees = (paise) => (Number.isInteger(paise) ? toRupees(paise) : null);
 
 export const planView = (plan) => {
-  const t = planTotals(plan);
+  const t = planTotals(plan); // offline: price + GST (what "Amount Received" expects)
+  const o = planTotals(plan, { handlingFeePercent: PLAN_ONLINE_HANDLING_FEE_PERCENT }); // Razorpay
   return {
     _id: plan._id,
     key: plan.key,
@@ -48,6 +49,14 @@ export const planView = (plan) => {
     gstPaise: t.gstPaise,
     totalPaise: t.totalPaise,
     price: { base: rupees(t.basePaise), gst: rupees(t.gstPaise), total: rupees(t.totalPaise) },
+    // What an online (Razorpay) purchase charges: price + handling fee, then GST on both.
+    online: {
+      handlingFeePercent: PLAN_ONLINE_HANDLING_FEE_PERCENT,
+      handlingFeePaise: o.handlingFeePaise,
+      gstPaise: o.gstPaise,
+      totalPaise: o.totalPaise,
+      price: { base: rupees(o.basePaise), handlingFee: rupees(o.handlingFeePaise), gst: rupees(o.gstPaise), total: rupees(o.totalPaise) },
+    },
     isActive: plan.isActive,
     sortOrder: plan.sortOrder,
   };
@@ -61,6 +70,7 @@ export const sellerSubscriptionView = (s) => ({
   status: s.status,
   amount: {
     basePaise: s.planSnapshot.basePricePaise,
+    handlingFeePaise: s.planSnapshot.handlingFeePaise ?? 0,
     gstPaise: s.planSnapshot.gstPaise,
     totalPaise: s.planSnapshot.totalPaise,
     total: rupees(s.planSnapshot.totalPaise),
@@ -89,13 +99,17 @@ export const adminSubscriptionView = (s, complimentary = null) => ({
 export const listActivePlans = async () =>
   (await CouponPlan.find({ isActive: true }).sort({ sortOrder: 1, basePricePaise: 1 }).lean()).map(planView);
 
-const snapshotOf = (plan) => {
-  const t = planTotals(plan);
+// `online` = bought through Razorpay: the payment handling fee is part of the price sold.
+const snapshotOf = (plan, { online = false } = {}) => {
+  const handlingFeePercent = online ? PLAN_ONLINE_HANDLING_FEE_PERCENT : 0;
+  const t = planTotals(plan, { handlingFeePercent });
   return {
     planId: plan._id,
     key: plan.key,
     name: plan.name,
     basePricePaise: t.basePaise,
+    handlingFeePercent,
+    handlingFeePaise: t.handlingFeePaise,
     gstPercent: plan.gstPercent,
     gstPaise: t.gstPaise,
     totalPaise: t.totalPaise,
@@ -248,7 +262,7 @@ export const sellerSubscriptions = async (sellerId) => {
 export const startPurchase = async (sellerId, planKey) => {
   await assertSellerActive(sellerId);
   const plan = await activePlanByKey(planKey);
-  const snapshot = snapshotOf(plan);
+  const snapshot = snapshotOf(plan, { online: true });
   const subscription = await SellerSubscription.create({ sellerId, planSnapshot: snapshot, payment: { method: 'razorpay' } });
 
   let razorpayOrder;

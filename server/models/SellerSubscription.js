@@ -22,6 +22,9 @@ const sellerSubscriptionSchema = new mongoose.Schema(
       key: { type: String, required: true },
       name: { type: String, required: true },
       basePricePaise: { type: Number, required: true },
+      // Online (Razorpay) purchases only; 0 for offline payments and for plans sold before the fee.
+      handlingFeePercent: { type: Number, default: 0 },
+      handlingFeePaise: { type: Number, default: 0 },
       gstPercent: { type: Number, required: true },
       gstPaise: { type: Number, required: true },
       totalPaise: { type: Number, required: true },

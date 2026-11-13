@@ -141,7 +141,7 @@ test('the whole coupon workflow, end to end', async () => {
   const plans = await data('GET', '/api/seller/plans', { headers: ownerA });
   assert.deepEqual(plans.plans.map((p) => p.price.total), [5900, 17700, 59000]);
   const bought = await data('POST', '/api/seller/subscriptions', { headers: ownerA, body: { planKey: 'basic' }, expect: 201 });
-  fake.addPayment({ id: 'pay_plan_a', order_id: bought.razorpayOrder.id, amount: 590_000 });
+  fake.addPayment({ id: 'pay_plan_a', order_id: bought.razorpayOrder.id, amount: 610_650 }); // online: + 3.5 % fee
   await req('POST', `/api/seller/subscriptions/${bought.subscription._id}/verify`, {
     headers: ownerA,
     body: { razorpay_order_id: bought.razorpayOrder.id, razorpay_payment_id: 'pay_plan_a', razorpay_signature: checkoutSignature(bought.razorpayOrder.id, 'pay_plan_a') },

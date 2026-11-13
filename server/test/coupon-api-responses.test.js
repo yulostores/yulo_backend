@@ -343,7 +343,7 @@ test('select-account: one number with logins at two businesses chooses which to 
 test('plans: list, purchase through Razorpay, verify, stock; simulate is off outside development', async () => {
   const H = ctx.ownerH;
   const plans = ok(await call('GET', '/api/seller/plans', { headers: H }), 'Plans', ['plans']).plans;
-  keys(plans[0], ['_id', 'key', 'name', 'gstPercent', 'couponAllocation', 'basePaise', 'gstPaise', 'totalPaise', 'price', 'isActive', 'sortOrder'], 'plan');
+  keys(plans[0], ['_id', 'key', 'name', 'gstPercent', 'couponAllocation', 'basePaise', 'gstPaise', 'totalPaise', 'price', 'online', 'isActive', 'sortOrder'], 'plan');
   assert.deepEqual(plans.map((p) => [p.key, p.price.total, p.couponAllocation]), [['basic', 5900, 250], ['plus', 17700, 900], ['premium', 59000, 4000]]);
 
   const empty = ok(await call('GET', '/api/seller/subscriptions', { headers: H }), 'Subscriptions', ['subscriptions', 'stock', 'currentPlan', 'activePlans']);
@@ -353,10 +353,10 @@ test('plans: list, purchase through Razorpay, verify, stock; simulate is off out
   keys(started.subscription, SUB_VIEW, 'subscription');
   assert.equal(started.subscription.status, 'pending_payment');
   keys(started.razorpayOrder, ['id', 'amount', 'currency', 'keyId'], 'razorpayOrder');
-  assert.equal(started.razorpayOrder.amount, 590_000);
+  assert.equal(started.razorpayOrder.amount, 610_650, 'online: ₹5,000 + 3.5 % fee + 18 % GST on both');
   assert.equal(started.paymentSimulated, false);
 
-  fake.addPayment({ id: 'pay_plan_1', order_id: started.razorpayOrder.id, amount: 590_000 });
+  fake.addPayment({ id: 'pay_plan_1', order_id: started.razorpayOrder.id, amount: 610_650 });
   const verified = ok(await call('POST', '/api/seller/subscriptions/:id/verify', {
     params: { id: started.subscription._id },
     headers: H,

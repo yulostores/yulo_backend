@@ -14,7 +14,7 @@ import {
   AGE_BAND_UNDER_18,
 } from '../utils/couponCode.js';
 import { planTotals, smsCost } from '../utils/couponPricing.js';
-import { SEED_COUPON_PLANS, SEED_COUPON_SETTINGS } from '../config/coupon.config.js';
+import { SEED_COUPON_PLANS, SEED_COUPON_SETTINGS, PLAN_ONLINE_HANDLING_FEE_PERCENT } from '../config/coupon.config.js';
 
 // ── Codes ─────────────────────────────────────────────────────────────────────
 
@@ -99,9 +99,20 @@ test('ageBand edges', () => {
 
 test('plan totals match the agreed prices exactly', () => {
   const byKey = Object.fromEntries(SEED_COUPON_PLANS.map((p) => [p.key, planTotals(p)]));
-  assert.deepEqual(byKey.basic, { basePaise: 500_000, gstPaise: 90_000, totalPaise: 590_000 }); // ₹5,900
-  assert.deepEqual(byKey.plus, { basePaise: 1_500_000, gstPaise: 270_000, totalPaise: 1_770_000 }); // ₹17,700
-  assert.deepEqual(byKey.premium, { basePaise: 5_000_000, gstPaise: 900_000, totalPaise: 5_900_000 }); // ₹59,000
+  // Offline ("Amount Received"): price + 18 % GST, no handling fee.
+  assert.deepEqual(byKey.basic, { basePaise: 500_000, handlingFeePaise: 0, gstPaise: 90_000, totalPaise: 590_000 }); // ₹5,900
+  assert.deepEqual(byKey.plus, { basePaise: 1_500_000, handlingFeePaise: 0, gstPaise: 270_000, totalPaise: 1_770_000 }); // ₹17,700
+  assert.deepEqual(byKey.premium, { basePaise: 5_000_000, handlingFeePaise: 0, gstPaise: 900_000, totalPaise: 5_900_000 }); // ₹59,000
+});
+
+test('online plan totals: + 3.5 % payment handling fee, then 18 % GST on price + fee', () => {
+  const online = Object.fromEntries(
+    SEED_COUPON_PLANS.map((p) => [p.key, planTotals(p, { handlingFeePercent: PLAN_ONLINE_HANDLING_FEE_PERCENT })]),
+  );
+  assert.equal(PLAN_ONLINE_HANDLING_FEE_PERCENT, 3.5);
+  assert.deepEqual(online.basic, { basePaise: 500_000, handlingFeePaise: 17_500, gstPaise: 93_150, totalPaise: 610_650 }); // ₹6,106.50
+  assert.deepEqual(online.plus, { basePaise: 1_500_000, handlingFeePaise: 52_500, gstPaise: 279_450, totalPaise: 1_831_950 }); // ₹18,319.50
+  assert.deepEqual(online.premium, { basePaise: 5_000_000, handlingFeePaise: 175_000, gstPaise: 931_500, totalPaise: 6_106_500 }); // ₹61,065
 });
 
 test('seeded plans carry the agreed allocations', () => {

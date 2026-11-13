@@ -32,6 +32,11 @@ export const SEED_COUPON_CATEGORIES = [
 // (Nov 2026): sellers can't set their own validity and Coupon Settings can't change it.
 export const COUPON_VALIDITY_DAYS = 30;
 
+// A plan bought ONLINE (Razorpay) adds a payment handling fee of this percent of the plan price,
+// and GST is then charged on price + fee. Offline payments recorded by Yulo ("Amount Received")
+// pay the plan price + GST only. Basic online: ₹5,000 + ₹175 + 18 % of ₹5,175 = ₹6,106.50.
+export const PLAN_ONLINE_HANDLING_FEE_PERCENT = 3.5;
+
 export const SEED_COUPON_SETTINGS = {
   perOrderCap: 3, // most coupons one paid food order can issue (one per enabled category)
   minOrderValuePaise: 0, // orders below this issue nothing
