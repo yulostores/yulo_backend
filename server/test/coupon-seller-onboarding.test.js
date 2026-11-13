@@ -210,11 +210,17 @@ test('owner details: PAN stored only encrypted, Aadhaar only as its last 4, neit
   assert.equal((await SellerUser.findById(owner._id).lean()).name, 'Asha Rao');
 });
 
-test('owner details: invalid PAN, Aadhaar checksum, under-18 and missing numbers are refused', async () => {
+test('owner details: an Aadhaar number that fails the Verhoeff check digit is accepted (format only)', async () => {
+  const { headers } = await signUp();
+  const res = await call('PUT', '/onboarding/owner', ownerBody({ aadhaar: VALID.aadhaarBadChecksum }), headers);
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.data.owner.aadhaarMasked, 'XXXX XXXX 2345');
+});
+
+test('owner details: invalid PAN, Aadhaar format, under-18 and missing numbers are refused', async () => {
   const { headers } = await signUp();
   const cases = {
     pan: { pan: 'ABCD1234FF' },
-    aadhaarChecksum: { aadhaar: VALID.aadhaarBadChecksum },
     aadhaarLength: { aadhaar: '23412341234' },
     aadhaarStartsWith1: { aadhaar: '134123412345' },
     under18: { dateOfBirth: yearsAgo(17) },

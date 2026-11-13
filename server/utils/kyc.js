@@ -74,10 +74,11 @@ export const verhoeffCheckDigit = (digits) => {
 };
 
 export const normalizeAadhaar = (value) => compact(value);
-export const isValidAadhaar = (value) => {
-  const digits = compact(value);
-  return /^[2-9]\d{11}$/.test(digits) && verhoeffValid(digits);
-};
+// Format only: 12 digits, not starting with 0 or 1. The Verhoeff check digit is NOT enforced —
+// the business asked to accept numbers that fail it (Nov 2026), so a typo can get through; the
+// admin compares the number with the Aadhaar document before approving. verhoeffValid stays
+// exported for anyone who wants to warn rather than refuse.
+export const isValidAadhaar = (value) => /^[2-9]\d{11}$/.test(compact(value));
 
 // ── Display ───────────────────────────────────────────────────────────────────
 // How a stored last-4 is shown back: never more than the last 4.
