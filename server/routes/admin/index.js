@@ -17,6 +17,7 @@ import couponPlanRoutes from './couponPlan.routes.js';
 import { categoryRouter as couponCategoryRoutes, offerRouter as couponOfferRoutes } from './coupon.routes.js';
 import { couponsRouter, couponReportsRouter, couponSettingsRouter } from './couponAdmin.routes.js';
 import reminderCampaignRoutes from './reminderCampaign.routes.js';
+import sellerBillRoutes from './sellerBill.routes.js';
 
 const router = Router();
 
@@ -45,5 +46,6 @@ router.use('/coupons', couponsRouter);
 router.use('/coupon-reports', couponReportsRouter);
 router.use('/coupon-settings', couponSettingsRouter);
 router.use('/reminder-campaigns', reminderCampaignRoutes);
+router.use('/seller-bills', sellerBillRoutes);
 
 export default router;

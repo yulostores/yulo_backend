@@ -37,11 +37,14 @@ const smsCreditPurchaseSchema = new mongoose.Schema(
     paidAt: { type: Date, default: null },
     // Set once the credits are on the seller's balance.
     creditedAt: { type: Date, default: null },
+    // The bill Yulo issues for this purchase — see SellerSubscription.billNumber.
+    billNumber: { type: String, default: null },
   },
   { timestamps: true }
 );
 
 smsCreditPurchaseSchema.index({ sellerId: 1, createdAt: -1 });
+smsCreditPurchaseSchema.index({ billNumber: 1 }, { unique: true, partialFilterExpression: { billNumber: { $type: 'string' } } });
 smsCreditPurchaseSchema.index(
   { 'payment.razorpayOrderId': 1 },
   { unique: true, partialFilterExpression: { 'payment.razorpayOrderId': { $type: 'string' } } }

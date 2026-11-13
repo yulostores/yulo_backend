@@ -14,6 +14,7 @@ import { createRazorpayOrder, confirmCapturedPayment } from './payment.service.j
 import { recordStrayPayment } from './refund.service.js';
 import { logActivity } from './activityLog.service.js';
 import { COUPON_VALIDITY_DAYS, PLAN_ONLINE_HANDLING_FEE_PERCENT } from '../config/coupon.config.js';
+import { numberSubscriptionBill } from './sellerBills.service.js';
 
 // A coupon partner's plan purchases and the coupon stock they carry (models/SellerSubscription.js).
 //
@@ -199,6 +200,9 @@ export const activate = async (subscriptionId, { payment = {}, by = null } = {})
     throw new ApiError(409, 'INVALID_STATE', `A ${subscription.status} subscription cannot be activated`);
   }
   await ensureComplimentaryCoupons(subscription);
+  // Its bill (one number per paid purchase). Idempotent, so a repeated activation is harmless.
+  const billNumber = await numberSubscriptionBill(subscription._id);
+  if (billNumber && !subscription.billNumber) subscription.billNumber = billNumber;
   if (activated) {
     logger.info({ subscriptionId, sellerId: subscription.sellerId, plan: subscription.planSnapshot.key, by }, 'Seller plan activated');
   }

@@ -54,12 +54,16 @@ const sellerSubscriptionSchema = new mongoose.Schema(
     exhaustedAt: { type: Date, default: null },
     // Set once the complimentary coupons exist, so a repeated activation never creates more.
     complimentaryCreatedAt: { type: Date, default: null },
+    // The bill Yulo issues for this purchase ("YSB-000123"), assigned once it is paid
+    // (services/sellerBills.service.js) — one running number across plans and SMS credits.
+    billNumber: { type: String, default: null },
   },
   { timestamps: true }
 );
 
 // Stock is drawn oldest active subscription first.
 sellerSubscriptionSchema.index({ sellerId: 1, status: 1, activatedAt: 1 });
+sellerSubscriptionSchema.index({ billNumber: 1 }, { unique: true, partialFilterExpression: { billNumber: { $type: 'string' } } });
 sellerSubscriptionSchema.index(
   { 'payment.razorpayOrderId': 1 },
   { unique: true, partialFilterExpression: { 'payment.razorpayOrderId': { $type: 'string' } } }

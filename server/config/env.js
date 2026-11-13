@@ -106,6 +106,10 @@ const schema = z.object({
   // (see the TODO there). Until a real provider exists, production runs no reminders at all, so
   // no seller credit is ever spent on an SMS that wasn't sent.
   SMS_TEMPLATE_PROVIDER: z.enum(['mock', 'messagecentral']).default('mock'),
+  // Printed on the bills Yulo issues to coupon sellers (plans, SMS credits) — optional: a field
+  // left unset is simply not printed. Never invented.
+  YULO_GSTIN: z.string().trim().optional(),
+  YULO_BILLING_ADDRESS: z.string().trim().optional(),
   // The DLT template id of the coupon-expiry reminder, as registered on the DLT portal.
   SMS_REMINDER_TEMPLATE_ID: z.string().trim().min(1).optional(),
   // Per-phone OTP send budget inside a 10-minute window. Raise it while testing the

@@ -13,6 +13,7 @@ import { recordStrayPayment } from './refund.service.js';
 import { getActiveCouponSettings } from './couponSettings.service.js';
 import { logActivity } from './activityLog.service.js';
 import { isTemplateSmsLive } from './sms/templateSender.js';
+import { numberSmsBill } from './sellerBills.service.js';
 
 // Prepaid reminder-SMS credits for coupon partners (§ CB10). 1 credit = 1 SMS. Packs and price
 // come from CouponSettings (smsCreditPackSizes, smsPricePaise + smsGstPercent → ₹3.54 per SMS).
@@ -105,6 +106,7 @@ const markPaid = async (purchaseId, { amountPaise, razorpayPaymentId = null }) =
   const purchase = await SmsCreditPurchase.findById(purchaseId).lean();
   if (purchase.status !== 'paid') throw new ApiError(409, 'INVALID_STATE', `A ${purchase.status} purchase cannot be paid`);
   await applyCredits(purchase);
+  await numberSmsBill(purchaseId); // its bill — idempotent
   return SmsCreditPurchase.findById(purchaseId).lean();
 };
 
