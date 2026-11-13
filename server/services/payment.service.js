@@ -11,6 +11,10 @@ import { handleRefundWebhook, moveRefundToStray, recordStrayPayment, refundIfCan
 import { notifyService } from './notify.service.js';
 import { getRazorpay, getRazorpayKeyId } from './razorpayClient.js';
 import { toPaise } from '../utils/money.js';
+import SellerSubscription from '../models/SellerSubscription.js';
+import { settleFromWebhook as settleSellerPlanFromWebhook } from './sellerSubscription.service.js';
+import { scheduleIssue as scheduleCouponIssue } from './couponIssue.service.js';
+import { settleFromWebhook as settleSmsCreditsFromWebhook, isCreditOrder } from './smsCredits.service.js';
 
 // Rupee amounts in this codebase are plain numbers; Razorpay speaks paise. Rounded once here
 // so 357.1 * 100 = 35709.99999 never reaches the gateway or a comparison.
@@ -126,11 +130,16 @@ export const recordCapturedPayment = async (order, paymentId, payment = null, vi
         reason: 'A second payment for an order that was already paid',
       });
     }
+    // The same payment confirmed again (verify after the webhook, or the reverse): issuing is
+    // idempotent, so asking again finishes anything the first attempt didn't.
+    if (current?.paymentStatus === 'paid' && current.razorpayPaymentId === paymentId) scheduleCouponIssue('order', current._id);
     return current;
   }
 
   const result = (await refundIfCancelled(updated)) ? await Order.findById(order._id) : updated;
   notifyService.orderPaymentUpdated(result);
+  // Coupons from partner sellers (CB6). Fire-and-forget: never delays or fails the payment.
+  if (result?.paymentStatus === 'paid') scheduleCouponIssue('order', result._id);
   return result;
 };
 
@@ -607,6 +616,17 @@ export const handleWebhookEvent = async (event) => {
   const bill = await Bill.findOne(byIntent);
   if (bill) {
     if (SETTLING_EVENTS.has(type)) await settleBillFromWebhook(bill, payment);
+    return 'processed';
+  }
+
+  // A coupon partner buying a plan (services/sellerSubscription.service.js). A payment.failed
+  // there changes nothing: the subscription simply stays pending_payment until a payment lands.
+  if (SETTLING_EVENTS.has(type) ? await settleSellerPlanFromWebhook(payment) : await SellerSubscription.exists({ 'payment.razorpayOrderId': payment.order_id })) {
+    return 'processed';
+  }
+
+  // A coupon partner buying reminder-SMS credits (services/smsCredits.service.js; notes.kind 'sms_credits').
+  if (SETTLING_EVENTS.has(type) ? await settleSmsCreditsFromWebhook(payment) : await isCreditOrder(payment.order_id)) {
     return 'processed';
   }
 

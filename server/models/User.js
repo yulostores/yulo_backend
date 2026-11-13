@@ -166,6 +166,11 @@ const userSchema = new mongoose.Schema(
     // PATCH /api/users/me in controllers/user.controller.js, which accepts an `avatarUrl`
     // request field and writes it to this same column rather than duplicating storage.
     preferences: { type: preferencesSchema, default: () => ({}) },
+    // Optional, set by the customer on their profile (PATCH /api/users/me). Copied onto each
+    // coupon at issue (Coupon.customerSnapshot) so coupon partners' reports can show gender and
+    // an age band — never the date itself, and never the phone number.
+    gender: { type: String, enum: ['male', 'female', 'other', null], default: null },
+    dateOfBirth: { type: Date, default: null },
   },
   { timestamps: true }
 );

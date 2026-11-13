@@ -17,6 +17,9 @@ export const PORTAL_COOKIES = {
   owner: 'yulo_rt_owner',
   customer: 'yulo_rt_customer',
   admin: 'yulo_rt_admin',
+  // Seller (coupon partner) portal. Its refresh token is a seller token (JWT_SELLER_SECRET),
+  // read only by POST /api/seller/auth/refresh — never by the User refresh above.
+  seller: 'yulo_rt_seller',
 };
 
 // Sessions minted before this change carry the old shared name. Honour it as a
@@ -31,6 +34,9 @@ const ROLE_PORTALS = {
   // controllers/auth.controller.js's guestLogin — so it shares that portal's
   // refresh cookie/`?portal=customer` scoping rather than getting its own.
   guest: 'customer',
+  // Not a User role: the seller portal's sessions belong to SellerUser rows
+  // (controllers/seller/auth.controller.js), which pass 'seller' here to reach their cookie.
+  seller: 'seller',
 };
 
 export function portalForRole(role) {

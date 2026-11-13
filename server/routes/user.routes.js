@@ -15,6 +15,8 @@ import {
   updatePreferences,
   registerDevice,
   removeDevice,
+  listMyCoupons,
+  getMyCoupon,
 } from '../controllers/user.controller.js';
 import {
   listFavoriteRestaurants,
@@ -155,6 +157,10 @@ router.get('/me/preferences', getPreferences);
 router.patch('/me/preferences', validate(preferencesUpdateSchema), updatePreferences);
 router.post('/me/devices', validate(deviceRegisterSchema), registerDevice);
 router.delete('/me/devices/:deviceToken', removeDevice);
+
+// Coupons earned from paid orders (CB6) — the customer's own only.
+router.get('/me/coupons', listMyCoupons);
+router.get('/me/coupons/:id', getMyCoupon);
 
 router.get('/me/favorites/restaurants', listFavoriteRestaurants);
 router.post('/me/favorites/restaurants/:restaurantId', addFavoriteRestaurant);

@@ -18,7 +18,7 @@ const strayPaymentSchema = new mongoose.Schema(
   {
     kind: {
       type: String,
-      enum: ['duplicate_payment', 'bill_already_settled', 'bill_total_changed', 'refused_payment', 'dine_in_round_cancelled'],
+      enum: ['duplicate_payment', 'bill_already_settled', 'bill_total_changed', 'refused_payment', 'dine_in_round_cancelled', 'seller_payment_refused', 'seller_duplicate_payment', 'sms_credits_payment_refused', 'sms_credits_duplicate_payment'],
       required: true,
     },
     razorpayPaymentId: { type: String, required: true },
@@ -27,6 +27,12 @@ const strayPaymentSchema = new mongoose.Schema(
     restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Restaurant', default: null },
     orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
     billId: { type: mongoose.Schema.Types.ObjectId, ref: 'Bill', default: null },
+    // A coupon partner's plan payment we refused (wrong amount, or a second payment for a plan
+    // already paid) — services/sellerSubscription.service.js.
+    sellerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Seller', default: null },
+    sellerSubscriptionId: { type: mongoose.Schema.Types.ObjectId, ref: 'SellerSubscription', default: null },
+    // An SMS-credit pack payment we refused (services/smsCredits.service.js).
+    smsCreditPurchaseId: { type: mongoose.Schema.Types.ObjectId, ref: 'SmsCreditPurchase', default: null },
     reason: { type: String, default: null },
     refund: { type: refundSchema, default: () => ({}) },
   },

@@ -19,6 +19,13 @@ const schema = z.object({
   JWT_REFRESH_EXPIRES: z.string().default('7d'),
   JWT_PARTNER_ACCESS_EXPIRES: z.string().default('15m'),
   JWT_PARTNER_REFRESH_EXPIRES: z.string().default('30d'),
+  // Seller (coupon partner) portal sessions — their own secret, so no customer, owner, staff or
+  // partner token can ever pass as a seller one. Optional here so a deployment that doesn't run
+  // the seller portal yet still boots outside production; production refuses to start without
+  // it (below), and without it the seller auth routes answer 503.
+  JWT_SELLER_SECRET: z.string().min(32).optional(),
+  SELLER_ACCESS_EXPIRES: z.string().default('15m'),
+  SELLER_REFRESH_EXPIRES: z.string().default('7d'),
   // Server-side error monitoring. Unset → Sentry is a complete no-op (see instrument.js).
   // instrument.js reads these from process.env directly because it has to run before this
   // schema is parsed; they are declared here so the shape is documented and validated.
@@ -94,6 +101,13 @@ const schema = z.object({
   //                   balance is exhausted; revert by setting 'messagecentral' again.
   //                   Nothing else has to change — see services/otp.service.js.
   SMS_PROVIDER: z.enum(['mock', 'messagecentral', 'bypass']).default('mock'),
+  // Coupon-expiry reminder SMS (DLT transactional templates) — services/sms/templateSender.js.
+  // 'mock' records and logs (phone masked) and sends nothing; 'messagecentral' is not built yet
+  // (see the TODO there). Until a real provider exists, production runs no reminders at all, so
+  // no seller credit is ever spent on an SMS that wasn't sent.
+  SMS_TEMPLATE_PROVIDER: z.enum(['mock', 'messagecentral']).default('mock'),
+  // The DLT template id of the coupon-expiry reminder, as registered on the DLT portal.
+  SMS_REMINDER_TEMPLATE_ID: z.string().trim().min(1).optional(),
   // Per-phone OTP send budget inside a 10-minute window. Raise it while testing the
   // login flow end to end; the default is the production-safe value.
   OTP_MAX_REQUESTS_PER_WINDOW: z.coerce.number().int().min(1).default(3),
@@ -135,7 +149,8 @@ if (result.data.NODE_ENV === 'production') {
     'JWT_REFRESH_SECRET',
     'JWT_STAFF_SECRET',
     'JWT_PARTNER_SECRET',
-  ].filter((key) => PLACEHOLDER_SECRET.test(result.data[key]));
+    'JWT_SELLER_SECRET',
+  ].filter((key) => result.data[key] !== undefined && PLACEHOLDER_SECRET.test(result.data[key]));
 
   if (placeholders.length) {
     console.error(
@@ -148,6 +163,12 @@ if (result.data.NODE_ENV === 'production') {
   // Without it, restaurants' bank account numbers can be neither stored nor read back.
   if (!result.data.DATA_ENCRYPTION_KEY) {
     console.error('Refusing to start in production — DATA_ENCRYPTION_KEY is not set (see DEPLOYMENT.md).');
+    process.exit(1);
+  }
+
+  // Without it no seller (coupon partner) could sign in (services/auth.service.js).
+  if (!result.data.JWT_SELLER_SECRET) {
+    console.error('Refusing to start in production — JWT_SELLER_SECRET is not set (see DEPLOYMENT.md).');
     process.exit(1);
   }
 

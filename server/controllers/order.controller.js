@@ -17,6 +17,7 @@ import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import logger from '../utils/logger.js';
 import * as activityService from '../services/activity.service.js';
+import { couponsEarned } from '../services/myCoupons.service.js';
 
 // Review.orderId already has a unique index (models/Review.js) — a batch $in query
 // against it is cheap even for a full page of orders, so this joins rather than
@@ -526,6 +527,8 @@ export const getOrder = asyncHandler(async (req, res) => {
   await attachRatings([order]);
   // { status, amount, timeline } in plain words, or null — never the internal refund record.
   order.refund = customerRefundView(order);
+  // Partner coupons this order earned (CB6), for the payment success screen: { count, ids }.
+  order.couponsEarned = await couponsEarned('order', order._id, req.user._id);
 
   withCustomerDelivery(order);
 

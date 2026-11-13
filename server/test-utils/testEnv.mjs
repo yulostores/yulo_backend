@@ -40,6 +40,7 @@ process.env.JWT_ACCESS_SECRET = THROWAWAY_SECRET;
 process.env.JWT_REFRESH_SECRET = `${THROWAWAY_SECRET}-refresh`;
 process.env.JWT_STAFF_SECRET = `${THROWAWAY_SECRET}-staff`;
 process.env.JWT_PARTNER_SECRET = `${THROWAWAY_SECRET}-partner`;
+process.env.JWT_SELLER_SECRET = `${THROWAWAY_SECRET}-seller`;
 process.env.LOG_LEVEL ??= 'silent';
 // A throwaway field-encryption key (32 bytes of 0x01) — test data only, never a real key.
 process.env.DATA_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');

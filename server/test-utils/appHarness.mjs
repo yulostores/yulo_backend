@@ -18,6 +18,7 @@ setDefault('JWT_ACCESS_SECRET', THROWAWAY_SECRET);
 setDefault('JWT_REFRESH_SECRET', THROWAWAY_SECRET);
 setDefault('JWT_STAFF_SECRET', THROWAWAY_SECRET);
 setDefault('JWT_PARTNER_SECRET', THROWAWAY_SECRET);
+setDefault('JWT_SELLER_SECRET', `${THROWAWAY_SECRET}-seller`);
 
 const parse = async (res) => {
   const text = await res.text();

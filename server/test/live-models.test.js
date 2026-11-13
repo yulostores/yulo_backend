@@ -439,6 +439,7 @@ describe('switch, per-restaurant access, clock and timings', () => {
       JWT_REFRESH_SECRET: 'b'.repeat(48),
       JWT_STAFF_SECRET: 'c'.repeat(48),
       JWT_PARTNER_SECRET: 'd'.repeat(48),
+      JWT_SELLER_SECRET: 'e'.repeat(48),
       DATA_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString('base64'),
       LOG_LEVEL: 'silent',
     };

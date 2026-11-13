@@ -70,7 +70,8 @@ router.get('/:id/tables/:tableId/bill', optionalAuthenticate, loadPublicRestaura
 router.post('/:id/tables/:tableId/bill/pay', guestOrderLimiter, loadPublicRestaurant, payBill);
 router.post('/:id/tables/:tableId/bill/pay/retry', guestOrderLimiter, loadPublicRestaurant, payBill);
 router.post('/:id/tables/:tableId/bill/pay/simulate', loadPublicRestaurant, simulateBillPayment);
-router.get('/:id/tables/:tableId/bill/payment', loadPublicRestaurant, getBillPaymentStatus);
+// optionalAuthenticate: a signed-in diner also gets the ids of the coupons the bill earned them.
+router.get('/:id/tables/:tableId/bill/payment', optionalAuthenticate, loadPublicRestaurant, getBillPaymentStatus);
 router.post('/:id/tables/:tableId/bill/verify', loadPublicRestaurant, verifyBillPaymentHandler);
 router.post('/:id/tables/:tableId/bill/cancel', loadPublicRestaurant, cancelBillPayment);
 

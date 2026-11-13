@@ -29,6 +29,7 @@ import ownerRouter from './routes/owner/index.js';
 import staffRouter from './routes/staff/index.js';
 import adminRouter from './routes/admin/index.js';
 import partnerRouter from './routes/partner/index.js';
+import sellerRouter from './routes/seller/index.js';
 
 const app = express();
 
@@ -90,8 +91,10 @@ app.use(pinoHttp({ logger }));
 // higher one (routes/auth.routes.js). Sharing the global one meant a burst of
 // screen requests could 429 the refresh call, which the clients could not tell
 // apart from an expired session, so they signed the user out on every reload.
+// The seller portal's refresh (/seller/auth/refresh) is exempt for the same reason.
+const OWN_BUDGET_PATHS = new Set(['/auth/refresh', '/seller/auth/refresh']);
 app.use('/api', (req, res, next) =>
-  req.path === '/auth/refresh' ? next() : apiLimiter(req, res, next)
+  OWN_BUDGET_PATHS.has(req.path) ? next() : apiLimiter(req, res, next)
 );
 
 app.use('/api/auth', authRoutes);
@@ -114,6 +117,8 @@ app.use('/api/owner', ownerRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/staff', staffRouter);
 app.use('/api/partner', partnerRouter);
+// Seller (coupon partner) portal — COUPON_IMPLEMENTATION_PROMPTS.md.
+app.use('/api/seller', sellerRouter);
 
 app.get('/health', (_, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 

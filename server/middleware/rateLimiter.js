@@ -1,4 +1,4 @@
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { env } from '../config/env.js';
 import { RATE_LIMITS } from '../config/liveActivity.config.js';
 
@@ -42,6 +42,59 @@ export const staffOtpLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 60,
   message: { status: 'error', code: 'RATE_LIMITED', message: 'Too many login attempts. Please wait a minute and try again.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipPreflight,
+});
+
+// Seller portal sign-in (OTP send/verify, password login, account pick). Sized like the staff
+// limiter: a shop's whole team signs in from one Wi-Fi address at opening time. Guessing is
+// capped per code and per number in services/otp.service.js. Keyed explicitly by IP (the same
+// key the default uses) so tests can reset it with sellerAuthLimiterKey().
+export const sellerAuthLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  // ipKeyGenerator inline: the library inspects this function's source to check IPv6 addresses
+  // are grouped by subnet, and warns when it can't see the call.
+  keyGenerator: (req) => `seller-auth:${ipKeyGenerator(req.ip ?? '')}`,
+  message: { status: 'error', code: 'RATE_LIMITED', message: 'Too many sign-in attempts. Please wait a minute and try again.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipPreflight,
+});
+
+/** The seller sign-in limiter's key for an IP. */
+export function sellerAuthLimiterKey(ip) {
+  return `seller-auth:${ipKeyGenerator(ip ?? '')}`;
+}
+
+// Coupon redemption at a seller's counter (CB7): lookup + redeem, per seller LOGIN (it runs after
+// authenticateSeller), so one counter can't hammer codes while the rest of the shop keeps working.
+// Repeated wrong codes are also locked out separately (services/couponRedeem.service.js).
+export const SELLER_REDEEM_LIMIT = 30;
+export const sellerRedeemLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: SELLER_REDEEM_LIMIT,
+  keyGenerator: (req) => sellerRedeemLimiterKey(req.seller?.userId),
+  message: { status: 'error', code: 'RATE_LIMITED', message: 'Too many coupon checks. Please wait a minute and try again.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipPreflight,
+});
+
+/** The redemption limiter's key for a seller user. */
+export function sellerRedeemLimiterKey(sellerUserId) {
+  return `seller-redeem:${sellerUserId ?? 'anonymous'}`;
+}
+
+// Admin bulk exports (CB9 coupon CSV): each holds customer mobile numbers, so a few a minute per
+// admin login — enough for real use, a brake on a scripted or stolen session pulling everything.
+export const ADMIN_EXPORT_LIMIT = 5;
+export const adminExportLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: ADMIN_EXPORT_LIMIT,
+  keyGenerator: (req) => `admin-export:${req.user?._id ?? 'anonymous'}`,
+  message: { status: 'error', code: 'RATE_LIMITED', message: 'Too many exports. Please wait a minute and try again.' },
   standardHeaders: true,
   legacyHeaders: false,
   skip: skipPreflight,

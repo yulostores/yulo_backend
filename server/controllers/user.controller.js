@@ -2,9 +2,37 @@ import { z } from 'zod';
 import User from '../models/User.js';
 import * as userService from '../services/user.service.js';
 import * as uploadService from '../services/upload.service.js';
+import * as myCouponsService from '../services/myCoupons.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { ageOn } from '../utils/couponCode.js';
+import { GENDERS } from '../config/coupon.config.js';
+
+// The ages a customer may give (an app user must be at least 13). Checked on the calendar date
+// in India, the same way coupon reports reckon age (utils/couponCode.js#ageOn).
+const MIN_AGE = 13;
+const MAX_AGE = 110;
+
+// 'YYYY-MM-DD' → that calendar date at 00:00 UTC (05:30 in India, so still the same date there).
+const dateOfBirthSchema = z
+  .string()
+  .trim()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date of birth must be YYYY-MM-DD')
+  .transform((value, ctx) => {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    // Rejects 2001-02-30 and the like: Date rolls them over to another day.
+    if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+      ctx.addIssue({ code: 'custom', message: 'Enter a real date of birth' });
+      return z.NEVER;
+    }
+    const age = ageOn(date);
+    if (age < MIN_AGE || age > MAX_AGE) {
+      ctx.addIssue({ code: 'custom', message: `Age must be between ${MIN_AGE} and ${MAX_AGE}` });
+      return z.NEVER;
+    }
+    return date;
+  });
 
 const updateProfileSchema = z
   .object({
@@ -16,6 +44,9 @@ const updateProfileSchema = z
     // `avatarUrl` is an accepted alias for `profilePicture`, not a second field — see the
     // comment on User.js's `preferences` field for why no separate avatarUrl column exists.
     avatarUrl: z.string().url().optional(),
+    // Optional demographics for coupon reports. `null` clears a value.
+    gender: z.enum(GENDERS, { message: `Gender must be one of: ${GENDERS.join(', ')}` }).nullable().optional(),
+    dateOfBirth: dateOfBirthSchema.nullable().optional(),
   })
   .transform(({ avatarUrl, ...rest }) => (avatarUrl ? { ...rest, profilePicture: avatarUrl } : rest));
 
@@ -138,4 +169,24 @@ export const registerDevice = asyncHandler(async (req, res) => {
 export const removeDevice = asyncHandler(async (req, res) => {
   await userService.removeDevice(req.user._id, req.params.deviceToken);
   sendSuccess(res, 200, 'Device removed', null);
+});
+
+// ── My Coupons (CB6) ──────────────────────────────────────────────────────────
+
+const myCouponsQuerySchema = z.object({
+  status: z.enum(myCouponsService.MY_COUPON_STATUSES).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+});
+
+// GET /api/users/me/coupons?status=issued|redeemed|expired|void&page=&limit=
+export const listMyCoupons = asyncHandler(async (req, res) => {
+  const parsed = myCouponsQuerySchema.safeParse(req.query ?? {});
+  if (!parsed.success) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid coupon filter', parsed.error.flatten());
+  sendSuccess(res, 200, 'Coupons', await myCouponsService.listMyCoupons(req.user._id, parsed.data));
+});
+
+// GET /api/users/me/coupons/:id
+export const getMyCoupon = asyncHandler(async (req, res) => {
+  sendSuccess(res, 200, 'Coupon', { coupon: await myCouponsService.getMyCoupon(req.user._id, req.params.id) });
 });

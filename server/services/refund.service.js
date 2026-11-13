@@ -2,6 +2,8 @@ import Order from '../models/Order.js';
 import Bill from '../models/Bill.js';
 import Restaurant from '../models/Restaurant.js';
 import StrayPayment from '../models/StrayPayment.js';
+import SellerSubscription from '../models/SellerSubscription.js';
+import SmsCreditPurchase from '../models/SmsCreditPurchase.js';
 import { legacyRefundStatus } from '../models/refundSchema.js';
 import { paymentSimulationEnabled } from '../config/payments.config.js';
 import { ApiError } from '../utils/ApiError.js';
@@ -10,6 +12,7 @@ import logger from '../utils/logger.js';
 import { getRazorpay } from './razorpayClient.js';
 import { getActiveSettings } from './financeSettings.service.js';
 import { onCancelledAfterPreparation, recordRefundGatewayFee } from './ledger.service.js';
+import { voidForSource } from './couponIssue.service.js';
 
 // Refunds and the cancellation rules that decide them (PAYMENT_IMPLEMENTATION_PROMPTS.md
 // § Business rules → Refunds & cancellations):
@@ -188,8 +191,13 @@ export const initiateFullRefund = async (orderId, { reason, cause, initiatedBy =
     // Razorpay keeps its fee whatever happens next — charge it to whoever bears it now, once.
     // Only for the order's own payment: a refused payment's fee was never recorded as the
     // restaurant's.
-    afterClaim: (claimed) =>
-      claimed.paymentStatus === 'paid' && cause ? recordRefundGatewayFee(claimed, { cause, feeBorneBy }) : null,
+    afterClaim: async (claimed) => {
+      if (claimed.paymentStatus !== 'paid') return;
+      // The order's own payment is going back in full: its coupons go void now, not days later
+      // when Razorpay confirms — so none can be redeemed while the money is on its way (CB6).
+      await voidCouponsFor('order', claimed._id);
+      if (cause) await recordRefundGatewayFee(claimed, { cause, feeBorneBy });
+    },
   });
 };
 
@@ -221,10 +229,24 @@ const markRefundProcessed = async (Model, { id, razorpayRefundId, paymentId = nu
       { _id: id, paymentStatus: 'paid', 'refund.status': 'processed', ...(paymentId ? { razorpayPaymentId: paymentId } : {}) },
       { $set: { paymentStatus: 'refunded' } }
     );
-    return Order.findById(id);
+    const order = await Order.findById(id);
+    // The order's own payment is back with the customer: the coupons it earned go void (CB6).
+    if (order?.paymentStatus === 'refunded') await voidCouponsFor('order', id);
+    return order;
+  }
+  // A bill refunded in full after it was paid online (nothing does this automatically today —
+  // refused payments are refunded on OPEN bills — but an admin refund of a paid bill must void too).
+  if (Model === Bill && doc?.status === 'paid' && doc.paymentChannel === 'online' && doc.refund?.amountPaise >= toPaise(doc.grandTotal ?? 0)) {
+    await voidCouponsFor('bill', id);
   }
   return doc ?? Model.findById(id);
 };
+
+// Never lets a coupon problem fail the refund bookkeeping — logged for a manual fix instead.
+const voidCouponsFor = (sourceType, sourceId) =>
+  voidForSource({ sourceType, sourceId, reason: 'Payment refunded' }).catch((err) =>
+    logger.error({ err, sourceType, sourceId }, 'Could not void the coupons of a refunded payment')
+  );
 
 // Logged loudly and left 'failed' — the admin refunds screen lists these for a retry.
 const markRefundFailed = async (Model, id, failureReason) => {
@@ -598,17 +620,21 @@ export const retryRefund = async (id, adminId) => {
  * flagged on that document's own refund (models/StrayPayment.js). Idempotent per payment and
  * cause. Logged at error level: until an admin refunds it, Yulo is holding a customer's money.
  */
-export const recordStrayPayment = async ({ kind, payment, restaurantId = null, orderId = null, billId = null, reason }) => {
+export const recordStrayPayment = async ({ kind, payment, restaurantId = null, orderId = null, billId = null, sellerId = null, sellerSubscriptionId = null, smsCreditPurchaseId = null, reason }) => {
   // One owed-back record per payment, whatever the cause: verify and the webhook (or the
   // payment.captured and order.paid events) can each see the same refused payment under a
   // different cause. Already owed back as a stray, or held by an order/bill (counted there, or
   // flagged on its own refund) → nothing more to record.
-  const [asStray, onOrder, onBill] = await Promise.all([
+  const [asStray, onOrder, onBill, onSubscription, onCreditPack] = await Promise.all([
     StrayPayment.exists({ razorpayPaymentId: payment.id, kind: { $ne: 'dine_in_round_cancelled' } }),
     Order.exists({ razorpayPaymentId: payment.id }),
     Bill.exists({ razorpayPaymentId: payment.id }),
+    // A coupon partner's plan that this payment paid for.
+    SellerSubscription.exists({ 'payment.razorpayPaymentId': payment.id }),
+    // An SMS-credit pack it paid for.
+    SmsCreditPurchase.exists({ 'payment.razorpayPaymentId': payment.id }),
   ]);
-  if (asStray || onOrder || onBill) return;
+  if (asStray || onOrder || onBill || onSubscription || onCreditPack) return;
   logger.error(
     { kind, razorpayPaymentId: payment.id, orderId, billId, amountPaise: payment.amount, reason },
     'Stray payment captured — refund required'
@@ -621,6 +647,9 @@ export const recordStrayPayment = async ({ kind, payment, restaurantId = null, o
         amountPaise: payment.amount ?? null,
         restaurantId,
         billId,
+        sellerId,
+        sellerSubscriptionId,
+        smsCreditPurchaseId,
         reason,
         refund: { status: 'pending', amountPaise: payment.amount ?? null, reason },
       },

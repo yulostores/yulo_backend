@@ -12,6 +12,7 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { toPaise } from '../utils/money.js';
 import { publicBillView } from '../utils/publicMask.js';
 import * as activityService from '../services/activity.service.js';
+import { couponsEarned } from '../services/myCoupons.service.js';
 
 // Public, table-scoped "pay the bill online" flow (yulo_menu) — a guest-initiated
 // counterpart to the staff-side GET/POST .../bill endpoints in controllers/staff/
@@ -258,6 +259,17 @@ export const getBillPaymentStatus = asyncHandler(async (req, res) => {
       amount: bill.grandTotal,
       sessionStatus: session?.status ?? null,
       refund: customerRefundView(bill),
+      couponsEarned: await billCouponsEarned(req, bill),
     },
   });
 });
+
+// Partner coupons the bill earned (CB6). This route is keyed only by the table QR, so anyone at
+// the table may ask: they get the count; the coupon ids only go to the signed-in customer the
+// bill belongs to (and even then each coupon opens only under that customer's own login).
+const billCouponsEarned = async (req, bill) => {
+  if (bill.status !== 'paid') return { count: 0, ids: [] };
+  const earned = await couponsEarned('bill', bill._id);
+  const isOwner = req.user?._id && bill.customerId && String(req.user._id) === String(bill.customerId);
+  return isOwner ? earned : { count: earned.count, ids: [] };
+};

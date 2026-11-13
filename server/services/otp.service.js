@@ -1,11 +1,18 @@
 import argon2 from 'argon2';
 import crypto from 'crypto';
-import { redis } from '../config/redis.js';
+import { redis as defaultRedis } from '../config/redis.js';
 import { env } from '../config/env.js';
 import logger from '../utils/logger.js';
 import { maskPhone } from '../utils/maskPhone.js';
 import { ApiError } from '../utils/ApiError.js';
 import * as messageCentralService from './messageCentral.service.js';
+
+// The Redis client every OTP read/write goes through. Tests swap in an in-memory stand-in
+// (test-utils/fakeRedis.mjs), since the test environment has no Redis; nothing else may.
+let redis = defaultRedis;
+export const __setOtpRedisForTests = (client) => {
+  redis = client === undefined ? defaultRedis : client;
+};
 
 const OTP_TTL_SECONDS = 5 * 60;
 const REQUEST_WINDOW_SECONDS = 10 * 60;

@@ -2,7 +2,14 @@ import { randomUUID } from 'crypto';
 import argon2 from 'argon2';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
-import { redis } from '../config/redis.js';
+import { redis as defaultRedis } from '../config/redis.js';
+import { ApiError } from '../utils/ApiError.js';
+
+// The revocation denylist's Redis. Tests swap in an in-memory stand-in (test-utils/fakeRedis.mjs).
+let redis = defaultRedis;
+export const __setAuthRedisForTests = (client) => {
+  redis = client === undefined ? defaultRedis : client;
+};
 
 export const hashPassword = (plain) =>
   argon2.hash(plain, { type: argon2.argon2id });
@@ -106,3 +113,66 @@ export const blacklistToken = async (token) => {
 // crashed with a TypeError when REDIS_URL was unset.
 export const isTokenRevoked = async (decoded, token) =>
   redis ? (await redis.get(revocationKey(decoded, token))) !== null : false;
+
+// ── Seller (coupon partner) portal sessions ──────────────────────────────────
+//
+// Access + refresh, both signed with JWT_SELLER_SECRET and told apart by `typ`, so a refresh
+// token can never be used as an access token or the other way round. Both carry the user's
+// sessionVersion (`sv`, models/SellerUser.js): bumping it — deactivation, a role change, the
+// seller being suspended — ends the session at its next request AND its next refresh. The web
+// portal keeps the refresh token in its own httpOnly cookie (utils/refreshCookie.js, 'seller').
+//
+// A third, short-lived kind, `typ: 'signup'`, proves a phone number passed OTP when no seller
+// login exists for it yet; seller signup (CB3) accepts it instead of a second OTP. A fourth,
+// `typ: 'select'`, does the same for a number with logins at several sellers, so the person
+// can pick one without another OTP.
+
+export const SELLER_TOKEN_TYPES = Object.freeze({ access: 'access', refresh: 'refresh', signup: 'signup', select: 'select' });
+export const SELLER_PROOF_SECONDS = 15 * 60;
+
+const sellerSecret = () => {
+  if (!env.JWT_SELLER_SECRET) {
+    throw new ApiError(503, 'SELLER_AUTH_NOT_CONFIGURED', 'Seller sign-in is not available on this server yet');
+  }
+  return env.JWT_SELLER_SECRET;
+};
+
+export const generateSellerTokens = (sellerUser) => {
+  const base = { sellerUserId: String(sellerUser._id), sv: sellerUser.sessionVersion ?? 0 };
+  const accessToken = jwt.sign(
+    {
+      ...base,
+      sellerId: String(sellerUser.sellerId),
+      role: sellerUser.role,
+      typ: SELLER_TOKEN_TYPES.access,
+      jti: randomUUID(),
+    },
+    sellerSecret(),
+    { expiresIn: env.SELLER_ACCESS_EXPIRES }
+  );
+  const refreshToken = jwt.sign({ ...base, typ: SELLER_TOKEN_TYPES.refresh, jti: randomUUID() }, sellerSecret(), {
+    expiresIn: env.SELLER_REFRESH_EXPIRES,
+  });
+  return { accessToken, refreshToken };
+};
+
+/** A short-lived proof that `phone` passed OTP (or a password) — see the note above. */
+export const generateSellerProofToken = (typ, phone, extra = {}) =>
+  jwt.sign({ typ, phone, ...extra, jti: randomUUID() }, sellerSecret(), { expiresIn: SELLER_PROOF_SECONDS });
+
+/**
+ * Verifies a seller token of the expected `typ`. Throws the same 401 the other auth paths use
+ * for anything wrong with it — bad signature, expired, revoked, or the wrong kind of token.
+ */
+export const verifySellerToken = async (token, typ) => {
+  let decoded;
+  try {
+    decoded = jwt.verify(token, sellerSecret());
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    throw new ApiError(401, 'INVALID_TOKEN', err?.name === 'TokenExpiredError' ? 'Session expired' : 'Invalid token');
+  }
+  if (decoded.typ !== typ) throw new ApiError(401, 'INVALID_TOKEN', 'Invalid token');
+  if (await isTokenRevoked(decoded, token)) throw new ApiError(401, 'INVALID_TOKEN', 'Token has been revoked');
+  return decoded;
+};

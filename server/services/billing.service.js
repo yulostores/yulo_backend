@@ -20,6 +20,7 @@ import { publishOffer } from './liveBroadcast.service.js';
 import { closeDineInTable } from './activity.service.js';
 import { isLiveActivityEnabledFor } from '../config/liveActivity.config.js';
 import { now as clockNow } from '../utils/clock.js';
+import { scheduleIssue as scheduleCouponIssue } from './couponIssue.service.js';
 
 // Rupees, to the paisa. Percentage maths on floats produces figures like
 // 37.500000000000004, which then reach the guest's receipt and the revenue aggregates as
@@ -650,6 +651,10 @@ export const markPaid = async ({ billId, restaurantId, paymentMethod, payment = 
   // Live customer activity: the diner's offer on this bill is used, and the table's visits end.
   await redeemTableOffer(bill, clockNow()).catch((err) => logger.error({ err, billId: bill._id }, 'Could not redeem the table offer'));
   if (session?.tableId) await closeDineInTable({ restaurantId, tableId: session.tableId }, clockNow());
+
+  // Coupons from partner sellers (CB6) — for a bill the guest paid online only. Fire-and-forget:
+  // never delays or fails the payment.
+  if (paymentChannel === 'online') scheduleCouponIssue('bill', bill._id);
 
   // A round billed in this total but cancelled before the payment landed (while the bill was
   // held for the guest): the guest paid Yulo for food they didn't get — flagged for an admin to

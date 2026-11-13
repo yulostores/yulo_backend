@@ -12,6 +12,11 @@ import financeRoutes from './finance.routes.js';
 import orderRoutes from './order.routes.js';
 import billRoutes from './bill.routes.js';
 import bankRequestRoutes from './bankRequests.routes.js';
+import sellerRoutes from './seller.routes.js';
+import couponPlanRoutes from './couponPlan.routes.js';
+import { categoryRouter as couponCategoryRoutes, offerRouter as couponOfferRoutes } from './coupon.routes.js';
+import { couponsRouter, couponReportsRouter, couponSettingsRouter } from './couponAdmin.routes.js';
+import reminderCampaignRoutes from './reminderCampaign.routes.js';
 
 const router = Router();
 
@@ -31,5 +36,14 @@ router.use('/finance', financeRoutes);
 router.use('/orders', orderRoutes);
 router.use('/bills', billRoutes);
 router.use('/bank-requests', bankRequestRoutes);
+// Coupon partners (COUPON_IMPLEMENTATION_PROMPTS.md).
+router.use('/sellers', sellerRoutes);
+router.use('/coupon-plans', couponPlanRoutes);
+router.use('/coupon-categories', couponCategoryRoutes);
+router.use('/coupon-offers', couponOfferRoutes);
+router.use('/coupons', couponsRouter);
+router.use('/coupon-reports', couponReportsRouter);
+router.use('/coupon-settings', couponSettingsRouter);
+router.use('/reminder-campaigns', reminderCampaignRoutes);
 
 export default router;

@@ -11,6 +11,7 @@ import { connectDB } from './config/db.js';
 import { connectRedis, redis } from './config/redis.js';
 import { env } from './config/env.js';
 import { startSettlementScheduler } from './jobs/settlementScheduler.js';
+import { startCouponScheduler } from './jobs/couponScheduler.js';
 import { loadLiveActivityRestaurants, startLiveActivityAccessRefresh } from './services/liveActivityAccess.service.js';
 import logger from './utils/logger.js';
 // Registered here so the index build below covers them even before any route imports them:
@@ -87,6 +88,8 @@ server.listen(env.PORT, () => logger.info(`Server running on port ${env.PORT}`))
 
 // Weekly restaurant settlements (Monday 03:00 IST) — see jobs/settlementScheduler.js.
 const settlementScheduler = startSettlementScheduler();
+// Coupon expiry (02:00 IST) and expiry-reminder SMS (10:00 IST) — see jobs/couponScheduler.js.
+const couponScheduler = startCouponScheduler();
 
 // Graceful shutdown (a deploy sends SIGTERM, then SIGKILL after a grace period). server.close()
 // alone never finishes while a Socket.IO client is connected — the instance used to hang until
@@ -106,6 +109,7 @@ const shutdown = async (signal) => {
   force.unref();
   try {
     await settlementScheduler.stop();
+    await couponScheduler.stop();
     stopLiveActivityAccessRefresh();
     // Closes every socket and, with them, the HTTP server it is attached to.
     await new Promise((resolve) => io.close(() => resolve()));
