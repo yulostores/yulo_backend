@@ -84,6 +84,11 @@ app.use(cors({ origin: allowedOrigins.includes('*') ? true : allowedOrigins, cre
 // assumption doesn't fit Razorpay's delivery pattern anyway.
 app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoutes);
 
+// Coupon settings carry the partner agreement — up to 100,000 characters, and Hindi takes 3 bytes
+// a character in UTF-8 — so this one admin route parses a larger body (it is admin-only behind
+// authentication). Parsed here first, the global 10 kb parser below skips it; every other route
+// keeps the 10 kb cap.
+app.use('/api/admin/coupon-settings', express.json({ limit: '400kb' }));
 app.use(express.json({ limit: '10kb' }));
 app.use(cookieParser());
 app.use(pinoHttp({ logger }));

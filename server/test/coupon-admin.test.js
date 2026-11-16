@@ -473,6 +473,22 @@ test('employees: every seller login with role, phone, redemptions and the last o
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 
+// Production, Nov 2026: saving the real partner agreement (≈18,000 characters, half of them Hindi,
+// ≈26 KB of JSON) answered 413 "The request body is too large" — the API's global JSON cap is
+// 10 kb. The coupon-settings route alone accepts up to 400 kb; every other route keeps 10 kb.
+test('coupon settings: a full-length bilingual agreement saves; other routes keep the 10 kb body cap', async () => {
+  const clause = '4.5 Each coupon shall expire 30 days after its issue date. सरल हिंदी अर्थ: Customer द्वारा इस्तेमाल न करने पर coupon 30 दिन बाद expire हो जाएगा।\n';
+  const agreementText = clause.repeat(Math.ceil(60_000 / clause.length)).slice(0, 60_000);
+  assert.ok(Buffer.byteLength(JSON.stringify({ agreementText })) > 60_000, 'well over the old 10 kb cap');
+  const saved = await admin('PUT', '/coupon-settings', { agreementVersion: 1, agreementText });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body).slice(0, 300));
+  const active = (await admin('GET', '/coupon-settings')).body.data.active;
+  assert.equal(active.agreementText.length, 60_000);
+
+  const elsewhere = await admin('PUT', '/coupon-plans/basic', { name: 'x'.repeat(20_000) });
+  assert.equal(elsewhere.status, 413, 'the 10 kb cap still applies to other routes');
+});
+
 test('coupon settings: read, save a new version (audit-logged), history kept, bad or unchanged input refused', async () => {
   const first = (await admin('GET', '/coupon-settings')).body.data;
   assert.equal(first.active.version, 1);
