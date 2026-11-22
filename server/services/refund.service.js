@@ -2,6 +2,7 @@ import Order from '../models/Order.js';
 import Bill from '../models/Bill.js';
 import Restaurant from '../models/Restaurant.js';
 import StrayPayment from '../models/StrayPayment.js';
+import JobApplication from '../models/JobApplication.js';
 import SellerSubscription from '../models/SellerSubscription.js';
 import SmsCreditPurchase from '../models/SmsCreditPurchase.js';
 import { legacyRefundStatus } from '../models/refundSchema.js';
@@ -512,7 +513,7 @@ const REFUND_LISTS = [
   {
     kind: 'stray_payment',
     Model: StrayPayment,
-    select: 'kind restaurantId orderId billId razorpayPaymentId razorpayOrderId amountPaise reason refund updatedAt',
+    select: 'kind restaurantId orderId billId jobApplicationId razorpayPaymentId razorpayOrderId amountPaise reason refund updatedAt',
   },
 ];
 
@@ -624,12 +625,12 @@ export const retryRefund = async (id, adminId) => {
  * flagged on that document's own refund (models/StrayPayment.js). Idempotent per payment and
  * cause. Logged at error level: until an admin refunds it, Yulo is holding a customer's money.
  */
-export const recordStrayPayment = async ({ kind, payment, restaurantId = null, orderId = null, billId = null, sellerId = null, sellerSubscriptionId = null, smsCreditPurchaseId = null, reason }) => {
+export const recordStrayPayment = async ({ kind, payment, restaurantId = null, orderId = null, billId = null, sellerId = null, sellerSubscriptionId = null, smsCreditPurchaseId = null, jobApplicationId = null, reason }) => {
   // One owed-back record per payment, whatever the cause: verify and the webhook (or the
   // payment.captured and order.paid events) can each see the same refused payment under a
   // different cause. Already owed back as a stray, or held by an order/bill (counted there, or
   // flagged on its own refund) → nothing more to record.
-  const [asStray, onOrder, onBill, onSubscription, onCreditPack] = await Promise.all([
+  const [asStray, onOrder, onBill, onSubscription, onCreditPack, onJobApplication] = await Promise.all([
     StrayPayment.exists({ razorpayPaymentId: payment.id, kind: { $ne: 'dine_in_round_cancelled' } }),
     Order.exists({ razorpayPaymentId: payment.id }),
     Bill.exists({ razorpayPaymentId: payment.id }),
@@ -637,8 +638,10 @@ export const recordStrayPayment = async ({ kind, payment, restaurantId = null, o
     SellerSubscription.exists({ 'payment.razorpayPaymentId': payment.id }),
     // An SMS-credit pack it paid for.
     SmsCreditPurchase.exists({ 'payment.razorpayPaymentId': payment.id }),
+    // A careers-portal application it paid the form fee for.
+    JobApplication.exists({ 'payment.razorpayPaymentId': payment.id }),
   ]);
-  if (asStray || onOrder || onBill || onSubscription || onCreditPack) return;
+  if (asStray || onOrder || onBill || onSubscription || onCreditPack || onJobApplication) return;
   logger.error(
     { kind, razorpayPaymentId: payment.id, orderId, billId, amountPaise: payment.amount, reason },
     'Stray payment captured — refund required'
@@ -654,6 +657,7 @@ export const recordStrayPayment = async ({ kind, payment, restaurantId = null, o
         sellerId,
         sellerSubscriptionId,
         smsCreditPurchaseId,
+        jobApplicationId,
         reason,
         refund: { status: 'pending', amountPaise: payment.amount ?? null, reason },
       },

@@ -30,6 +30,7 @@ import staffRouter from './routes/staff/index.js';
 import adminRouter from './routes/admin/index.js';
 import partnerRouter from './routes/partner/index.js';
 import sellerRouter from './routes/seller/index.js';
+import careersRoutes from './routes/careers.routes.js';
 
 const app = express();
 
@@ -124,6 +125,8 @@ app.use('/api/staff', staffRouter);
 app.use('/api/partner', partnerRouter);
 // Seller (coupon partner) portal — COUPON_IMPLEMENTATION_PROMPTS.md.
 app.use('/api/seller', sellerRouter);
+// Public careers portal (yulo_careers): job applications with a ₹100 form fee.
+app.use('/api/careers', careersRoutes);
 
 app.get('/health', (_, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
