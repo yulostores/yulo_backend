@@ -1,6 +1,7 @@
 import Bill from '../../models/Bill.js';
 import * as billViewService from '../../services/billView.service.js';
 import * as billingService from '../../services/billing.service.js';
+import * as billEditService from '../../services/billEdit.service.js';
 import * as counterPaymentService from '../../services/counterPayment.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
@@ -111,4 +112,57 @@ export const markBillPaid = asyncHandler(async (req, res) => {
 export const releaseBillPayment = asyncHandler(async (req, res) => {
   const bill = await billingService.releasePayment({ billId: req.params.billId, restaurantId: req.restaurant._id });
   sendSuccess(res, 200, 'Bill payment released', { bill: await billViewService.buildBillView(bill) });
+});
+
+// ── Generating and editing a table's bill (services/billEdit.service.js) ──────────────
+
+/** GET /owner/:rId/bills/open-tables — tables with an open sitting, and whether they can be billed. */
+export const listOpenTables = asyncHandler(async (req, res) => {
+  sendSuccess(res, 200, 'Open tables', { tables: await billEditService.openTables(req.restaurant._id) });
+});
+
+/** POST /owner/:rId/bills/sessions/:sessionId/generate */
+export const generateBill = asyncHandler(async (req, res) => {
+  const bill = await billEditService.generateBill(req.restaurant._id, req.params.sessionId);
+  sendSuccess(res, 200, 'Bill generated', { bill: await billViewService.buildBillView(bill) });
+});
+
+/** PATCH /owner/:rId/bills/:billId/items  { orderId, lineIndex, quantity } — 0 removes the dish. */
+export const editBillItem = asyncHandler(async (req, res) => {
+  const { orderId, lineIndex, quantity } = req.body ?? {};
+  if (!orderId || !Number.isInteger(lineIndex)) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'orderId and lineIndex are required');
+  }
+  const bill = await billEditService.setLineQuantity({
+    restaurantId: req.restaurant._id,
+    billId: req.params.billId,
+    orderId,
+    lineIndex,
+    quantity: Number(quantity),
+    by: req.user._id,
+  });
+  sendSuccess(res, 200, 'Bill updated', { bill: await billViewService.buildBillView(bill) });
+});
+
+/** PUT /owner/:rId/bills/:billId/discount  { type: 'flat' | 'percent', value } — 0 removes it. */
+export const setBillDiscount = asyncHandler(async (req, res) => {
+  const bill = await billEditService.setManualDiscount({
+    restaurantId: req.restaurant._id,
+    billId: req.params.billId,
+    type: req.body?.type,
+    value: Number(req.body?.value),
+    by: req.user._id,
+  });
+  sendSuccess(res, 200, 'Discount updated', { bill: await billViewService.buildBillView(bill) });
+});
+
+/** PUT /owner/:rId/bills/:billId/service-charge  { enabled } — the fixed service charge on or off for this bill. */
+export const setBillServiceCharge = asyncHandler(async (req, res) => {
+  const bill = await billEditService.setServiceCharge({
+    restaurantId: req.restaurant._id,
+    billId: req.params.billId,
+    enabled: req.body?.enabled,
+    by: req.user._id,
+  });
+  sendSuccess(res, 200, 'Service charge updated', { bill: await billViewService.buildBillView(bill) });
 });

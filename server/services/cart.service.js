@@ -191,6 +191,16 @@ export const computeBill = async (cart, restaurant, { dropCoordinates } = {}) =>
     }
   }
 
+  // Each dish's packaging charge × quantity (delivery/takeaway packing).
+  const packagingRows = await MenuItem.find({ _id: { $in: cart.items.map((i) => i.menuItemId) } })
+    .select('packagingCharge')
+    .lean();
+  const packagingById = new Map(packagingRows.map((m) => [String(m._id), m.packagingCharge ?? 0]));
+  const packagingPaise = cart.items.reduce(
+    (sum, item) => sum + toPaise(packagingById.get(String(item.menuItemId)) ?? 0) * item.qty,
+    0
+  );
+
   const drop = dropCoordinates !== undefined ? dropCoordinates : await defaultDropCoordinates(cart.userId);
   const { distanceKm, issue } = resolveDeliveryDistance(restaurantDoc, drop);
   const charges = computeCustomerCharges({
@@ -200,6 +210,7 @@ export const computeBill = async (cart, restaurant, { dropCoordinates } = {}) =>
     restaurant: restaurantDoc,
     // An address the restaurant won't deliver to has no meaningful fee — shown as pending.
     distanceKm: issue ? null : distanceKm,
+    packagingPaise,
     settings: await getActiveSettings(),
   });
 
@@ -209,6 +220,7 @@ export const computeBill = async (cart, restaurant, { dropCoordinates } = {}) =>
     mrpTotal,
     itemDiscountAmount,
     deliveryFee: legacy.deliveryFee,
+    packagingCharge: legacy.packagingCharge,
     platformFee: legacy.platformFee,
     tax: legacy.tax,
     discountAmount: legacy.discountAmount,
@@ -319,6 +331,9 @@ export const addItem = async (userId, { menuItemId, qty, selectedOptions = [] })
 
   const menuItem = await MenuItem.findOne({ _id: menuItemId, isAvailable: true }).lean({ virtuals: true });
   if (!menuItem) throw new ApiError(404, 'NOT_FOUND', 'Menu item not found');
+  if (menuItem.availableOnline === false) {
+    throw new ApiError(400, 'NOT_AVAILABLE_ONLINE', `"${menuItem.name}" is served at the restaurant only — it can't be ordered online`);
+  }
 
   if (cart.items.length > 0 && String(cart.restaurantId) !== String(menuItem.restaurantId)) {
     const currentRestaurant = await Restaurant.findById(cart.restaurantId).select('name').lean();

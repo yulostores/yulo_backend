@@ -284,6 +284,16 @@ export const updateSettings = asyncHandler(async (req, res) => {
   for (const key of ['legalEntityType', 'ownerName', 'panNumber', 'gstNumber', 'healthPermitId', 'registrationNo']) {
     if (settings?.[key] !== undefined) settingsPatch[key] = settings[key];
   }
+  // The fixed dine-in service charge; a cleared field means none.
+  if (settings?.serviceChargeAmount !== undefined) {
+    const amount = settings.serviceChargeAmount === '' || settings.serviceChargeAmount == null ? 0 : Number(settings.serviceChargeAmount);
+    if (!Number.isFinite(amount) || amount < 0 || amount > 5000) {
+      throw new ApiError(400, 'VALIDATION_ERROR', 'Service charge must be ₹0 to ₹5,000', {
+        fieldErrors: { 'settings.serviceChargeAmount': 'Service charge must be ₹0 to ₹5,000' },
+      });
+    }
+    settingsPatch.serviceChargeAmount = Math.round(amount * 100) / 100;
+  }
   // A cleared date arrives as '' — store null rather than letting the Date cast reject it.
   for (const key of ['licenseExpiry', 'tradeLicenseExpiry']) {
     if (settings?.[key] !== undefined) settingsPatch[key] = settings[key] || null;

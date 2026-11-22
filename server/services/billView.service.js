@@ -310,6 +310,9 @@ const buildOne = (rawBill, ctx) => {
       ...d,
       amount: round2(d.amount),
     })),
+    // The owner's edits before payment (services/billEdit.service.js) — without who made them.
+    adjustments: (bill.adjustments ?? []).map(({ by: _by, ...a }) => a),
+    serviceChargeRemoved: Boolean(bill.serviceChargeRemoved),
 
     payment: {
       status: bill.status,

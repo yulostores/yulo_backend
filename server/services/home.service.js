@@ -1,4 +1,5 @@
 import MenuItem from '../models/MenuItem.js';
+import { ONLINE_ITEM_FILTER } from '../utils/onlineMenu.js';
 import Discount from '../models/Discount.js';
 import QuickFilterChip from '../models/QuickFilterChip.js';
 import * as restaurantService from './restaurant.service.js';
@@ -48,7 +49,7 @@ const getRecommendedItems = async (restaurantIds, vegMode) => {
   const pullLimit = vegMode ? RECOMMENDED_ITEMS_LIMIT * 3 : RECOMMENDED_ITEMS_LIMIT;
 
   const items = await MenuItem.aggregate([
-    { $match: { restaurantId: { $in: restaurantIds }, isAvailable: true } },
+    { $match: { restaurantId: { $in: restaurantIds }, isAvailable: true, ...ONLINE_ITEM_FILTER } },
     {
       $lookup: {
         from: 'restaurants',
@@ -71,7 +72,7 @@ const getRecommendedItems = async (restaurantIds, vegMode) => {
   // than a best-effort filter that still leaks non-veg items with nothing to swap to.
   const variantIds = items.filter((i) => i.foodType !== 'veg' && i.vegVariantId).map((i) => i.vegVariantId);
   const variants = variantIds.length > 0
-    ? await MenuItem.find({ _id: { $in: variantIds }, isAvailable: true }).lean({ virtuals: true })
+    ? await MenuItem.find({ _id: { $in: variantIds }, isAvailable: true, ...ONLINE_ITEM_FILTER }).lean({ virtuals: true })
     : [];
   const variantById = new Map(variants.map((v) => [String(v._id), v]));
 

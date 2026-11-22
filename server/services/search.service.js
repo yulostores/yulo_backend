@@ -1,4 +1,5 @@
 import Restaurant from '../models/Restaurant.js';
+import { ONLINE_ITEM_FILTER } from '../utils/onlineMenu.js';
 import { PUBLIC_RESTAURANT_FILTER } from '../utils/publicRestaurant.js';
 import MenuItem from '../models/MenuItem.js';
 import Discount from '../models/Discount.js';
@@ -34,7 +35,7 @@ export const typeahead = async (q) => {
       .select('name logo')
       .limit(TYPEAHEAD_LIMIT_PER_SOURCE)
       .lean(),
-    MenuItem.find({ name: regex, isAvailable: true })
+    MenuItem.find({ name: regex, isAvailable: true, ...ONLINE_ITEM_FILTER })
       .select('name image foodType')
       .limit(TYPEAHEAD_LIMIT_PER_SOURCE)
       .lean(),
@@ -138,6 +139,7 @@ const resolvePopularImage = async (term, vegOnly) => {
     const dish = await MenuItem.findOne({
       name: partial,
       isAvailable: true,
+      ...ONLINE_ITEM_FILTER,
       image: { $type: 'string', $ne: '' },
     })
       .select('image')

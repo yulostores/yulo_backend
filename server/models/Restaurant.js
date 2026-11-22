@@ -109,7 +109,11 @@ const restaurantSchema = new mongoose.Schema(
       panNumber:            { type: String },
       gstNumber:            { type: String },
       gstPercent:           { type: Number, default: 5 },
+      // Legacy — dine-in service charge is now the fixed amount below (no longer read).
       serviceChargePercent: { type: Number, default: 10 },
+      // Fixed ₹ added to every dine-in table bill (0 = none); the owner can take it off any
+      // single bill (Bill.serviceChargeRemoved). services/billing.service.js.
+      serviceChargeAmount: { type: Number, default: 0, min: 0 },
       healthPermitId:       { type: String },
       licenseExpiry:        { type: Date },
       registrationNo:       { type: String },

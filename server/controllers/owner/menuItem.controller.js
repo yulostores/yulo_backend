@@ -2,6 +2,7 @@ import MenuItem from '../../models/MenuItem.js';
 import Category from '../../models/Category.js';
 import * as uploadService from '../../services/upload.service.js';
 import * as menuService from '../../services/menu.service.js';
+import { syncPortionGroup } from '../../services/portion.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
@@ -78,6 +79,41 @@ const assertDiscountWithinMrp = (sellingPrice, discountedPrice) => {
   }
 };
 
+// Packaging charge (₹ per unit, delivery/takeaway only): blank means none.
+const MAX_PACKAGING_CHARGE = 500;
+const parsePackaging = (raw) => {
+  if (raw === '' || raw == null || raw === 'null') return 0;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > MAX_PACKAGING_CHARGE) {
+    throw new ApiError(400, 'VALIDATION_ERROR', `Packaging charge must be ₹0 to ₹${MAX_PACKAGING_CHARGE}`);
+  }
+  return Math.round(n * 100) / 100;
+};
+// "Online available" arrives as "true"/"false" over multipart.
+const parseOnline = (raw) => {
+  if (raw === undefined) return undefined;
+  if (raw === true || raw === 'true') return true;
+  if (raw === false || raw === 'false') return false;
+  throw new ApiError(400, 'VALIDATION_ERROR', 'availableOnline must be true or false');
+};
+
+// Half-plate price: optional; when given it must be a real amount below the full plate.
+const parseHalfPlate = (raw) =>
+  raw === '' || raw == null || raw === 'null' ? null : parsePrice(raw, 'Half plate price');
+const assertHalfBelowFull = (fullPrice, halfPlatePrice) => {
+  if (halfPlatePrice != null && halfPlatePrice >= fullPrice) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Half plate price must be less than the full plate price');
+  }
+};
+
+// A pure-veg restaurant serves veg dishes only — no non-veg or egg item, and no "veg
+// version of a non-veg dish" link either.
+const assertFoodTypeAllowed = (restaurant, foodType) => {
+  if (restaurant.isPureVeg && foodType !== undefined && foodType !== 'veg') {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'This is a Pure-veg restaurant — every dish must be veg');
+  }
+};
+
 // The item's category has to be one of this restaurant's own.
 const assertOwnCategory = async (restaurantId, categoryId) => {
   if (!categoryId || !(await Category.exists({ _id: categoryId, restaurantId }))) {
@@ -90,17 +126,22 @@ const assertOwnCategory = async (restaurantId, categoryId) => {
 // restaurant's menu.
 const EDITABLE_FIELDS = [
   'name', 'description', 'foodType', 'sellingPrice', 'discountedPrice', 'categoryId',
-  'subCategoryId', 'prepTime', 'ingredients', 'badges', 'vegVariantId',
+  'subCategoryId', 'prepTime', 'ingredients', 'badges', 'vegVariantId', 'halfPlatePrice',
+  'packagingCharge', 'availableOnline',
 ];
 
 export const create = asyncHandler(async (req, res) => {
   const { name, description, foodType, sellingPrice, discountedPrice, categoryId,
-    subCategoryId, prepTime, ingredients, badges, vegVariantId } = req.body;
+    subCategoryId, prepTime, ingredients, badges, vegVariantId, halfPlatePrice,
+    packagingCharge, availableOnline } = req.body;
 
   const price = parsePrice(sellingPrice, 'Selling price');
   const discount = parseDiscount(discountedPrice);
+  const half = parseHalfPlate(halfPlatePrice);
   checkDescription(description);
   assertDiscountWithinMrp(price, discount);
+  assertHalfBelowFull(discount ?? price, half);
+  assertFoodTypeAllowed(req.restaurant, foodType);
   await assertOwnCategory(req.restaurant._id, categoryId);
 
   const itemData = {
@@ -112,10 +153,13 @@ export const create = asyncHandler(async (req, res) => {
     foodType,
     sellingPrice: price,
     discountedPrice: discount,
+    halfPlatePrice: half,
+    packagingCharge: parsePackaging(packagingCharge),
+    availableOnline: parseOnline(availableOnline) ?? true,
     prepTime: parsePrepTime(prepTime),
     ingredients: parseIngredients(ingredients),
     badges: parseArrayField(badges),
-    vegVariantId: vegVariantId || null,
+    vegVariantId: req.restaurant.isPureVeg ? null : vegVariantId || null,
   };
 
   let uploadedPublicId;
@@ -141,6 +185,7 @@ export const create = asyncHandler(async (req, res) => {
     throw err;
   }
 
+  await syncPortionGroup(item);
   await menuService.invalidateMenu(req.restaurant._id);
   sendSuccess(res, 201, 'Menu item created', { item });
 });
@@ -170,6 +215,18 @@ export const update = asyncHandler(async (req, res) => {
     updates.sellingPrice ?? existing.sellingPrice,
     updates.discountedPrice !== undefined ? updates.discountedPrice : existing.discountedPrice
   );
+  if (updates.halfPlatePrice !== undefined) updates.halfPlatePrice = parseHalfPlate(updates.halfPlatePrice);
+  if (updates.packagingCharge !== undefined) updates.packagingCharge = parsePackaging(updates.packagingCharge);
+  if (updates.availableOnline !== undefined) updates.availableOnline = parseOnline(updates.availableOnline);
+  assertHalfBelowFull(
+    (updates.discountedPrice !== undefined ? updates.discountedPrice : existing.discountedPrice) ??
+      updates.sellingPrice ?? existing.sellingPrice,
+    updates.halfPlatePrice !== undefined ? updates.halfPlatePrice : existing.halfPlatePrice
+  );
+  if (updates.foodType !== undefined && updates.foodType !== existing.foodType) {
+    assertFoodTypeAllowed(req.restaurant, updates.foodType);
+  }
+  if (req.restaurant.isPureVeg && updates.vegVariantId !== undefined) updates.vegVariantId = null;
   if (updates.categoryId !== undefined) await assertOwnCategory(req.restaurant._id, updates.categoryId);
   if (updates.subCategoryId === '') updates.subCategoryId = null;
   if (updates.prepTime != null && Number(updates.prepTime) !== existing.prepTime) {
@@ -216,6 +273,7 @@ export const update = asyncHandler(async (req, res) => {
     if (match) await uploadService.deleteImage(match[1]).catch(() => {});
   }
 
+  await syncPortionGroup(updated);
   await menuService.invalidateMenu(req.restaurant._id);
   sendSuccess(res, 200, 'Menu item updated', { item: updated });
 });

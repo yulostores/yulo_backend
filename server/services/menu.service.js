@@ -1,4 +1,5 @@
 import MenuItem from '../models/MenuItem.js';
+import { ONLINE_ITEM_FILTER, isOnlineItem } from '../utils/onlineMenu.js';
 import Category from '../models/Category.js';
 import SubCategory from '../models/SubCategory.js';
 import OptionGroup from '../models/OptionGroup.js';
@@ -70,8 +71,10 @@ export const searchMenu = async (restaurantId, query, foodType) => {
   const regex = new RegExp(escapeRegExp(query.trim()), 'i');
   const FOOD_TYPES = ['veg', 'non_veg', 'egg'];
   const wantType = FOOD_TYPES.includes(foodType) ? foodType : null;
+  // Menu search is the delivery app's — dine-in-only dishes are left out.
   return flattenMenuItems(menu).filter(
     (item) =>
+      isOnlineItem(item) &&
       (!wantType || item.foodType === wantType) &&
       (regex.test(item.name) || regex.test(item.description ?? ''))
   );
@@ -137,7 +140,7 @@ export const getStartingPrices = async (restaurantIds) => {
   if (restaurantIds.length === 0) return new Map();
 
   const rows = await MenuItem.aggregate([
-    { $match: { restaurantId: { $in: restaurantIds }, isAvailable: true } },
+    { $match: { restaurantId: { $in: restaurantIds }, isAvailable: true, ...ONLINE_ITEM_FILTER } },
     {
       $group: {
         _id: '$restaurantId',

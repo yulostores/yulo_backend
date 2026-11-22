@@ -92,14 +92,15 @@ export const STORE_SETTINGS_FIELDS = [
   },
   {
     path: 'email',
-    label: 'Email Address',
+    label: 'Business Email',
     section: 'profile',
     type: 'email',
     required: true,
     maxLength: 160,
     pattern: EMAIL_PATTERN,
-    patternMessage: 'Enter a valid email address, e.g. hello@restaurant.com',
-    placeholder: 'hello@restaurant.com',
+    patternMessage: 'Enter a valid business email, e.g. contact@yourrestaurant.com',
+    placeholder: 'contact@yourrestaurant.com',
+    help: "Your restaurant's own email — where Yulo sends orders, statements and review updates.",
   },
   {
     path: 'phone',
@@ -353,6 +354,20 @@ export const STORE_SETTINGS_FIELDS = [
     integer: true,
   },
 
+  // ── Dine-in billing.
+  {
+    path: 'settings.serviceChargeAmount',
+    label: 'Service charge (₹ per table bill)',
+    section: 'billing',
+    type: 'number',
+    required: false,
+    min: 0,
+    max: 5000,
+    step: 1,
+    placeholder: '0',
+    help: 'A fixed amount added to every dine-in table bill. 0 = no service charge. You can remove it from any single bill in Bills.',
+  },
+
   // ── Brand assets. Not form values — the limits are what the portal validates a pick
   // against, and they mirror the multer config these same constants configure.
   {
@@ -361,7 +376,7 @@ export const STORE_SETTINGS_FIELDS = [
     section: 'brand',
     type: 'image',
     required: false,
-    hint: `Upload image (max ${BRAND_IMAGE_MAX_MB} MB)`,
+    hint: `Square, 512 × 512 px recommended (at least 200 × 200) · JPG, PNG or WebP · max ${BRAND_IMAGE_MAX_MB} MB`,
   },
   {
     path: 'bannerImage',
@@ -369,7 +384,7 @@ export const STORE_SETTINGS_FIELDS = [
     section: 'brand',
     type: 'image',
     required: false,
-    hint: '1920×1080 recommended',
+    hint: `1920 × 1080 px recommended (16:9) · max ${BRAND_IMAGE_MAX_MB} MB`,
   },
 ];
 

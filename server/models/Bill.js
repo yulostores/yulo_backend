@@ -44,6 +44,27 @@ const discountAppliedSchema = new mongoose.Schema(
     // A personal offer the owner sent a diner at this table (live customer activity): re-priced
     // on every assemble while the bill is open, and redeemed when the bill is paid.
     personal: { type: Boolean, default: false },
+    // A discount the owner typed in on the bill (services/billEdit.service.js) — flat ₹ or a
+    // percentage of the subtotal, re-computed whenever the bill is re-totalled.
+    manual: { type: Boolean, default: false },
+    manualType: { type: String, enum: ['flat', 'percent', null], default: null },
+    manualValue: { type: Number, default: null },
+  },
+  { _id: false }
+);
+
+// What the owner changed on an open bill before it was paid — a dish removed or its quantity
+// lowered, or a discount set. Kept on the receipt as its own audit trail.
+const billAdjustmentSchema = new mongoose.Schema(
+  {
+    at: { type: Date, default: Date.now },
+    by: { type: mongoose.Schema.Types.ObjectId, default: null },
+    kind: { type: String, enum: ['quantity', 'discount', 'service_charge'], required: true },
+    orderId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    itemName: { type: String, default: null },
+    fromQty: { type: Number, default: null },
+    toQty: { type: Number, default: null },
+    discount: { type: String, default: null },
   },
   { _id: false }
 );
@@ -143,6 +164,9 @@ const billSchema = new mongoose.Schema(
     financials: { type: mongoose.Schema.Types.Mixed, default: null, select: false },
 
     status: { type: String, enum: ['open', 'paid', 'cancelled'], default: 'open' },
+    adjustments: { type: [billAdjustmentSchema], default: [] },
+    // The owner took the restaurant's fixed service charge off this one bill.
+    serviceChargeRemoved: { type: Boolean, default: false },
     paidAt: { type: Date },
     paidBy: { type: String, enum: ['cash', 'upi', 'card', 'online'] },
     // Razorpay order id — set when a guest starts paying this bill online (see

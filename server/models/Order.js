@@ -13,6 +13,10 @@ const orderItemSchema = new mongoose.Schema(
     price: { type: Number, required: true },
     quantity: { type: Number, required: true, min: 1 },
     note: { type: String, default: '' },
+    // Plate size for a dish sold in half and full portions (MenuItem.halfPlatePrice); null
+    // for single-size dishes. The size is also in `name` ("Paneer Tikka (Half)") so every
+    // ticket and bill shows it without reading this field.
+    portion: { type: String, enum: ['half', 'full', null], default: null },
     // Snapshotted from Cart.items[].selectedOptions at checkout (Prompt 10) — without
     // this, an order's price reflects its customization but there'd be no record of
     // WHICH options were actually picked, and Prompt 13's reorder would have nothing to
@@ -115,6 +119,8 @@ const orderSchema = new mongoose.Schema(
     // Frozen at placement (subtotal + deliveryFee + platformFee + tax + tip - discountAmount)
     // — never recomputed later, same "never re-priced after the fact" convention as `items[].price`.
     grandTotal: { type: Number, default: null },
+    // Σ dish packaging × qty incl. its GST (delivery/takeaway) — see charges.packaging.
+    packagingCharge: { type: Number, default: 0 },
     // The full price breakdown, in PAISE, exactly as services/charges.service.js's
     // computeCustomerCharges produced it at placement — food and its GST, delivery (and who
     // paid it), platform fee with its GST, tip, round-off, the display lines, and the Finance

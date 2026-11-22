@@ -273,3 +273,25 @@ const billCouponsEarned = async (req, bill) => {
   const isOwner = req.user?._id && bill.customerId && String(req.user._id) === String(bill.customerId);
   return isOwner ? earned : { count: earned.count, ids: [] };
 };
+
+// GET /api/restaurants/:id/tables/:tableId/bill/invoice?razorpayOrderId= — the guest's invoice
+// once the bill is paid: the same receipt (publicView) the bill screen shows, read back after
+// the sitting has closed. Found by the Razorpay order the guest paid with (so it is never
+// someone else's bill), else the table's bill settled in the last few minutes.
+export const getBillInvoice = asyncHandler(async (req, res) => {
+  const scope = { restaurantId: req.publicRestaurant._id, tableId: req.params.tableId, status: 'paid' };
+  const razorpayOrderId = typeof req.query.razorpayOrderId === 'string' ? req.query.razorpayOrderId : null;
+  let bill;
+  if (razorpayOrderId) {
+    bill = await Bill.findOne({ ...scope, $or: [{ paymentIntentId: razorpayOrderId }, { paymentIntentHistory: razorpayOrderId }] });
+  } else {
+    bill = await Bill.findOne(scope).sort({ paidAt: -1 });
+    const paidAt = bill?.paidAt ?? bill?.closedAt;
+    if (bill && !(paidAt && Date.now() - new Date(paidAt).getTime() < RECENTLY_CLOSED_MS)) bill = null;
+  }
+  if (!bill) throw new ApiError(404, 'NOT_FOUND', 'No paid bill found for this table');
+  const view = await publicView(bill);
+  // The guest's own payment reference belongs on their invoice.
+  if (view?.payment) view.payment.transactionId = bill.razorpayPaymentId ?? null;
+  sendSuccess(res, 200, 'Invoice', { bill: view });
+});

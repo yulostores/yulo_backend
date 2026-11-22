@@ -1,4 +1,5 @@
 import MenuItem from '../models/MenuItem.js';
+import { ONLINE_ITEM_FILTER } from '../utils/onlineMenu.js';
 import OptionGroup from '../models/OptionGroup.js';
 import Category from '../models/Category.js';
 import Restaurant from '../models/Restaurant.js';
@@ -9,9 +10,11 @@ import { ApiError } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
 export const getItem = asyncHandler(async (req, res) => {
+  // The delivery app's dish screen — a dine-in-only dish is not on it.
   const item = await MenuItem.findOne({
     _id: req.params.id,
     isAvailable: true,
+    ...ONLINE_ITEM_FILTER,
   }).lean({ virtuals: true });
   if (!item) throw new ApiError(404, 'NOT_FOUND', 'Menu item not found');
 

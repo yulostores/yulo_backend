@@ -1,4 +1,5 @@
 import Restaurant from '../models/Restaurant.js';
+import { ONLINE_ITEM_FILTER, onlineMenuOf } from '../utils/onlineMenu.js';
 import Review from '../models/Review.js';
 import MenuItem from '../models/MenuItem.js';
 import * as menuService from '../services/menu.service.js';
@@ -99,6 +100,7 @@ export const listRestaurants = asyncHandler(async (req, res) => {
     const menuMatchIds = await MenuItem.distinct('restaurantId', {
       name: regex,
       isAvailable: true,
+      ...ONLINE_ITEM_FILTER,
     });
 
     const textMatch = [
@@ -160,7 +162,10 @@ export const getRestaurant = asyncHandler(async (req, res) => {
 });
 
 export const getMenu = asyncHandler(async (req, res) => {
-  const menu = await menuService.getMenu(req.params.id);
+  // The table-QR menu (yulo_menu) asks for ?channel=dine_in; every other caller is the
+  // delivery app and gets online-orderable dishes only.
+  const fullMenu = await menuService.getMenu(req.params.id);
+  const menu = req.query.channel === 'dine_in' ? fullMenu : onlineMenuOf(fullMenu);
 
   // Same cache-then-annotate ordering as listRestaurants above — menuService.getMenu()
   // has already completed its own 5-min cache.set() by the time it returns to us, so
@@ -194,7 +199,7 @@ export const listMenuItems = asyncHandler(async (req, res) => {
     Math.max(1, parseInt(limit, 10) || MENU_ITEMS_PAGE_SIZE)
   );
 
-  const filter = { restaurantId: req.params.id, isAvailable: true };
+  const filter = { restaurantId: req.params.id, isAvailable: true, ...ONLINE_ITEM_FILTER };
   if (categoryId) filter.categoryId = categoryId;
   if (subCategoryId) filter.subCategoryId = subCategoryId;
   if (FOOD_TYPES.includes(foodType)) filter.foodType = foodType;

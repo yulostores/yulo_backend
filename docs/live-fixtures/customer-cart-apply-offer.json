@@ -48,6 +48,7 @@
       "mrpTotal": 540,
       "itemDiscountAmount": 0,
       "deliveryFee": 9.44,
+      "packagingCharge": 0,
       "platformFee": 12,
       "tax": 0,
       "discountAmount": 81,
@@ -61,6 +62,12 @@
           "gstPercent": 0,
           "gst": 0,
           "total": 45900
+        },
+        "packaging": {
+          "base": 0,
+          "gst": 0,
+          "total": 0,
+          "gstPercent": 0
         },
         "delivery": {
           "pending": false,

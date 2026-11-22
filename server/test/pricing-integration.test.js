@@ -275,16 +275,24 @@ test('dine-in: platform fee once per bill by default, once per round when config
   assert.equal(perOrder.grandTotal, 339);
 });
 
-test('dine-in: restaurant service charge kept; non-GST restaurant charges no food GST', async () => {
+test('dine-in: the fixed ₹ service charge is added; non-GST restaurant charges no food GST', async () => {
   await Restaurant.updateOne(
     { _id: restaurant._id },
-    { $set: { 'settings.serviceChargePercent': 10, gstRegistered: false } }
+    { $set: { 'settings.serviceChargeAmount': 25, 'settings.serviceChargePercent': 10, gstRegistered: false } }
   );
   const { session } = await seatTableWithRounds([300]);
   const bill = await billingService.assembleBill(session._id);
-  assert.equal(bill.serviceChargeAmount, 30);
+  assert.equal(bill.serviceChargeAmount, 25, 'a fixed amount — the old % is no longer read');
   assert.equal(bill.gstAmount, 0);
-  assert.equal(bill.grandTotal, 300 + 30 + 12);
+  assert.equal(bill.grandTotal, 300 + 25 + 12);
+});
+
+test('dine-in: no service charge set → none on the bill', async () => {
+  await Restaurant.updateOne({ _id: restaurant._id }, { $set: { gstRegistered: false } });
+  const { session } = await seatTableWithRounds([300]);
+  const bill = await billingService.assembleBill(session._id);
+  assert.equal(bill.serviceChargeAmount, 0);
+  assert.equal(bill.grandTotal, 300 + 12);
 });
 
 test('dine-in discount: GST on the food after the discount', async () => {

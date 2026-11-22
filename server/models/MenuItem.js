@@ -13,6 +13,15 @@ const menuItemSchema = new mongoose.Schema(
     foodType: { type: String, enum: ['veg', 'non_veg', 'egg'], required: true },
     sellingPrice: { type: Number, required: true, min: 0 },
     discountedPrice: { type: Number, default: null },
+    // Half-plate price; null when the dish comes in one size. sellingPrice is then the
+    // full-plate price. Guests pick the size when ordering (services/portion.service.js).
+    halfPlatePrice: { type: Number, default: null, min: 0 },
+    // ₹ per unit charged for packing this dish on delivery and takeaway orders (never dine-in).
+    // Restaurant income; food GST applies to it like the food (services/charges.service.js).
+    packagingCharge: { type: Number, default: 0, min: 0 },
+    // Off = a dine-in-only dish: hidden from the delivery app and refused in its carts and
+    // orders, still on the table-QR menu and the waiter app (utils/onlineMenu.js).
+    availableOnline: { type: Boolean, default: true },
     ingredients: [String],
     isAvailable: { type: Boolean, default: true },
     // Free-form tags for menu/search cards (e.g. "bestseller", "highly_reordered") —

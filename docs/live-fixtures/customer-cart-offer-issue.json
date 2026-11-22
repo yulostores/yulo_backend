@@ -18,8 +18,8 @@
           "foodType": "veg",
           "selectedOptions": [],
           "_id": "<id>",
-          "resolvedOptions": [],
-          "image": null
+          "image": null,
+          "resolvedOptions": []
         }
       ],
       "restaurantId": "<id>",
@@ -36,6 +36,7 @@
       "mrpTotal": 500,
       "itemDiscountAmount": 0,
       "deliveryFee": 9.44,
+      "packagingCharge": 0,
       "platformFee": 12,
       "tax": 0,
       "discountAmount": 0,
@@ -49,6 +50,12 @@
           "gstPercent": 0,
           "gst": 0,
           "total": 50000
+        },
+        "packaging": {
+          "base": 0,
+          "gst": 0,
+          "total": 0,
+          "gstPercent": 0
         },
         "delivery": {
           "pending": false,

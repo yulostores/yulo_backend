@@ -17,6 +17,7 @@ import {
   verifyBillPaymentHandler,
   cancelBillPayment,
   getBillPaymentStatus,
+  getBillInvoice,
 } from '../controllers/publicBill.controller.js';
 import { startDiner, syncCart, getTableOffer, viewTableOffer } from '../controllers/dineIn.controller.js';
 import { optionalAuthenticate } from '../middleware/optionalAuthenticate.js';
@@ -72,6 +73,8 @@ router.post('/:id/tables/:tableId/bill/pay/retry', guestOrderLimiter, loadPublic
 router.post('/:id/tables/:tableId/bill/pay/simulate', loadPublicRestaurant, simulateBillPayment);
 // optionalAuthenticate: a signed-in diner also gets the ids of the coupons the bill earned them.
 router.get('/:id/tables/:tableId/bill/payment', optionalAuthenticate, loadPublicRestaurant, getBillPaymentStatus);
+// The paid bill as an invoice (yulo_menu shows it after payment).
+router.get('/:id/tables/:tableId/bill/invoice', optionalAuthenticate, loadPublicRestaurant, getBillInvoice);
 router.post('/:id/tables/:tableId/bill/verify', loadPublicRestaurant, verifyBillPaymentHandler);
 router.post('/:id/tables/:tableId/bill/cancel', loadPublicRestaurant, cancelBillPayment);
 

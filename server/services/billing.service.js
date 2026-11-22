@@ -12,7 +12,7 @@ import { ApiError } from '../utils/ApiError.js';
 import { notifyService } from './notify.service.js';
 import { getActiveSettings } from './financeSettings.service.js';
 import { computeCustomerCharges } from './charges.service.js';
-import { percentOf, toPaise, toRupees } from '../utils/money.js';
+import { toPaise, toRupees } from '../utils/money.js';
 import { onBillPaid } from './ledger.service.js';
 import { flagCancelledPaidDineInRound } from './refund.service.js';
 import logger from '../utils/logger.js';
@@ -156,11 +156,14 @@ const batchOf = (order, staffById) => {
  * `charges` breakdown. `discountTotal` is passed in so this stays the one place the
  * arithmetic lives, for a fresh assemble and for a re-total after a discount.
  */
-const dineInTotals = async ({ subtotal, restaurant, discountTotal = 0, billedOrderCount }) => {
+const dineInTotals = async ({ subtotal, restaurant, discountTotal = 0, billedOrderCount, serviceChargeRemoved = false }) => {
   const settings = await getActiveSettings();
   const subtotalPaise = toPaise(round2(subtotal));
-  const serviceChargePercent = restaurant?.settings?.serviceChargePercent ?? 0;
-  const serviceChargePaise = percentOf(subtotalPaise, serviceChargePercent);
+  // A fixed ₹ per table bill (Store Settings), only on a bill with food on it, and not when the
+  // owner took it off this bill.
+  const serviceChargePaise =
+    serviceChargeRemoved || billedOrderCount === 0 ? 0 : toPaise(restaurant?.settings?.serviceChargeAmount ?? 0);
+  const serviceChargePercent = null;
   let platformFeeCount = 0;
   if (billedOrderCount > 0) platformFeeCount = settings.dineInPlatformFeeUnit === 'order' ? billedOrderCount : 1;
 
@@ -326,6 +329,13 @@ const redeemTableOffer = async (bill, at) => {
  * bill panel both call this on every open, and a paid receipt must not be silently
  * re-priced afterwards by a later menu change, a renamed table, or a cancelled round.
  */
+// The owner's discount on a bill: flat rupees or a percentage of the subtotal, never more than
+// the subtotal itself.
+export const manualDiscountAmount = ({ manualType, manualValue }, subtotal) => {
+  const raw = manualType === 'percent' ? (subtotal * (manualValue ?? 0)) / 100 : manualValue ?? 0;
+  return round2(Math.max(0, Math.min(raw, subtotal)));
+};
+
 export const assembleBill = async (tableSessionId) => {
   const session = await TableSession.findById(tableSessionId).populate('orders').lean();
   if (!session) throw new ApiError(404, 'NOT_FOUND', 'Session not found');
@@ -380,7 +390,11 @@ export const assembleBill = async (tableSessionId) => {
   // it is re-priced each time (tableOfferLine).
   const offerLine = await tableOfferLine(session, orders, subtotal);
   const discountsApplied = [
-    ...(existing?.discountsApplied ?? []).filter((d) => !d.personal).map((d) => (d.toObject ? d.toObject() : d)),
+    ...(existing?.discountsApplied ?? [])
+      .filter((d) => !d.personal)
+      .map((d) => (d.toObject ? d.toObject() : d))
+      // The owner's own discount follows the subtotal (a dish removed lowers a % discount).
+      .map((d) => (d.manual ? { ...d, amount: manualDiscountAmount(d, subtotal) } : d)),
     ...(offerLine ? [offerLine] : []),
   ];
   const discountTotal = discountsApplied.reduce((s, d) => s + (d.amount ?? 0), 0);
@@ -411,6 +425,7 @@ export const assembleBill = async (tableSessionId) => {
       restaurant,
       discountTotal,
       billedOrderCount: orders.filter(isBilledOrder).length,
+      serviceChargeRemoved: Boolean(existing?.serviceChargeRemoved),
     })),
   };
 
@@ -558,6 +573,7 @@ export const applyDiscount = async ({ billId, discountCode, restaurantId }) => {
     restaurant,
     discountTotal: bill.discountsApplied.reduce((s, d) => s + (d.amount ?? 0), 0),
     billedOrderCount: bill.batches.filter((b) => isBilledOrder(b)).length,
+    serviceChargeRemoved: Boolean(bill.serviceChargeRemoved),
   });
   const update = { ...totals, discountsApplied: bill.discountsApplied };
   // Same as a re-assemble: a changed total retires the amount Razorpay was asked for.

@@ -80,6 +80,7 @@ export const DELIVERY_ISSUE_MESSAGES = {
  * @param {number}  [args.tipPaise=0]
  * @param {number}  [args.serviceChargePaise=0]  dine-in service charge, restaurant income, no GST added here
  * @param {number}  [args.platformFeeCount=1]    how many platform fees apply (dine-in per-order unit; 0 for an empty bill)
+ * @param {number}  [args.packagingPaise=0]   Σ dish packaging charge × qty — delivery/takeaway only; food GST applies
  * @param {object}  args.settings            active Finance Settings
  */
 export const computeCustomerCharges = ({
@@ -91,9 +92,10 @@ export const computeCustomerCharges = ({
   tipPaise = 0,
   serviceChargePaise = 0,
   platformFeeCount = 1,
+  packagingPaise = 0,
   settings,
 }) => {
-  for (const [name, value] of Object.entries({ foodSubtotalPaise, discountPaise, tipPaise, serviceChargePaise })) {
+  for (const [name, value] of Object.entries({ foodSubtotalPaise, discountPaise, tipPaise, serviceChargePaise, packagingPaise })) {
     if (!Number.isInteger(value) || value < 0) throw new TypeError(`${name} must be a non-negative integer (paise)`);
   }
   if (tipPaise > MAX_TIP_PAISE) {
@@ -113,6 +115,13 @@ export const computeCustomerCharges = ({
     gst: foodGst,
     total: foodBase + foodGst,
   };
+
+  // ── Packaging (delivery/takeaway) ──────────────────────────────────────────
+  // Each dish's own packaging charge × quantity. Restaurant income, taxed like the food it
+  // packs (food GST, when the restaurant is GST-registered). Dine-in food isn't packed.
+  const packagingBase = orderType === 'dine_in' ? 0 : packagingPaise;
+  const packagingGst = percentOf(packagingBase, foodGstPercent);
+  const packaging = { base: packagingBase, gst: packagingGst, total: packagingBase + packagingGst, gstPercent: foodGstPercent };
 
   // ── Delivery ────────────────────────────────────────────────────────────────
   let delivery = null;
@@ -156,7 +165,7 @@ export const computeCustomerCharges = ({
 
   // ── Total ───────────────────────────────────────────────────────────────────
   const subtotalBeforeRoundOff =
-    food.total + (delivery?.customerPays ?? 0) + serviceChargePaise + platformFee.total + tipPaise;
+    food.total + packaging.total + (delivery?.customerPays ?? 0) + serviceChargePaise + platformFee.total + tipPaise;
   const { rounded: grandTotal, roundOff } = roundToRupee(subtotalBeforeRoundOff);
 
   // ── Display lines (in the order a bill reads) ───────────────────────────────
@@ -170,6 +179,14 @@ export const computeCustomerCharges = ({
       label: 'GST on food',
       amountPaise: foodGst,
       sublabel: `${foodGstPercent}% of ${rupeeText(foodBase)}`,
+    });
+  }
+  if (packaging.total > 0) {
+    lines.push({
+      key: 'packaging',
+      label: 'Packaging charge',
+      amountPaise: packaging.total,
+      sublabel: packaging.gst > 0 ? `incl. ${rupeeText(packaging.gst)} GST` : null,
     });
   }
   if (delivery) {
@@ -206,6 +223,7 @@ export const computeCustomerCharges = ({
   return {
     orderType,
     food,
+    packaging,
     delivery,
     serviceCharge: serviceChargePaise,
     platformFee,
@@ -224,10 +242,12 @@ export const computeCustomerCharges = ({
  * The rupee fields existing screens and models read, from a charges breakdown. `tax` is the
  * food GST only (the delivery charge and platform fee are GST-inclusive figures already),
  * `deliveryFee` what the CUSTOMER pays for delivery, `subtotal` the food before discount.
- * subtotal + deliveryFee + platformFee + tax + tip − discountAmount + roundOff = grandTotal.
+ * subtotal + packagingCharge + deliveryFee + platformFee + tax + tip − discountAmount + roundOff
+ * = grandTotal (packagingCharge includes its own GST).
  */
 export const toLegacyTotals = (charges) => ({
   subtotal: toRupees(charges.food.subtotal),
+  packagingCharge: toRupees(charges.packaging?.total ?? 0),
   deliveryFee: toRupees(charges.delivery?.customerPays ?? 0),
   platformFee: toRupees(charges.platformFee.total),
   tax: toRupees(charges.food.gst),

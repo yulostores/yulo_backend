@@ -1,4 +1,6 @@
 import Order from '../models/Order.js';
+import { ONLINE_ITEM_FILTER } from '../utils/onlineMenu.js';
+import { nameWithPortion, portionFromSelections, resolvePortion } from './portion.service.js';
 import TableSession from '../models/TableSession.js';
 import Table from '../models/Table.js';
 import MenuItem from '../models/MenuItem.js';
@@ -59,7 +61,14 @@ const resolveOrderCustomer = async ({ userId, session }) => {
 // A delivery the platform can't price is refused here, before anything is written: an
 // address never placed on the map (no distance → no delivery fee), or one outside the
 // restaurant's delivery zone.
-const priceAppOrder = async ({ type, restaurant, subtotal, discountAmount = 0, tip = 0, dropCoordinates }) => {
+// Σ packaging charge × quantity over the order's lines, in paise.
+const packagingPaiseOf = (lines, menuItemById) =>
+  lines.reduce((sum, line) => {
+    const mi = menuItemById.get(String(line.menuItemId));
+    return sum + toPaise(mi?.packagingCharge ?? 0) * (line.quantity ?? line.qty ?? 0);
+  }, 0);
+
+const priceAppOrder = async ({ type, restaurant, subtotal, discountAmount = 0, tip = 0, dropCoordinates, packagingPaise = 0 }) => {
   let distanceKm = null;
   if (type === 'delivery') {
     const resolved = resolveDeliveryDistance(restaurant, dropCoordinates);
@@ -76,6 +85,7 @@ const priceAppOrder = async ({ type, restaurant, subtotal, discountAmount = 0, t
     restaurant,
     distanceKm,
     tipPaise: toPaise(tip),
+    packagingPaise,
     settings: await getActiveSettings(),
   });
   return { charges, ...toLegacyTotals(charges) };
@@ -132,9 +142,12 @@ const createOrderOnce = async ({
     _id: { $in: itemIds },
     restaurantId,
     isAvailable: true,
+    // No table sitting = a delivery/takeaway order: dine-in-only dishes can't be on it.
+    ...(tableSessionId ? {} : ONLINE_ITEM_FILTER),
   }).lean();
 
-  if (menuItems.length !== itemIds.length) {
+  // Distinct ids: the same dish can be on the order twice (a half plate and a full plate).
+  if (menuItems.length !== new Set(itemIds.map(String)).size) {
     throw new ApiError(400, 'ORDER_ITEM_UNAVAILABLE', 'One or more items are unavailable');
   }
 
@@ -142,13 +155,15 @@ const createOrderOnce = async ({
 
   const snapshots = items.map((i) => {
     const mi = menuItemMap.get(i.menuItemId.toString());
-    const price = mi.discountedPrice ?? mi.sellingPrice;
+    // Half/full plate: the size picks the price and goes into the line's name.
+    const { name, price, portion } = resolvePortion(mi, i.portion);
     return {
       menuItemId: mi._id,
-      name: mi.name,
+      name,
       price,
       quantity: i.quantity,
       note: i.note || '',
+      portion,
     };
   });
 
@@ -235,7 +250,13 @@ const createOrderOnce = async ({
     // Priced exactly like a cart checkout. This path used to freeze only the item subtotal
     // and leave grandTotal null, so an online order placed through it was charged without
     // its delivery fee, platform fee or tax.
-    ...(await priceAppOrder({ type, restaurant, subtotal, dropCoordinates: deliveryAddress?.coordinates })),
+    ...(await priceAppOrder({
+      type,
+      restaurant,
+      subtotal,
+      dropCoordinates: deliveryAddress?.coordinates,
+      packagingPaise: packagingPaiseOf(items, menuItemMap),
+    })),
     specialInstructions,
     ...paymentFieldsFor({ paymentMethod, type }),
     // The address the caller passed, with the account's own name/number filled in as the
@@ -335,7 +356,8 @@ const createOrderFromCartOnce = async ({
 
   for (const item of cart.items) {
     const menuItem = menuItemById.get(String(item.menuItemId));
-    if (!menuItem || !menuItem.isAvailable) {
+    // A dish switched to dine-in only since it went into the cart counts as unavailable online.
+    if (!menuItem || !menuItem.isAvailable || menuItem.availableOnline === false) {
       unavailable.push({ menuItemId: item.menuItemId, name: item.name });
       continue;
     }
@@ -362,9 +384,11 @@ const createOrderFromCartOnce = async ({
       continue;
     }
 
+    const portion = portionFromSelections(groups, item.selectedOptions);
     snapshots.push({
       menuItemId: menuItem._id,
-      name: menuItem.name,
+      name: nameWithPortion(menuItem.name, portion),
+      portion,
       price: pricing.totalPriceMinor,
       quantity: item.qty,
       note: '',
@@ -432,6 +456,7 @@ const createOrderFromCartOnce = async ({
     discountAmount,
     tip,
     dropCoordinates,
+    packagingPaise: packagingPaiseOf(snapshots, menuItemById),
   });
 
   // The total the customer was shown (the checkout summary's charges.grandTotal). When the app
@@ -619,7 +644,7 @@ export const reorderOrder = async (orderId, userId) => {
     .filter((m) => m.foodType !== 'veg' && m.vegVariantId)
     .map((m) => m.vegVariantId);
   const variants = variantIds.length > 0
-    ? await MenuItem.find({ _id: { $in: variantIds }, isAvailable: true }).lean({ virtuals: true })
+    ? await MenuItem.find({ _id: { $in: variantIds }, isAvailable: true, ...ONLINE_ITEM_FILTER }).lean({ virtuals: true })
     : [];
   const variantById = new Map(variants.map((v) => [String(v._id), v]));
 
