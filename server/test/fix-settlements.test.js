@@ -411,7 +411,14 @@ test('the owner sees the documented settlement fields only', async () => {
 test('admin verify/reject must name the submission they checked; a newer one is refused', async () => {
   // A not-yet-verified account: a resubmission replaces it (a verified one would become a
   // change request instead — B12, test/b12-bank-requests.test.js).
-  await Restaurant.updateOne({ _id: restaurant._id }, { $set: { 'payoutAccount.status': 'pending_verification' } });
+  await Restaurant.updateOne(
+    { _id: restaurant._id },
+    {
+      $set: { 'payoutAccount.status': 'pending_verification' },
+      // The account's proof — mandatory before the details can be saved.
+      $push: { documents: { type: 'bank_statement', url: 'https://res.example.invalid/cheque.pdf', uploadedAt: new Date() } },
+    }
+  );
   const headers = as(owner, 'restaurant_owner');
   const details = (n) => ({ accountHolderName: 'Spice Route Foods', accountNumber: n, confirmAccountNumber: n, ifsc: 'HDFC0001234', accountType: 'current' });
   await srv.request('PUT', `/api/owner/${restaurant._id}/payout-account`, { headers, body: details('123456789012') });

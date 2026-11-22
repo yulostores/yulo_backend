@@ -201,16 +201,23 @@ const sessionNotFound = () => new ApiError(404, 'SESSION_NOT_FOUND', 'Session no
  * The dashboard list: newest activity first, eligibility for the page in bulk, and the header
  * strip `summary`. A constant number of queries whatever the page size.
  */
+// Visitors Analysis shows the last 30 minutes only — a session (and its events) older than
+// that is history, not live activity.
+export const LIVE_WINDOW_MINUTES = 30;
+
 export const listSessions = async (restaurantId, { statuses = ['active', 'idle', 'abandoned'], limit = LIST_LIMITS.sessionsDefault } = {}, at = now()) => {
   const scope = liveSessionScope(oid(restaurantId));
-  const hourAgo = new Date(at.getTime() - 60 * MINUTE_MS);
+  const windowStart = new Date(at.getTime() - LIVE_WINDOW_MINUTES * MINUTE_MS);
   const hasCart = { $gt: [{ $size: { $ifNull: ['$cart.items', []] } }, 0] };
 
   const [sessions, [summary]] = await Promise.all([
-    CustomerSession.find({ ...scope, status: { $in: statuses } }).sort({ lastActivityAt: -1, _id: -1 }).limit(limit).lean(),
+    CustomerSession.find({ ...scope, status: { $in: statuses }, lastActivityAt: { $gte: windowStart } })
+      .sort({ lastActivityAt: -1, _id: -1 })
+      .limit(limit)
+      .lean(),
     CustomerSession.aggregate([
       // Abandonment is stamped on lastEvent (cart_abandoned) when the session closes.
-      { $match: { ...scope, $or: [{ isOpen: true }, { status: 'abandoned', 'lastEvent.at': { $gte: hourAgo } }] } },
+      { $match: { ...scope, $or: [{ isOpen: true }, { status: 'abandoned', 'lastEvent.at': { $gte: windowStart } }] } },
       {
         $group: {
           _id: null,
@@ -267,11 +274,11 @@ const parseCursor = (before) => {
 };
 
 /** A session's timeline, newest first, paged backwards. */
-export const listSessionEvents = async (restaurantId, sessionId, { before, limit = LIST_LIMITS.eventsDefault } = {}) => {
+export const listSessionEvents = async (restaurantId, sessionId, { before, limit = LIST_LIMITS.eventsDefault } = {}, at = now()) => {
   const cursor = parseCursor(before);
   const session = await findSession(restaurantId, sessionId);
   if (!session) throw sessionNotFound();
-  const filter = { sessionId: session._id };
+  const filter = { sessionId: session._id, at: { $gte: new Date(at.getTime() - LIVE_WINDOW_MINUTES * MINUTE_MS) } };
   if (cursor) filter.$or = [{ at: { $lt: cursor.at } }, { at: cursor.at, _id: { $lt: cursor.id } }];
   const rows = await ActivityEvent.find(filter).sort({ at: -1, _id: -1 }).limit(limit + 1).lean();
   const page = rows.slice(0, limit);

@@ -73,6 +73,11 @@ const stored = () =>
 
 // An account the admin has verified — the starting point of every change request.
 const verifiedAccount = async () => {
+  // Its proof (mandatory before the details can be saved), verified along with the account.
+  await Restaurant.updateOne(
+    { _id: restaurant._id },
+    { $push: { documents: { type: 'bank_statement', url: 'https://res.example.invalid/proof.pdf', status: 'verified', uploadedAt: new Date() } } }
+  );
   assert.equal((await ownerPut(details(OLD))).status, 200);
   const res = await srv.request('PATCH', adminUrl('/verify'), {
     headers: adminHeaders(),

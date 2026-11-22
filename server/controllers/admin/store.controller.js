@@ -14,6 +14,7 @@ import { STORE_STATUSES, shapeCounts } from '../../services/adminStats.service.j
 import { setRestaurantLiveActivity } from '../../services/liveActivityAccess.service.js';
 import { isLiveActivityEnabled } from '../../config/liveActivity.config.js';
 import { DELIVERY_FIELDS } from '../../config/storeSettings.config.js';
+import { normalizeIndianPhone } from '../../utils/phone.js';
 import {
   effectiveField,
   getStoreSettingsField,
@@ -153,7 +154,15 @@ const createSchema = z.object({
   owner: z.object({
     name: z.string().min(1),
     email: z.string().email(),
-    phone: z.string().optional(),
+    // The owner signs in to the restaurant portal with this number.
+    phone: z.string().transform((v, ctx) => {
+      const phone = normalizeIndianPhone(v);
+      if (!phone) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Enter a valid 10-digit owner mobile number' });
+        return z.NEVER;
+      }
+      return phone;
+    }),
   }),
 });
 
@@ -180,6 +189,17 @@ export const create = asyncHandler(async (req, res) => {
 
   if (ownerUser && ownerUser.role !== 'restaurant_owner') {
     throw new ApiError(409, 'DUPLICATE_KEY', 'This email is already registered under a different account role');
+  }
+  // The mobile number is the owner's login, unique across every account.
+  const phoneHolder = await User.findOne({ phone: owner.phone }).select('_id').lean();
+  if (phoneHolder && String(phoneHolder._id) !== String(ownerUser?._id)) {
+    throw new ApiError(409, 'DUPLICATE_KEY', 'This mobile number is already registered to another account');
+  }
+  // An existing owner without a number (signed up when it was optional) gets this one, so
+  // they can sign in.
+  if (ownerUser && !ownerUser.phone) {
+    ownerUser.phone = owner.phone;
+    await ownerUser.save();
   }
 
   if (!ownerUser) {

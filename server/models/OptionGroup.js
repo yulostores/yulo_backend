@@ -31,6 +31,10 @@ const optionGroupSchema = new mongoose.Schema(
     maxSelect: { type: Number, default: null }, // null = unlimited
     sortOrder: { type: Number, default: 0 },
     options: [optionSchema],
+    // 'portion' = the Full/Half plate choice generated from MenuItem.halfPlatePrice
+    // (services/portion.service.js). Maintained by the server only; owners edit the prices on
+    // the item, never this group directly.
+    systemKey: { type: String, enum: ['portion', null], default: null },
   },
   { timestamps: true }
 );

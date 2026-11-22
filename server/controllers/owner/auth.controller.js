@@ -10,6 +10,11 @@ export const ownerSignup = asyncHandler(async (req, res) => {
 
   const existing = await User.findOne({ email });
   if (existing) throw new ApiError(409, 'DUPLICATE_KEY', 'email already exists');
+  // The mobile number is the owner's login, and it is unique across every account (a customer
+  // signs in to the app with the same field), so a number already in use can't be reused here.
+  if (await User.exists({ phone })) {
+    throw new ApiError(409, 'DUPLICATE_KEY', 'This mobile number is already registered');
+  }
 
   const passwordHash = await authService.hashPassword(password);
   const user = await User.create({
@@ -29,16 +34,17 @@ export const ownerSignup = asyncHandler(async (req, res) => {
   });
 });
 
+// Mobile number + password. `phone` arrives normalised to 10 digits (routes/owner/auth.routes.js).
 export const ownerLogin = asyncHandler(async (req, res) => {
-  const { email, password } = req.body;
+  const { phone, password } = req.body;
 
-  const user = await User.findOne({ email, role: 'restaurant_owner' });
+  const user = await User.findOne({ phone, role: 'restaurant_owner' });
   if (!user || !user.isActive) {
-    throw new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid email or password');
+    throw new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid mobile number or password');
   }
 
   const valid = await authService.verifyPassword(user.passwordHash, password);
-  if (!valid) throw new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid email or password');
+  if (!valid) throw new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid mobile number or password');
 
   const { accessToken, refreshToken } = authService.generateTokens(user._id, user.role);
   setRefreshCookie(res, user.role, refreshToken);

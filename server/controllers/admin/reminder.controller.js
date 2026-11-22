@@ -5,6 +5,7 @@ import * as credits from '../../services/smsCredits.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { receivedOnSchema } from '../../utils/receivedOn.js';
 
 // Super admin — reminder campaigns and "Amount Received" for SMS credits (§ CB10).
 
@@ -50,7 +51,7 @@ const manualCreditsSchema = z
     amountRupees: z.number().positive().max(10_000_000),
     mode: z.enum(['neft', 'upi', 'cash', 'cheque', 'other']),
     reference: z.string().trim().min(3, 'Enter the payment reference').max(100),
-    receivedOn: z.coerce.date().refine((d) => d.getTime() <= Date.now() + 5 * 60_000, 'receivedOn cannot be in the future'),
+    receivedOn: receivedOnSchema,
     note: z.string().trim().max(500).optional(),
     overrideReason: z.string().trim().min(3).max(500).optional(),
   })

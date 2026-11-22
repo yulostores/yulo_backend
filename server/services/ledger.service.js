@@ -5,7 +5,7 @@ import Bill from '../models/Bill.js';
 import FinanceSettings from '../models/FinanceSettings.js';
 import { getActiveSettings } from './financeSettings.service.js';
 import { computeRestaurantSettlementLine } from './settlementMath.service.js';
-import { toPaise } from '../utils/money.js';
+import { percentOf, splitInclusiveGst, toPaise } from '../utils/money.js';
 import { clearanceTime } from '../utils/workingDays.js';
 import logger from '../utils/logger.js';
 
@@ -233,8 +233,34 @@ export const recordBillSettlement = async (bill, { note = '', createdBy = null }
  * it, its GST included — is debited from the restaurant. Written once per order, at the
  * moment the refund is sent. Nothing when the platform bears it or there was no fee.
  */
+const CUSTOMER_CANCEL_CAUSES = new Set(['customer_cancel_before_accept', 'customer_cancel_before_preparation']);
+
 export const recordRefundGatewayFee = async (order, { cause, feeBorneBy }) => {
   if (feeBorneBy !== 'restaurant') return null;
+  // The customer cancelled a paid online order: the restaurant pays the payment settlement fee
+  // it would have paid on the order (settlementChargePercent of what the customer paid, GST
+  // included) — a fixed rate, not Razorpay's actual fee.
+  if (CUSTOMER_CANCEL_CAUSES.has(cause)) {
+    const settings = await getActiveSettings();
+    const paid = order.paymentAmountPaise ?? toPaise(order.grandTotal ?? order.subtotal ?? 0);
+    const total = percentOf(paid, settings.settlementChargePercent);
+    if (total <= 0) return null;
+    const split = splitInclusiveGst(total, settings.serviceGstPercent);
+    return writeEntry({
+      restaurantId: order.restaurantId,
+      type: 'refund_gateway_fee',
+      direction: 'debit',
+      amountPaise: total,
+      orderId: order._id,
+      breakdown: {
+        cause,
+        refundFee: { fee: split.base, tax: split.gst, total, percent: settings.settlementChargePercent, onAmountPaise: paid },
+        refundedPaise: order.refund?.amountPaise ?? null,
+      },
+      ...immediate(),
+      note: `Payment settlement fee (${settings.settlementChargePercent}%) on an online order the customer cancelled`,
+    });
+  }
   const { fee, tax } = await gatewayFeesOf(Order, order._id);
   if (fee <= 0) return null;
   return writeEntry({

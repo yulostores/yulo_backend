@@ -78,6 +78,10 @@ export const updateMe = asyncHandler(async (req, res) => {
 
   const updates = { ...result.data };
   const unset = {};
+  // A restaurant owner signs in with their mobile number — removing it would lock them out.
+  if (updates.phone === null && req.user.role === 'restaurant_owner') {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Your mobile number is your login and can\'t be removed');
+  }
   if (updates.phone === null) {
     delete updates.phone;
     unset.phone = 1; // sparse unique index: a stored null would still collide

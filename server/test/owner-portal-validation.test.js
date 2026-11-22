@@ -260,11 +260,11 @@ describe('owner profile (PATCH /users/me)', () => {
     assert.equal(saved.name, 'Owner');
   });
 
-  test('a valid phone saves, and an empty one removes it', async () => {
+  test("a valid phone saves; an empty one is refused (it is the owner's login)", async () => {
     assert.equal((await me({ phone: '9123456780' })).status, 200);
     assert.equal((await User.findById(owner._id).lean()).phone, '9123456780');
-    assert.equal((await me({ phone: '' })).status, 200);
-    assert.equal((await User.findById(owner._id).lean()).phone, undefined);
+    assert.equal((await me({ phone: '' })).status, 400);
+    assert.equal((await User.findById(owner._id).lean()).phone, '9123456780');
   });
 });
 

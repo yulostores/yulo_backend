@@ -5,6 +5,8 @@ import { authorizeRestaurant } from '../../middleware/authorizeRestaurant.js';
 import { requireRestaurantApproved } from '../../middleware/requireRestaurantApproved.js';
 import { createRestaurant, listMyRestaurants } from '../../controllers/owner/restaurant.controller.js';
 import { getSettingsRequirements } from '../../controllers/owner/settings.controller.js';
+import { geocode } from '../../controllers/owner/geocode.controller.js';
+import rateLimit from 'express-rate-limit';
 import ownerAuthRoutes from './auth.routes.js';
 import dashboardRoutes from './dashboard.routes.js';
 import restaurantRoutes from './restaurant.routes.js';
@@ -46,6 +48,19 @@ ownerRouter.post('/restaurants', createRestaurant);
 // like, what the dropdowns offer. Not restaurant-scoped: the portal needs it to render the
 // "Add Your Restaurant" step, which is what runs when the owner has no restaurant yet.
 ownerRouter.get('/settings-requirements', getSettingsRequirements);
+
+// Address → map point for the registration map. The free geocoder behind it allows about one
+// lookup a second, so each owner gets a small budget.
+const geocodeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 15,
+  // Mounted after authenticate, so every caller is a signed-in owner.
+  keyGenerator: (req) => String(req.user._id),
+  message: { status: 'error', code: 'RATE_LIMITED', message: 'Too many address lookups — wait a minute' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+ownerRouter.get('/geocode', geocodeLimiter, geocode);
 
 // Scoped per-restaurant sub-router — mergeParams exposes :restaurantId to children
 const restaurantScopedRouter = Router({ mergeParams: true });

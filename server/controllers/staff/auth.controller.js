@@ -1,7 +1,6 @@
 import Restaurant from '../../models/Restaurant.js';
 import StaffMember from '../../models/StaffMember.js';
 import * as authService from '../../services/auth.service.js';
-import * as otpService from '../../services/otp.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
@@ -115,11 +114,6 @@ export const searchRestaurants = asyncHandler(async (req, res) => {
   });
 });
 
-// Where the member's OTP lives — its own namespace per restaurant (see otp.service.js), so a
-// customer or partner code for the same number can never finish a staff login, nor a code
-// requested at one restaurant sign the number in at another.
-const staffOtpScope = (restaurantId) => `staff:${restaurantId}`;
-
 const assertRestaurantOpenForStaff = async (restaurantId) => {
   const restaurant = await Restaurant.findById(restaurantId)
     .select('name logo isActive approvalStatus')
@@ -144,54 +138,25 @@ const findSignInableStaff = (restaurantId, phone) =>
   StaffMember.findOne({ restaurantId, phone, isActive: true });
 
 /**
- * POST /api/staff/auth/otp/send  { restaurantId, phone }
+ * POST /api/staff/auth/login  { restaurantId, phone, pin }
  *
- * Staff sign in with an OTP sent to the phone the owner registered for them
- * (controllers/owner/staff.controller.js). The answer is the same whether or not the
- * number belongs to an active member here — otherwise this endpoint would tell anyone who
- * works where — and a code is only actually requested (an SMS spent) when it does.
+ * Staff sign in with the phone and 4-digit PIN the owner set for them in Staff Management
+ * (controllers/owner/staff.controller.js). A wrong number and a wrong PIN answer the same,
+ * so this never tells anyone who works where; routes/staff/auth.routes.js caps attempts per
+ * number. Returns a staff token good for exactly 24 hours (services/auth.service.js) — there
+ * is no refresh; the member signs in again the next day.
  */
-export const sendStaffOtp = asyncHandler(async (req, res) => {
-  const { restaurantId, phone } = req.body;
-  await assertRestaurantOpenForStaff(restaurantId);
+const INVALID_LOGIN = () => new ApiError(401, 'INVALID_CREDENTIALS', 'Wrong phone number or PIN');
 
-  const staff = await findSignInableStaff(restaurantId, phone);
-  // Every number spends its send budget the same way (and gets the same 429 on the 4th
-  // try), but only a member's number actually gets a code stored and an SMS sent. A
-  // non-member's verify then fails as OTP_EXPIRED, since nothing was stored for it.
-  const result = await otpService.requestOtp(phone, {
-    scope: staffOtpScope(restaurantId),
-    send: Boolean(staff),
-  });
-
-  sendSuccess(res, 200, 'If this number is registered for this restaurant, a code has been sent', {
-    phone: result.phone,
-    ...(result.otpBypass ? { otpBypass: true } : {}),
-    // Dev only (SMS_PROVIDER=mock outside production) — see otp.service.js.
-    ...(result.devOtp ? { devOtp: result.devOtp } : {}),
-  });
-});
-
-/**
- * POST /api/staff/auth/otp/verify  { restaurantId, phone, code }
- *
- * Returns a staff token good for exactly 24 hours (services/auth.service.js) — there is no
- * refresh; the member signs in again the next day.
- */
-export const verifyStaffOtp = asyncHandler(async (req, res) => {
-  const { restaurantId, phone, code } = req.body;
+export const staffLogin = asyncHandler(async (req, res) => {
+  const { restaurantId, phone, pin } = req.body;
   const restaurant = await assertRestaurantOpenForStaff(restaurantId);
-
-  // Throws OTP_EXPIRED / INVALID_OTP / OTP_LOCKED. A number that isn't staff here never had
-  // a code stored, so it fails as OTP_EXPIRED — the same as a member who never asked.
-  await otpService.verifyOtp(phone, code, { scope: staffOtpScope(restaurantId) });
-
-  // Re-read after the code checks out: the owner may have deactivated the member, or moved
-  // the number to someone else, in the minutes since the code was sent.
-  const staff = await findSignInableStaff(restaurantId, phone);
-  if (!staff) {
-    throw new ApiError(401, 'INVALID_CREDENTIALS', 'This number is not registered as staff here');
+  const staff = await StaffMember.findOne({ restaurantId, phone, isActive: true }).select('+pinHash');
+  if (!staff) throw INVALID_LOGIN();
+  if (!staff.pinHash) {
+    throw new ApiError(401, 'PIN_NOT_SET', 'No PIN is set for you yet — ask your manager to set one');
   }
+  if (!(await authService.verifyPassword(staff.pinHash, pin))) throw INVALID_LOGIN();
 
   const staffToken = authService.generateStaffToken(
     staff._id,

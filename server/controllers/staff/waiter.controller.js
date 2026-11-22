@@ -21,6 +21,8 @@ const waiterOrderSchema = z.object({
     menuItemId: z.string().min(1),
     quantity: z.number().int().min(1),
     note: z.string().optional(),
+    // Half / full plate, for a dish sold in both sizes (services/portion.service.js).
+    portion: z.enum(['half', 'full']).optional(),
   })).min(1),
   specialInstructions: z.string().optional(),
 });

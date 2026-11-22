@@ -3,13 +3,13 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import {
   searchRestaurants,
-  sendStaffOtp,
-  verifyStaffOtp,
+  staffLogin,
   staffLogout,
   staffSession,
 } from '../../controllers/staff/auth.controller.js';
 import { authenticateStaff } from '../../middleware/authenticateStaff.js';
 import { staffOtpLimiter } from '../../middleware/rateLimiter.js';
+import { normalizeIndianPhone as normalizePhoneKey } from '../../utils/phone.js';
 import { validate } from '../../middleware/validate.js';
 import { normalizeIndianPhone } from '../../utils/phone.js';
 
@@ -36,20 +36,29 @@ const phoneField = z.preprocess(
   z.string().regex(/^[6-9]\d{9}$/, 'Enter a valid 10-digit mobile number')
 );
 
-const sendOtpSchema = z.object({ restaurantId: restaurantIdField, phone: phoneField });
-
-const verifyOtpSchema = z.object({
+const loginSchema = z.object({
   restaurantId: restaurantIdField,
   phone: phoneField,
-  code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code'),
+  pin: z.string().trim().regex(/^\d{4}$/, 'Enter your 4-digit PIN'),
+});
+
+// A 4-digit PIN has 10 000 values, so guesses are capped per number at each restaurant (on
+// top of the per-IP staffOtpLimiter): 5 tries, then wait 15 minutes.
+const pinGuessLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  keyGenerator: (req) => `staff-pin:${req.body?.restaurantId}:${normalizePhoneKey(req.body?.phone) ?? req.body?.phone}`,
+  skipSuccessfulRequests: true,
+  message: { status: 'error', code: 'RATE_LIMITED', message: 'Too many wrong PINs — try again in 15 minutes' },
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
 // Public — the picker has to work before any token exists.
 router.get('/restaurants', typeaheadLimiter, searchRestaurants);
 
-// Phone + OTP. The PIN login (POST /login) is gone — see controllers/staff/auth.controller.js.
-router.post('/otp/send', staffOtpLimiter, validate(sendOtpSchema), sendStaffOtp);
-router.post('/otp/verify', staffOtpLimiter, validate(verifyOtpSchema), verifyStaffOtp);
+// Phone + PIN (set by the owner). Replaces the earlier phone + OTP login.
+router.post('/login', staffOtpLimiter, validate(loginSchema), pinGuessLimiter, staffLogin);
 router.get('/me', authenticateStaff, staffSession);
 router.post('/logout', authenticateStaff, staffLogout);
 

@@ -18,6 +18,8 @@ const orderItemSchema = z.object({
   menuItemId: z.string().min(1),
   quantity: z.number().int().min(1),
   note: z.string().optional(),
+  // Half / full plate, for a dish sold in both sizes (services/portion.service.js).
+  portion: z.enum(['half', 'full']).optional(),
 });
 
 // guestName/guestPhone are how an anonymous diner says who they are — the QR flow's

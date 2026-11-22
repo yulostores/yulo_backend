@@ -213,6 +213,15 @@ export const savePayoutAccount = async (restaurantId, input) => {
   if (current.status !== 'not_added' && sameDetails(current, data)) {
     return { account: view(), changed: false, changeRequested: false };
   }
+  // The proof (cancelled cheque or bank statement) is mandatory: Yulo verifies the account
+  // against it, so an account without one could never be verified. The portal uploads it
+  // first, then saves the details. (A change of a verified account attaches its proof after
+  // the request exists — see the portal's BankAccountForm — so that path is not gated here.)
+  if (!latestProofId(restaurant)) {
+    throw new ApiError(400, 'PROOF_REQUIRED', 'Upload a cancelled cheque or bank statement for this account', {
+      fieldErrors: { proof: 'Upload a cancelled cheque or bank statement' },
+    });
+  }
 
   restaurant.payoutAccount = {
     accountHolderName: data.accountHolderName,

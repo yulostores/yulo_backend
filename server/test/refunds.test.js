@@ -136,7 +136,9 @@ test('kitchen cancels after accepting → full refund, cause restaurant_cancel_a
   assert.equal(await RestaurantLedgerEntry.countDocuments({ orderId: order._id, type: 'order_earning' }), 0);
 });
 
-test('customer cancels before the restaurant accepts → full refund; fee bearer follows the setting', async () => {
+test('customer cancels before the restaurant accepts → full refund; the restaurant pays the 3.5 % payment settlement fee', async () => {
+  // Even with the old setting pointing at the platform: a customer cancellation is always the
+  // restaurant's settlement fee (settlementChargePercent of what was paid), not Razorpay's fee.
   await createVersion(
     { patch: { refundFeeBorneBy: { customer_cancel_before_accept: 'platform' } } },
     admin._id
@@ -149,8 +151,13 @@ test('customer cancels before the restaurant accepts → full refund; fee bearer
 
   const saved = await Order.findById(order._id).lean();
   assert.equal(saved.refund.cause, 'customer_cancel_before_accept');
-  assert.equal(saved.refund.feeBorneBy, 'platform');
-  assert.equal(await feeDebit(order._id), null, 'the platform bears it — no restaurant debit');
+  assert.equal(saved.refund.feeBorneBy, 'restaurant');
+  const debit = await feeDebit(order._id);
+  // 3.5 % of ₹357 = ₹12.495 → ₹12.50, GST (18 %) inside it.
+  assert.equal(debit.direction, 'debit');
+  assert.equal(debit.amountPaise, 1250);
+  assert.equal(debit.breakdown.refundFee.percent, 3.5);
+  assert.equal(debit.breakdown.refundFee.fee + debit.breakdown.refundFee.tax, 1250);
 });
 
 test('customer cancels after accept but before the kitchen starts → full refund', async () => {
@@ -333,7 +340,7 @@ test('partial refunds after preparation are not configurable yet', async () => {
 
 // ── Round-2 cause fixes ───────────────────────────────────────────────────────
 
-test('customer cancels an accepted order before cooking: its own cause, the before-accept fee rule', async () => {
+test('customer cancels an accepted order before cooking: its own cause, same 3.5 % settlement fee', async () => {
   await createVersion({ patch: { refundFeeBorneBy: { customer_cancel_before_accept: 'platform' } } }, admin._id);
   const order = await paidOrder({ status: 'confirmed', acceptedAt: new Date() });
   const res = await srv.request('POST', `/api/orders/${order._id}/cancel`, { headers: customerHeaders(), body: {} });
@@ -341,8 +348,8 @@ test('customer cancels an accepted order before cooking: its own cause, the befo
 
   const saved = await Order.findById(order._id).lean();
   assert.equal(saved.refund.cause, 'customer_cancel_before_preparation');
-  assert.equal(saved.refund.feeBorneBy, 'platform', 'follows customer_cancel_before_accept');
-  assert.equal(await feeDebit(order._id), null);
+  assert.equal(saved.refund.feeBorneBy, 'restaurant');
+  assert.equal((await feeDebit(order._id)).amountPaise, 1250);
 });
 
 test('a payment landing on an order cancelled while unpaid: refunded, the platform bears the fee', async () => {

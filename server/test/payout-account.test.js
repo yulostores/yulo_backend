@@ -52,6 +52,8 @@ beforeEach(async () => {
     name: 'Spice Route',
     location: { type: 'Point', coordinates: [77.59, 12.97] },
     approvalStatus: 'pending',
+    // The proof the portal uploads before saving the account details — mandatory.
+    documents: [{ type: 'bank_statement', url: 'https://example.test/cheque.png', name: 'cheque.png' }],
   });
 });
 
@@ -265,4 +267,12 @@ test('no other response carries the full account number', async () => {
     assert.doesNotMatch(body, pattern);
     assert.doesNotMatch(body, /accountNumberEncrypted/);
   }
+});
+
+test('a new account needs its proof document first (cancelled cheque or statement)', async () => {
+  await Restaurant.updateOne({ _id: restaurant._id }, { $set: { documents: [] } });
+  const res = await ownerPut(VALID);
+  assert.equal(res.status, 400);
+  assert.equal(res.body.code, 'PROOF_REQUIRED');
+  assert.equal((await Restaurant.findById(restaurant._id).lean()).payoutAccount?.accountNumberLast4 ?? null, null);
 });

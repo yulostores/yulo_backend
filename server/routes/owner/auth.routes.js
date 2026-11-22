@@ -5,8 +5,22 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { authorizeRole } from '../../middleware/authorizeRole.js';
 import { authLimiter } from '../../middleware/rateLimiter.js';
 import { validate } from '../../middleware/validate.js';
+import { normalizeIndianPhone } from '../../utils/phone.js';
 
 const router = Router();
+
+// The owner's mobile number is their login. Accepts "+91 98765 43210", "098765-43210" etc. and
+// hands the controller the one stored shape (10 digits) — see utils/phone.js.
+const mobileSchema = z
+  .string()
+  .transform((v, ctx) => {
+    const phone = normalizeIndianPhone(v);
+    if (!phone) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Enter a valid 10-digit mobile number' });
+      return z.NEVER;
+    }
+    return phone;
+  });
 
 // Keep the name / phone / password rules in step with OwnerLoginPage.jsx in yulo_restaurant.
 const signupSchema = z.object({
@@ -20,14 +34,11 @@ const signupSchema = z.object({
     .regex(/[A-Z]/, 'Password needs an uppercase letter')
     .regex(/\d/, 'Password needs a number')
     .regex(/[^A-Za-z0-9]/, 'Password needs a special character'),
-  phone: z
-    .string()
-    .regex(/^[6-9]\d{9}$/, 'Enter a valid 10-digit mobile number')
-    .optional(),
+  phone: mobileSchema,
 });
 
 const loginSchema = z.object({
-  email: z.string().email(),
+  phone: mobileSchema,
   password: z.string().min(1),
 });
 

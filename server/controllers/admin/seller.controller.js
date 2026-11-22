@@ -7,6 +7,7 @@ import { SELLER_STATUSES } from '../../config/coupon.config.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { receivedOnSchema } from '../../utils/receivedOn.js';
 
 // Super admin — coupon partners (services/adminSeller.service.js holds the rules).
 
@@ -102,7 +103,7 @@ const manualPaymentSchema = z
     // A bank UTR, UPI reference, cheque or receipt number — what proves this payment, and what
     // stops it being recorded twice.
     reference: z.string().trim().min(3, 'Enter the payment reference').max(100),
-    receivedOn: z.coerce.date().refine((d) => d.getTime() <= Date.now() + 5 * 60_000, 'receivedOn cannot be in the future'),
+    receivedOn: receivedOnSchema,
     note: z.string().trim().max(500).optional(),
     overrideReason: z.string().trim().min(3).max(500).optional(),
   })

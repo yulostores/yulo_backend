@@ -1,4 +1,5 @@
 import Restaurant from '../../models/Restaurant.js';
+import MenuItem from '../../models/MenuItem.js';
 import * as cacheService from '../../services/cache.service.js';
 import { geocodeAddress, isUsableCoordinatePair, resolveRestaurantCoordinates } from '../../services/geocode.service.js';
 import { ApiError } from '../../utils/ApiError.js';
@@ -7,12 +8,16 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { validateCreateRestaurant, validateStoreSettingsChanges } from '../../config/storeSettings.config.js';
 
 export const createRestaurant = asyncHandler(async (req, res) => {
-  const { name, description, cuisineTypes, address, location } = req.body;
+  const { name, description, cuisineTypes, address, location, isPureVeg } = req.body;
 
   // Same field contract the store-settings form is held to (config/storeSettings.config.js),
   // narrowed to what this endpoint accepts — creating a restaurant is the first half of
   // filling that form in, so the two shouldn't disagree about what a complete address is.
   const fieldErrors = validateCreateRestaurant({ name, address });
+  // Registration asks "Pure-veg" or "Veg/Non-veg" — a choice the owner has to make.
+  if (typeof isPureVeg !== 'boolean') {
+    fieldErrors.isPureVeg = 'Choose Pure-veg or Veg/Non-veg';
+  }
   if (Object.keys(fieldErrors).length > 0) {
     throw new ApiError(
       400,
@@ -38,6 +43,7 @@ export const createRestaurant = asyncHandler(async (req, res) => {
     cuisineTypes: cuisineTypes || [],
     address: address || {},
     location: { type: 'Point', coordinates: coords },
+    isPureVeg,
   });
 
   sendSuccess(res, 201, 'Restaurant created', { restaurant });
@@ -88,6 +94,23 @@ export const updateRestaurant = asyncHandler(async (req, res) => {
       updates.badges.some((b) => typeof b !== 'string' || !b.trim() || b.length > BADGE_MAX_LENGTH))
   ) {
     throw new ApiError(400, 'VALIDATION_ERROR', `badges must be up to ${BADGES_MAX} short labels`);
+  }
+  // Becoming pure veg: only once no non-veg or egg dish is still on the menu, so customers
+  // filtering for pure veg never see one.
+  if (updates.isPureVeg === true && !req.restaurant.isPureVeg) {
+    const nonVeg = await MenuItem.countDocuments({
+      restaurantId: req.restaurant._id,
+      isAvailable: true,
+      foodType: { $ne: 'veg' },
+    });
+    if (nonVeg > 0) {
+      throw new ApiError(
+        409,
+        'NON_VEG_ITEMS',
+        `Remove or change ${nonVeg} non-veg dish${nonVeg === 1 ? '' : 'es'} on your menu before switching to Pure-veg`,
+        { nonVegCount: nonVeg }
+      );
+    }
   }
   if (updates.address !== undefined && (typeof updates.address !== 'object' || updates.address === null || Array.isArray(updates.address))) {
     throw new ApiError(400, 'VALIDATION_ERROR', 'address must be an object');

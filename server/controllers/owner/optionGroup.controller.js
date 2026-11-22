@@ -48,7 +48,9 @@ export const update = asyncHandler(async (req, res) => {
   // Full replace of `options` on PATCH (same "$set: req.body" convention as
   // updateCategory/updateSubCategory) — send the complete options array, not a diff.
   const optionGroup = await OptionGroup.findOneAndUpdate(
-    { _id: req.params.groupId, menuItemId: req.params.itemId },
+    // The "Plate size" group follows the item's prices (services/portion.service.js) — it is
+    // changed through the item, never directly.
+    { _id: req.params.groupId, menuItemId: req.params.itemId, systemKey: null },
     { $set: req.body },
     { new: true, runValidators: true }
   );
@@ -64,6 +66,7 @@ export const remove = asyncHandler(async (req, res) => {
   const optionGroup = await OptionGroup.findOneAndDelete({
     _id: req.params.groupId,
     menuItemId: req.params.itemId,
+    systemKey: null,
   });
   if (!optionGroup) throw new ApiError(404, 'NOT_FOUND', 'Option group not found');
 

@@ -61,8 +61,12 @@ const causeFromRecord = (order) => {
 // cancelled — nobody could act on it while it was unpaid — is always the platform's cost.
 const FEE_RULE_ALIASES = { customer_cancel_before_preparation: 'customer_cancel_before_accept' };
 const PLATFORM_BORNE_CAUSES = new Set(['paid_after_cancel']);
+// A customer cancelling a paid online order: the restaurant always pays the payment settlement
+// fee (Finance Settings settlementChargePercent, 3.5 %) on it — see recordRefundGatewayFee.
+export const CUSTOMER_CANCEL_CAUSES = new Set(['customer_cancel_before_accept', 'customer_cancel_before_preparation']);
 const feeBearerFor = (settings, cause) => {
   if (!cause || PLATFORM_BORNE_CAUSES.has(cause)) return 'platform';
+  if (CUSTOMER_CANCEL_CAUSES.has(cause)) return 'restaurant';
   return settings.refundFeeBorneBy?.[FEE_RULE_ALIASES[cause] ?? cause] ?? 'restaurant';
 };
 
