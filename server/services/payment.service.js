@@ -15,6 +15,7 @@ import SellerSubscription from '../models/SellerSubscription.js';
 import { settleFromWebhook as settleSellerPlanFromWebhook } from './sellerSubscription.service.js';
 import { scheduleIssue as scheduleCouponIssue } from './couponIssue.service.js';
 import { settleFromWebhook as settleSmsCreditsFromWebhook, isCreditOrder } from './smsCredits.service.js';
+import { settleFromWebhook as settleJobApplicationFromWebhook, isApplicationOrder } from './jobApplication.service.js';
 
 // Rupee amounts in this codebase are plain numbers; Razorpay speaks paise. Rounded once here
 // so 357.1 * 100 = 35709.99999 never reaches the gateway or a comparison.
@@ -627,6 +628,11 @@ export const handleWebhookEvent = async (event) => {
 
   // A coupon partner buying reminder-SMS credits (services/smsCredits.service.js; notes.kind 'sms_credits').
   if (SETTLING_EVENTS.has(type) ? await settleSmsCreditsFromWebhook(payment) : await isCreditOrder(payment.order_id)) {
+    return 'processed';
+  }
+
+  // The careers portal's form fee (services/jobApplication.service.js; notes.kind 'job_application').
+  if (SETTLING_EVENTS.has(type) ? await settleJobApplicationFromWebhook(payment) : await isApplicationOrder(payment.order_id)) {
     return 'processed';
   }
 

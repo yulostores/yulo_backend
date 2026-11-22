@@ -18,7 +18,7 @@ const strayPaymentSchema = new mongoose.Schema(
   {
     kind: {
       type: String,
-      enum: ['duplicate_payment', 'bill_already_settled', 'bill_total_changed', 'refused_payment', 'dine_in_round_cancelled', 'seller_payment_refused', 'seller_duplicate_payment', 'sms_credits_payment_refused', 'sms_credits_duplicate_payment'],
+      enum: ['duplicate_payment', 'bill_already_settled', 'bill_total_changed', 'refused_payment', 'dine_in_round_cancelled', 'seller_payment_refused', 'seller_duplicate_payment', 'sms_credits_payment_refused', 'sms_credits_duplicate_payment', 'job_application_payment_refused', 'job_application_duplicate_payment'],
       required: true,
     },
     razorpayPaymentId: { type: String, required: true },
@@ -33,6 +33,8 @@ const strayPaymentSchema = new mongoose.Schema(
     sellerSubscriptionId: { type: mongoose.Schema.Types.ObjectId, ref: 'SellerSubscription', default: null },
     // An SMS-credit pack payment we refused (services/smsCredits.service.js).
     smsCreditPurchaseId: { type: mongoose.Schema.Types.ObjectId, ref: 'SmsCreditPurchase', default: null },
+    // A careers-portal form fee we refused (services/jobApplication.service.js).
+    jobApplicationId: { type: mongoose.Schema.Types.ObjectId, ref: 'JobApplication', default: null },
     reason: { type: String, default: null },
     refund: { type: refundSchema, default: () => ({}) },
   },
