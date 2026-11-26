@@ -110,7 +110,10 @@ const last4Of = (phone) => {
 
 const sameDigits = (a, b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
-const scopeFilter = (sellerId, code) => ({ code, sellerId: new mongoose.Types.ObjectId(String(sellerId)), kind: 'customer' });
+// A complimentary coupon counts once a super admin has assigned it to a customer's number; until
+// then it stays invisible at the counter.
+const REDEEMABLE = { $or: [{ kind: 'customer' }, { kind: 'complimentary', customerId: { $ne: null } }] };
+const scopeFilter = (sellerId, code) => ({ code, sellerId: new mongoose.Types.ObjectId(String(sellerId)), ...REDEEMABLE });
 
 /** The coupon at this seller's counter, or a 404 (counted) for a code that isn't theirs. */
 const findOwn = async (who, rawCode) => {
@@ -253,7 +256,7 @@ export const startOfIstDay = (at = new Date()) => {
 export const today = async ({ sellerId, userId, role }) => {
   const filter = {
     sellerId: new mongoose.Types.ObjectId(String(sellerId)),
-    kind: 'customer',
+    ...REDEEMABLE,
     status: 'redeemed',
     redeemedAt: { $gte: startOfIstDay() },
   };

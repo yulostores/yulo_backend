@@ -27,15 +27,30 @@ const offerFields = {
   title: z.string().trim().min(3, 'Give the offer a short title').max(120),
   terms: z.string().trim().max(2000),
   validityDays: z.number().int('Whole days only').min(1).max(365).nullable(),
+  // Who it is for (models/CouponOffer.js): gender, and an optional age range.
+  targetGender: z.enum(['all', 'male', 'female'], { errorMap: () => ({ message: 'Choose who the offer is for' }) }),
+  ageMin: z.number().int('Whole years only').min(10, 'Minimum age is 10').max(100).nullable(),
+  ageMax: z.number().int('Whole years only').min(10).max(100, 'Maximum age is 100').nullable(),
 };
+const agesInOrder = (v) => v.ageMin == null || v.ageMax == null || v.ageMin <= v.ageMax;
+const AGE_ORDER = { message: 'The minimum age must not be more than the maximum', path: ['ageMax'] };
 export const createOfferSchema = z
-  .object({ ...offerFields, terms: offerFields.terms.optional(), validityDays: offerFields.validityDays.optional() })
-  .strict();
+  .object({
+    ...offerFields,
+    terms: offerFields.terms.optional(),
+    validityDays: offerFields.validityDays.optional(),
+    targetGender: offerFields.targetGender.optional(),
+    ageMin: offerFields.ageMin.optional(),
+    ageMax: offerFields.ageMax.optional(),
+  })
+  .strict()
+  .refine(agesInOrder, AGE_ORDER);
 export const updateOfferSchema = z
   .object(offerFields)
   .partial()
   .strict()
-  .refine((v) => Object.keys(v).length > 0, 'Nothing to change');
+  .refine((v) => Object.keys(v).length > 0, 'Nothing to change')
+  .refine(agesInOrder, AGE_ORDER);
 
 // ── Views ─────────────────────────────────────────────────────────────────────
 
@@ -45,6 +60,9 @@ export const offerView = (o, { category = null, seller = null } = {}) => ({
   terms: o.terms ?? '',
   // Fixed for every offer (COUPON_VALIDITY_DAYS); a value an older portal sent is ignored.
   validityDays: COUPON_VALIDITY_DAYS,
+  targetGender: o.targetGender ?? 'all',
+  ageMin: o.ageMin ?? null,
+  ageMax: o.ageMax ?? null,
   status: o.status,
   rejectionReason: o.status === 'rejected' ? o.rejectionReason ?? null : null,
   categoryId: o.categoryId,
@@ -92,6 +110,9 @@ export const createOffer = async (sellerId, userId, body) => {
     title: body.title,
     terms: body.terms ?? '',
     validityDays: null, // fixed at COUPON_VALIDITY_DAYS — whatever was sent is ignored
+    targetGender: body.targetGender ?? 'all',
+    ageMin: body.ageMin ?? null,
+    ageMax: body.ageMax ?? null,
     createdBy: userId,
   });
   return offerView(offer.toObject());
@@ -111,6 +132,12 @@ export const updateOffer = async (sellerId, offerId, rawPatch) => {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const current = await CouponOffer.findOne({ _id: offerId, sellerId }).lean();
     if (!current) throw new ApiError(404, 'NOT_FOUND', 'Offer not found');
+    // A patch that changes only one end of the age range must still leave it in order.
+    const ageMin = 'ageMin' in patch ? patch.ageMin : current.ageMin ?? null;
+    const ageMax = 'ageMax' in patch ? patch.ageMax : current.ageMax ?? null;
+    if (ageMin != null && ageMax != null && ageMin > ageMax) {
+      throw new ApiError(400, 'VALIDATION_ERROR', 'The minimum age must not be more than the maximum');
+    }
     const next = STATUS_AFTER_EDIT[current.status];
     const set = { ...patch, status: next };
     if (next !== current.status) Object.assign(set, { rejectionReason: null, reviewedAt: null, reviewedBy: null });

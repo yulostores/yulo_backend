@@ -22,6 +22,7 @@ import { generateCouponCode, normalizeCouponCode, ageOn, genderLabel } from '../
 import { normalizeIndianPhone } from '../utils/phone.js';
 import { escapeRegExp } from '../utils/regex.js';
 import { ApiError } from '../utils/ApiError.js';
+import { resolveClaimCustomer } from './guestCoupon.service.js';
 
 // The super admin's view of every coupon (§ CB9): the filtered list and its CSV export,
 // complimentary coupons (assign to a team member, mark used) and manual issue.
@@ -354,9 +355,32 @@ export const assignComplimentary = async (id, adminId, body) => {
   const coupon = await loadComplimentary(id);
   refuseUnusable(coupon);
   const assignedTo = { name: data.name, phone: data.phone, note: data.note ?? null, at: new Date() };
+  // The coupon joins the customer account with this number (created if there is none), so it shows
+  // in that customer's app and the seller can redeem it like any other coupon.
+  const customer = await resolveClaimCustomer({ phone: data.phone, name: data.name });
+  if (!customer) {
+    throw new ApiError(409, 'NOT_A_CUSTOMER_NUMBER', 'This number belongs to a restaurant or admin account — use a customer’s mobile number');
+  }
+  // Made at plan purchase with no offer: give it the seller's first approved offer (or a plain
+  // title) so the customer and the counter both see what it is for.
+  let offerSet = {};
+  if (!coupon.offerSnapshot?.title) {
+    const offer = await CouponOffer.findOne({ sellerId: coupon.sellerId, status: 'approved' }).sort({ reviewedAt: 1, createdAt: 1 }).lean();
+    const seller = offer ? null : await Seller.findById(coupon.sellerId).select('businessName').lean();
+    offerSet = offer
+      ? { offerId: offer._id, offerSnapshot: { title: offer.title, terms: offer.terms ?? '' } }
+      : { offerSnapshot: { title: `Complimentary coupon${seller?.businessName ? ` from ${seller.businessName}` : ''}`, terms: '' } };
+  }
   const updated = await Coupon.findOneAndUpdate(
     { _id: coupon._id, kind: 'complimentary', status: 'issued' },
-    { $set: { assignedTo } },
+    {
+      $set: {
+        ...offerSet,
+        assignedTo,
+        customerId: customer._id,
+        customerSnapshot: { name: customer.name || data.name, gender: customer.gender ?? null, dateOfBirth: customer.dateOfBirth ?? null },
+      },
+    },
     { new: true }
   ).lean();
   if (!updated) refuseUnusable(await loadComplimentary(id));
@@ -365,7 +389,7 @@ export const assignComplimentary = async (id, adminId, body) => {
     action: 'COUPON_COMPLIMENTARY_ASSIGNED',
     targetType: 'coupon',
     targetId: coupon._id,
-    metadata: { sellerId: coupon.sellerId, name: data.name, previous: coupon.assignedTo?.name ?? null },
+    metadata: { sellerId: coupon.sellerId, name: data.name, customerId: customer._id, previous: coupon.assignedTo?.name ?? null },
   });
   return { id: updated._id, code: updated.code, status: updated.status, assignedTo: updated.assignedTo };
 };

@@ -21,7 +21,9 @@ import { resolveClaimCustomer } from './guestCoupon.service.js';
 //
 // For each enabled category, in sortOrder, until CouponSettings.perOrderCap coupons are held:
 //   candidates = active sellers in that category with an approved offer and stock left, within
-//                radiusKm of the restaurant — nearest first, then the one that has issued fewest
+//                radiusKm of the restaurant whose offer fits the customer's gender / age — first
+//                come, first served: the seller whose offer was approved and plan paid first
+//                issues until its stock runs out, then the next (nearer wins a tie)
 //   → takeOne (atomic stock decrement) → insert the Coupon.
 //
 // Safe to run any number of times, concurrently, for the same payment: every coupon carries
@@ -86,12 +88,38 @@ const validPoint = (location) =>
 
 // ── Choosing a seller ─────────────────────────────────────────────────────────
 
+const ageOn = (dob, now) => {
+  const d = new Date(dob);
+  let age = now.getUTCFullYear() - d.getUTCFullYear();
+  const m = now.getUTCMonth() - d.getUTCMonth();
+  if (m < 0 || (m === 0 && now.getUTCDate() < d.getUTCDate())) age -= 1;
+  return age;
+};
+
 /**
- * Sellers that can issue in `categoryId` near `coordinates`, best first: nearest, then fewest
- * coupons issued (so neighbours at the same spot take turns), then oldest. Each comes with its
- * approved offers.
+ * Whether an offer is meant for this customer (CouponOffer.targetGender / ageMin / ageMax). An
+ * offer for one gender needs the customer's gender; an age-limited one needs their date of birth.
  */
-const candidateSellers = async ({ categoryId, coordinates, radiusKm }) => {
+export const offerFits = (offer, customer, now = new Date()) => {
+  const gender = offer.targetGender ?? 'all';
+  if (gender !== 'all' && customer?.gender !== gender) return false;
+  if (offer.ageMin != null || offer.ageMax != null) {
+    if (!customer?.dateOfBirth) return false;
+    const age = ageOn(customer.dateOfBirth, now);
+    if (offer.ageMin != null && age < offer.ageMin) return false;
+    if (offer.ageMax != null && age > offer.ageMax) return false;
+  }
+  return true;
+};
+
+/**
+ * Sellers that can issue in `categoryId` near `coordinates` to this customer, in turn — first
+ * come, first served: the seller whose offer was approved and plan paid first issues first, until
+ * its stock runs out, then the next. "Ready since" is the later of the two: the earliest approval
+ * among its offers that fit the customer, and the payment of its oldest plan with stock left.
+ * Ties go to the nearer seller. Each comes with its fitting offers, oldest approval first.
+ */
+const candidateSellers = async ({ categoryId, coordinates, radiusKm, customer }) => {
   const near = await Seller.aggregate([
     {
       $geoNear: {
@@ -107,51 +135,49 @@ const candidateSellers = async ({ categoryId, coordinates, radiusKm }) => {
   ]);
   if (near.length === 0) return [];
   const ids = near.map((s) => s._id);
+  const now = new Date();
 
   const [offers, stock] = await Promise.all([
-    CouponOffer.find({ sellerId: { $in: ids }, categoryId, status: 'approved' }).select('sellerId title terms validityDays').lean(),
+    CouponOffer.find({ sellerId: { $in: ids }, categoryId, status: 'approved' })
+      .select('sellerId title terms validityDays targetGender ageMin ageMax reviewedAt createdAt')
+      .lean(),
     SellerSubscription.aggregate([
-      { $match: { sellerId: { $in: ids }, status: { $in: ['active', 'exhausted'] } } },
-      {
-        $group: {
-          _id: '$sellerId',
-          issued: { $sum: '$issued' },
-          remaining: { $sum: { $cond: [{ $eq: ['$status', 'active'] }, '$remaining', 0] } },
-        },
-      },
+      { $match: { sellerId: { $in: ids }, status: 'active', remaining: { $gt: 0 } } },
+      { $group: { _id: '$sellerId', remaining: { $sum: '$remaining' }, paidAt: { $min: '$activatedAt' } } },
     ]),
   ]);
 
   const offersBySeller = new Map();
   for (const offer of offers) {
+    if (!offerFits(offer, customer, now)) continue;
     const key = String(offer.sellerId);
     if (!offersBySeller.has(key)) offersBySeller.set(key, []);
     offersBySeller.get(key).push(offer);
   }
+  const approvedAt = (o) => new Date(o.reviewedAt ?? o.createdAt ?? 0).getTime();
+  for (const list of offersBySeller.values()) list.sort((a, b) => approvedAt(a) - approvedAt(b) || String(a._id).localeCompare(String(b._id)));
   const stockBySeller = new Map(stock.map((s) => [String(s._id), s]));
 
   return near
-    .map((s) => ({
-      sellerId: s._id,
-      distanceM: Math.round(s.distanceM),
-      offers: offersBySeller.get(String(s._id)) ?? [],
-      issued: stockBySeller.get(String(s._id))?.issued ?? 0,
-      remaining: stockBySeller.get(String(s._id))?.remaining ?? 0,
-    }))
+    .map((s) => {
+      const fitting = offersBySeller.get(String(s._id)) ?? [];
+      const st = stockBySeller.get(String(s._id));
+      const firstApproval = fitting.length ? approvedAt(fitting[0]) : Infinity;
+      const paidAt = st?.paidAt ? new Date(st.paidAt).getTime() : Infinity;
+      return {
+        sellerId: s._id,
+        distanceM: Math.round(s.distanceM),
+        offers: fitting,
+        remaining: st?.remaining ?? 0,
+        readySince: Math.max(firstApproval, paidAt),
+      };
+    })
     .filter((s) => s.offers.length > 0 && s.remaining > 0)
-    .sort((a, b) => a.distanceM - b.distanceM || a.issued - b.issued || String(a.sellerId).localeCompare(String(b.sellerId)));
+    .sort((a, b) => a.readySince - b.readySince || a.distanceM - b.distanceM || String(a.sellerId).localeCompare(String(b.sellerId)));
 };
 
-/** Of a seller's approved offers, the one handed out least (ties: the oldest), so they take turns. */
-const pickOffer = async (offers) => {
-  if (offers.length === 1) return offers[0];
-  const counts = await Coupon.aggregate([
-    { $match: { kind: 'customer', offerId: { $in: offers.map((o) => o._id) } } },
-    { $group: { _id: '$offerId', n: { $sum: 1 } } },
-  ]);
-  const byOffer = new Map(counts.map((c) => [String(c._id), c.n]));
-  return [...offers].sort((a, b) => (byOffer.get(String(a._id)) ?? 0) - (byOffer.get(String(b._id)) ?? 0) || String(a._id).localeCompare(String(b._id)))[0];
-};
+/** Of a seller's offers that fit the customer, the one approved first — first come, first served. */
+const pickOffer = async (offers) => offers[0];
 
 // ── Issuing one ───────────────────────────────────────────────────────────────
 
@@ -248,6 +274,7 @@ export const issueForPayment = async ({ sourceType, sourceId }) => {
           categoryId: category._id,
           coordinates: restaurant.location.coordinates,
           radiusKm: settings.radiusKm,
+          customer,
         });
         for (const candidate of candidates) {
           const result = await issueOne({ candidate, category, sourceType, sourceId, customer, settings });

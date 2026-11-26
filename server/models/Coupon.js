@@ -6,10 +6,11 @@ import { COUPON_KINDS, COUPON_STATUSES, COUPON_SOURCE_TYPES, GENDERS } from '../
 // kind
 //   customer       issued to a Yulo customer after a paid food order (or manually by an admin);
 //                  drawn from a SellerSubscription's stock.
-//   complimentary  the plan's extra coupons reserved for Yulo team members. Created at plan
-//                  activation, outside the stock counts. SUPER ADMIN ONLY: every seller and
-//                  customer query filters `kind: 'customer'`, and the seller API can never
-//                  redeem one (§ Business rules — Visibility).
+//   complimentary  the plan's extra coupons, outside the stock counts, created at plan
+//                  activation. Hidden from sellers and customers until a super admin assigns one
+//                  to a mobile number: that links it to the customer account with the number
+//                  (customerId), after which it shows in that customer's app and the seller can
+//                  redeem it at the counter. Seller reports still count customer coupons only.
 //
 // status: issued → redeemed | expired (daily job) | void (the paying order was refunded).
 // Each transition is a single conditional update on `status: 'issued'`, which is what makes a

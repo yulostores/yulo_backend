@@ -7,9 +7,9 @@ import { ApiError } from '../utils/ApiError.js';
 
 // The customer's own coupons ("My Coupons" in the app) and the coupons an order/bill earned.
 //
-// Every query here is scoped to `kind: 'customer'` AND the customer's own id: a complimentary
-// coupon (Yulo team only) or another customer's coupon can never be listed or opened, whatever
-// id is asked for.
+// Every query here is scoped to the customer's own id: another customer's coupon can never be
+// listed or opened, whatever id is asked for. A complimentary coupon only appears once a super
+// admin has assigned it to this customer's number (that is what sets its customerId).
 
 export const MY_COUPON_STATUSES = ['issued', 'redeemed', 'expired', 'void'];
 
@@ -29,6 +29,8 @@ const addressLine = (a) => [a?.line1, a?.line2, a?.city, a?.state, a?.pincode].f
 const view = (coupon, { seller, category, offer }, now) => ({
   id: coupon._id,
   code: coupon.code,
+  // 'complimentary' — a gift a Yulo admin assigned to this customer's number.
+  kind: coupon.kind ?? 'customer',
   // What the app encodes in the QR the seller scans: the code itself, nothing else.
   qrPayload: coupon.code,
   title: coupon.offerSnapshot?.title ?? offer?.title ?? null,
@@ -51,7 +53,7 @@ const view = (coupon, { seller, category, offer }, now) => ({
   source: coupon.source?.type ? { type: coupon.source.type, id: coupon.source.id ?? null } : null,
 });
 
-const COUPON_FIELDS = 'code sellerId categoryId offerId offerSnapshot status issuedAt expiresAt redeemedAt voidedAt source';
+const COUPON_FIELDS = 'kind code sellerId categoryId offerId offerSnapshot status issuedAt expiresAt redeemedAt voidedAt source';
 
 const withRelations = async (coupons, now) => {
   const ids = (field) => [...new Set(coupons.map((c) => String(c[field])).filter((v) => v && v !== 'null'))];
@@ -75,7 +77,8 @@ export const couponViews = (coupons, now = new Date()) => withRelations(coupons,
 /** GET /api/users/me/coupons?status=&page=&limit= — newest first. */
 export const listMyCoupons = async (customerId, { status = null, page = 1, limit = 20 } = {}) => {
   const now = new Date();
-  const filter = { kind: 'customer', customerId, ...statusFilter(status, now) };
+  // Complimentary coupons only ever carry a customerId once assigned to that customer's number.
+  const filter = { kind: { $in: ['customer', 'complimentary'] }, customerId, ...statusFilter(status, now) };
   const [rows, total] = await Promise.all([
     Coupon.find(filter)
       .sort({ issuedAt: -1, _id: -1 })
@@ -91,7 +94,7 @@ export const listMyCoupons = async (customerId, { status = null, page = 1, limit
 /** GET /api/users/me/coupons/:id — 404 for anything that isn't this customer's own coupon. */
 export const getMyCoupon = async (customerId, couponId) => {
   if (!mongoose.isValidObjectId(couponId)) throw new ApiError(404, 'NOT_FOUND', 'Coupon not found');
-  const coupon = await Coupon.findOne({ _id: couponId, kind: 'customer', customerId }).select(COUPON_FIELDS).lean();
+  const coupon = await Coupon.findOne({ _id: couponId, kind: { $in: ['customer', 'complimentary'] }, customerId }).select(COUPON_FIELDS).lean();
   if (!coupon) throw new ApiError(404, 'NOT_FOUND', 'Coupon not found');
   const [one] = await withRelations([coupon], new Date());
   return one;

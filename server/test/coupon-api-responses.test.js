@@ -137,7 +137,7 @@ const bearer = (token) => ({ authorization: `Bearer ${token}` });
 const SESSION_KEYS = ['accessToken', 'user', 'seller', 'permissions'];
 const USER_VIEW = ['_id', 'name', 'phone', 'role', 'sellerId'];
 const SELLER_VIEW = ['_id', 'businessName', 'status', 'rejectionReason'];
-const OFFER_KEYS = ['_id', 'title', 'terms', 'validityDays', 'status', 'rejectionReason', 'categoryId', 'reviewedAt', 'createdAt', 'updatedAt'];
+const OFFER_KEYS = ['_id', 'title', 'terms', 'validityDays', 'targetGender', 'ageMin', 'ageMax', 'status', 'rejectionReason', 'categoryId', 'reviewedAt', 'createdAt', 'updatedAt'];
 const ONBOARDING_KEYS = ['status', 'submittedAt', 'rejectionReason', 'editable', 'editableBusinessFields', 'business', 'owner', 'employees', 'documents', 'missing'];
 const SELLER_COUPON_ROW = ['id', 'customerName', 'gender', 'ageBand', 'offerTitle', 'category', 'issuedAt', 'expiresAt', 'status', 'redeemedAt', 'redeemedByName'];
 const SUB_VIEW = ['_id', 'plan', 'status', 'amount', 'paidPaise', 'method', 'reference', 'allocated', 'issued', 'remaining', 'activatedAt', 'exhaustedAt', 'createdAt'];
@@ -450,7 +450,7 @@ test('customer: gender and date of birth; a paid order earns a coupon; My Coupon
   const list = ok(await call('GET', '/api/users/me/coupons', { headers: ctx.customerH }), 'Coupons', ['coupons', 'total', 'page', 'limit']);
   assert.equal(list.total, 1);
   const c = list.coupons[0];
-  keys(c, ['id', 'code', 'qrPayload', 'title', 'terms', 'seller', 'category', 'issuedAt', 'expiresAt', 'status', 'redeemedAt', 'voidedAt', 'source'], 'my coupon');
+  keys(c, ['id', 'code', 'kind', 'qrPayload', 'title', 'terms', 'seller', 'category', 'issuedAt', 'expiresAt', 'status', 'redeemedAt', 'voidedAt', 'source'], 'my coupon');
   keys(c.seller, ['id', 'name', 'address', 'phone', 'location'], 'coupon seller');
   assert.equal(c.qrPayload, c.code);
   assert.equal(c.title, '20% off any haircut');

@@ -227,50 +227,103 @@ test('every coupon is valid for exactly 30 days, whatever the offer says; the of
   assert.equal(res.body.data.coupon.terms, 'One per visit');
 });
 
-test('seller choice: out-of-radius ignored, nearest wins, a tie goes to the one that issued fewer', async () => {
+// Marks when a partner became ready: its plan paid at `paidAt`, its offer approved at `approvedAt`.
+const readyAt = async (p, { paidAt, approvedAt }) => {
+  if (paidAt) await SellerSubscription.updateOne({ _id: p.sub._id }, { $set: { activatedAt: paidAt } });
+  if (approvedAt) await CouponOffer.updateOne({ _id: p.offer._id }, { $set: { reviewedAt: approvedAt } });
+};
+const minutesAgo = (m) => new Date(Date.now() - m * 60_000);
+
+test('first come, first served: the seller ready first issues first, whatever the distance; out of radius never', async () => {
   const cat = await category();
   const far = await partner({ cat, at: east(15) }); // beyond the 10 km default
-  const near = await partner({ cat, at: east(2) });
-  const nearer = await partner({ cat, at: east(1) });
+  const early = await partner({ cat, at: east(5) });
+  const late = await partner({ cat, at: east(1) });
+  await readyAt(far, { paidAt: minutesAgo(500), approvedAt: minutesAgo(500) });
+  await readyAt(early, { paidAt: minutesAgo(300), approvedAt: minutesAgo(200) }); // ready 200 min ago
+  await readyAt(late, { paidAt: minutesAgo(400), approvedAt: minutesAgo(100) }); // paid earlier, but approved later
 
-  const { order } = await payOrder();
-  const [first] = await couponsFor('order', order._id);
-  assert.equal(String(first.sellerId), String(nearer.seller._id), 'nearest first');
-  assert.equal((await stockOf(far.sub)).issued, 0, 'out of radius never chosen');
-  assert.equal((await stockOf(near.sub)).issued, 0);
-
-  // Two sellers at the same spot: the one that has issued fewer goes first.
-  const cat2 = await category();
-  const spot = east(3);
-  const busy = await partner({ cat: cat2, at: spot, issued: 40 });
-  const quiet = await partner({ cat: cat2, at: spot, issued: 5 });
-  await CouponCategory.updateOne({ _id: cat._id }, { $set: { enabled: false } });
-  const { order: second } = await payOrder();
-  const [c] = await couponsFor('order', second._id);
-  assert.equal(String(c.sellerId), String(quiet.seller._id));
-  assert.equal((await stockOf(busy.sub)).issued, 40);
-
-  // Out of radius when the admin narrows it.
-  await settings({ radiusKm: 2 });
-  const { order: third } = await payOrder();
-  assert.equal((await couponsFor('order', third._id)).length, 0, 'the 3 km pair is now out of range');
-});
-
-test('the nearest seller out of stock → the next nearest; several approved offers take turns', async () => {
-  const cat = await category();
-  await partner({ cat, at: east(1), stock: 0, issued: 250 });
-  const next = await partner({ cat, at: east(4) });
-  const second = await CouponOffer.create({ sellerId: next.seller._id, categoryId: cat._id, title: 'Free wash', status: 'approved' });
-
-  const offersUsed = [];
-  for (let i = 0; i < 4; i += 1) {
+  for (let i = 0; i < 2; i += 1) {
     const { order } = await payOrder();
     const [c] = await couponsFor('order', order._id);
-    assert.equal(String(c.sellerId), String(next.seller._id));
-    offersUsed.push(String(c.offerId));
+    assert.equal(String(c.sellerId), String(early.seller._id), 'the one ready first keeps issuing');
   }
-  assert.equal(offersUsed.filter((o) => o === String(next.offer._id)).length, 2);
-  assert.equal(offersUsed.filter((o) => o === String(second._id)).length, 2);
+  assert.equal((await stockOf(late.sub)).issued, 0, 'the later one waits its turn');
+  assert.equal((await stockOf(far.sub)).issued, 0, 'out of radius never chosen');
+
+  // The first one's stock runs out → the next in line.
+  await SellerSubscription.updateOne({ _id: early.sub._id }, { $set: { remaining: 0, status: 'exhausted' } });
+  const { order } = await payOrder();
+  const [c] = await couponsFor('order', order._id);
+  assert.equal(String(c.sellerId), String(late.seller._id));
+
+  // Out of radius when the admin narrows it.
+  await settings({ radiusKm: 0.5 });
+  const { order: none } = await payOrder();
+  assert.equal((await couponsFor('order', none._id)).length, 0);
+});
+
+test("ready at the same moment → the nearer one; a seller's earliest-approved offer is the one given", async () => {
+  const cat = await category();
+  const same = minutesAgo(60);
+  const farther = await partner({ cat, at: east(4) });
+  const nearer = await partner({ cat, at: east(2) });
+  await readyAt(farther, { paidAt: same, approvedAt: same });
+  await readyAt(nearer, { paidAt: same, approvedAt: same });
+  const later = await CouponOffer.create({ sellerId: nearer.seller._id, categoryId: cat._id, title: 'Free wash', status: 'approved', reviewedAt: minutesAgo(10) });
+
+  for (let i = 0; i < 3; i += 1) {
+    const { order } = await payOrder();
+    const [c] = await couponsFor('order', order._id);
+    assert.equal(String(c.sellerId), String(nearer.seller._id));
+    assert.equal(String(c.offerId), String(nearer.offer._id), 'the first-approved offer, every time');
+  }
+  assert.equal(await Coupon.countDocuments({ offerId: later._id }), 0);
+});
+
+test('offers for a gender and an age range only reach customers who match', async () => {
+  const cat = await category();
+  const women = await partner({ cat, offer: { targetGender: 'female', ageMin: 18, ageMax: 35 } });
+  const everyone = await partner({ cat });
+  await readyAt(women, { paidAt: minutesAgo(300), approvedAt: minutesAgo(300) }); // first in line
+  await readyAt(everyone, { paidAt: minutesAgo(100), approvedAt: minutesAgo(100) });
+  const yearsAgo = (y) => new Date(Date.UTC(new Date().getUTCFullYear() - y, 0, 1));
+
+  const cases = [
+    [{ gender: 'female', dateOfBirth: yearsAgo(25) }, women, 'a 25-year-old woman → the women-only offer'],
+    [{ gender: 'male', dateOfBirth: yearsAgo(25) }, everyone, 'a man → skips it'],
+    [{ gender: 'female', dateOfBirth: yearsAgo(50) }, everyone, 'a 50-year-old woman → outside 18–35'],
+    [{ gender: 'female', dateOfBirth: null }, everyone, 'unknown age → only offers without an age limit'],
+    [{ gender: null, dateOfBirth: yearsAgo(25) }, everyone, 'unknown gender → only offers for everyone'],
+  ];
+  for (const [profile, expected, label] of cases) {
+    await User.updateOne({ _id: seed.customer._id }, { $set: profile });
+    const { order } = await payOrder();
+    const [c] = await couponsFor('order', order._id);
+    assert.equal(String(c?.sellerId), String(expected.seller._id), label);
+  }
+});
+
+test('offers: gender and age range are saved, shown, and checked', async () => {
+  const cat = await category();
+  const p = await partner({ cat });
+  const { default: SellerUser } = await import('../models/SellerUser.js');
+  const { sellerHeaders } = await import('../test-utils/sellerFixtures.mjs');
+  const owner = await SellerUser.findOne({ sellerId: p.seller._id });
+  const h = sellerHeaders(owner);
+  const created = await srv.request('POST', '/api/seller/offers', { headers: h, body: { title: 'Ladies night 30% off', targetGender: 'female', ageMin: 21, ageMax: 40 } });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.equal(created.body.data.offer.targetGender, 'female');
+  assert.equal(created.body.data.offer.ageMin, 21);
+  assert.equal(created.body.data.offer.ageMax, 40);
+  const bad = await srv.request('POST', '/api/seller/offers', { headers: h, body: { title: 'Bad range', ageMin: 40, ageMax: 20 } });
+  assert.equal(bad.status, 400);
+  const badPatch = await srv.request('PATCH', `/api/seller/offers/${created.body.data.offer._id}`, { headers: h, body: { ageMin: 50 } });
+  assert.equal(badPatch.status, 400, 'a patch must keep the range in order');
+  const ok = await srv.request('PATCH', `/api/seller/offers/${created.body.data.offer._id}`, { headers: h, body: { targetGender: 'all', ageMax: null } });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.data.offer.targetGender, 'all');
+  assert.equal(ok.body.data.offer.ageMax, null);
 });
 
 test('nothing for: a guest, an order with no customer, a counter/COD order, an order below the minimum', async () => {
@@ -554,7 +607,7 @@ test('the coupon keeps the customer as they were at issue; a later profile chang
 
 // ── My Coupons ────────────────────────────────────────────────────────────────
 
-test('My Coupons: own customer coupons only — never complimentary, never another customer\'s', async () => {
+test('My Coupons: own coupons only — never an unassigned complimentary one, never another customer\'s', async () => {
   const cat = await category();
   const p = await partner({ cat, name: 'Glow Salon & Spa' });
   const { order } = await payOrder();
@@ -570,7 +623,7 @@ test('My Coupons: own customer coupons only — never complimentary, never anoth
     sellerId: p.seller._id,
     subscriptionId: p.sub._id,
     categoryId: cat._id,
-    customerId: seed.customer._id, // even if one were ever tied to a customer id
+    customerId: null, // not assigned to anyone yet
     source: { type: 'plan', id: p.sub._id },
     expiresAt: new Date(Date.now() + 86_400_000),
   });
