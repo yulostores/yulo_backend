@@ -138,3 +138,11 @@ test('status filter, bad ranges, and another restaurant\'s bills', async () => {
     assert.ok(!numbers.includes('INV-999'));
   }
 });
+
+test('a portal on another domain can read the file name (CORS exposes Content-Disposition)', async () => {
+  const res = await fetch(`${srv.base}/api/owner/${seed.restaurant._id}/bills/export.xlsx?from=2026-11-25`, {
+    headers: { ...auth, origin: 'http://localhost:5173' },
+  });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('access-control-expose-headers') ?? '', /Content-Disposition/i);
+});

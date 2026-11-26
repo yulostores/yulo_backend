@@ -73,7 +73,15 @@ app.use(['/checkout.html', '/checkout.js'], (req, res, next) => {
 // actually sent (the correct way to say "any origin" while still allowing credentials); a real
 // comma-separated allowlist (the production case) is unaffected, still exact-matched as before.
 const allowedOrigins = env.ALLOWED_ORIGINS.split(',').map((o) => o.trim());
-app.use(cors({ origin: allowedOrigins.includes('*') ? true : allowedOrigins, credentials: true }));
+// Content-Disposition is exposed so a portal on another domain can read a download's file name
+// (bills Excel, statement and payment PDFs) — without it the browser hides the header.
+app.use(
+  cors({
+    origin: allowedOrigins.includes('*') ? true : allowedOrigins,
+    credentials: true,
+    exposedHeaders: ['Content-Disposition'],
+  })
+);
 
 // Mounted BEFORE express.json(): Razorpay signs the exact raw request bytes, which
 // express.json() below would already have parsed (and could re-serialize differently)
