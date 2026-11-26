@@ -5,6 +5,8 @@ import Bill from '../models/Bill.js';
 import Order from '../models/Order.js';
 import TableSession from '../models/TableSession.js';
 import DeliveryPartner from '../models/DeliveryPartner.js';
+import Seller from '../models/Seller.js';
+import { SELLER_STATUSES } from '../config/coupon.config.js';
 import { getIO } from '../socket.js';
 
 export const STORE_STATUSES = ['pending', 'active', 'suspended', 'rejected', 'expired'];
@@ -19,7 +21,7 @@ export const shapeCounts = (statuses, aggResult) => {
 };
 
 export const getPlatformTotals = async () => {
-  const [storeCounts, customerCount, ticketCounts, revenueAgg] = await Promise.all([
+  const [storeCounts, customerCount, ticketCounts, revenueAgg, sellerCounts] = await Promise.all([
     Restaurant.aggregate([{ $group: { _id: '$approvalStatus', count: { $sum: 1 } } }]),
     User.countDocuments({ role: 'customer' }),
     SupportTicket.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
@@ -27,6 +29,8 @@ export const getPlatformTotals = async () => {
       { $match: { status: 'paid' } },
       { $group: { _id: null, total: { $sum: '$grandTotal' }, orders: { $sum: 1 } } },
     ]),
+    // Coupon-programme sellers (models/Seller.js), by onboarding status.
+    Seller.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
   ]);
 
   const revenue = revenueAgg[0] ?? { total: 0, orders: 0 };
@@ -35,6 +39,7 @@ export const getPlatformTotals = async () => {
     stores: shapeCounts(STORE_STATUSES, storeCounts),
     customers: customerCount,
     tickets: shapeCounts(TICKET_STATUSES, ticketCounts),
+    sellers: shapeCounts(SELLER_STATUSES, sellerCounts),
     revenue: { total: revenue.total, orders: revenue.orders },
   };
 };
