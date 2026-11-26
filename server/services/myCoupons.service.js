@@ -69,6 +69,9 @@ const withRelations = async (coupons, now) => {
   );
 };
 
+/** Coupon documents as the customer sees them (seller, category, effective status). */
+export const couponViews = (coupons, now = new Date()) => withRelations(coupons, now);
+
 /** GET /api/users/me/coupons?status=&page=&limit= — newest first. */
 export const listMyCoupons = async (customerId, { status = null, page = 1, limit = 20 } = {}) => {
   const now = new Date();

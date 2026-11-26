@@ -13,6 +13,7 @@ import { toPaise } from '../utils/money.js';
 import { publicBillView } from '../utils/publicMask.js';
 import * as activityService from '../services/activity.service.js';
 import { couponsEarned } from '../services/myCoupons.service.js';
+import * as guestCoupons from '../services/guestCoupon.service.js';
 
 // Public, table-scoped "pay the bill online" flow (yulo_menu) — a guest-initiated
 // counterpart to the staff-side GET/POST .../bill endpoints in controllers/staff/
@@ -68,6 +69,9 @@ export const getBill = asyncHandler(async (req, res) => {
 // one can no longer be paid. 409 PAYMENT_ALREADY_RECEIVED when a payment already went through
 // and is settling — poll GET …/bill/payment.
 export const payBill = asyncHandler(async (req, res) => {
+  // Optional "Get free coupons" details (services/guestCoupon.service.js) — checked first, so a
+  // mistyped number is reported before anything about the payment changes.
+  const couponDetails = req.body?.couponDetails ? guestCoupons.parseCouponDetails(req.body.couponDetails) : null;
   const session = await findPayableSession(req.publicRestaurant._id, req.params.tableId);
   if (!session.orders.length) {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Nothing to pay yet');
@@ -114,8 +118,11 @@ export const payBill = asyncHandler(async (req, res) => {
   // Starts (or restarts) the hold on the bill's total — released if the guest abandons it
   // (billing.service.js PAYMENT_HOLD_MS) or by staff (…/release-payment).
   await Bill.updateOne({ _id: bill._id, status: 'open' }, { $set: { paymentStartedAt: new Date() } });
+  const couponToken = couponDetails ? await guestCoupons.attachClaim(bill._id, couponDetails) : null;
 
   sendSuccess(res, 200, 'Bill payment initiated', {
+    // Only the paying device gets it: it shows that device the coupons this bill earns.
+    couponToken,
     bill: await publicView(bill),
     razorpayOrder: result?.razorpayOrder ?? null,
     reused: result?.reused ?? false,
@@ -273,6 +280,14 @@ const billCouponsEarned = async (req, bill) => {
   const isOwner = req.user?._id && bill.customerId && String(req.user._id) === String(bill.customerId);
   return isOwner ? earned : { count: earned.count, ids: [] };
 };
+
+// GET /api/restaurants/:id/tables/:tableId/bill/coupons?token= — the coupons a guest's paid bill
+// earned, for the device that gave the "Get free coupons" details (it holds the token).
+export const getBillCoupons = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const data = await guestCoupons.couponsForToken({ restaurantId: req.publicRestaurant._id, token: req.query.token });
+  sendSuccess(res, 200, 'Coupons', data);
+});
 
 // GET /api/restaurants/:id/tables/:tableId/bill/invoice?razorpayOrderId= — the guest's invoice
 // once the bill is paid: the same receipt (publicView) the bill screen shows, read back after

@@ -14,6 +14,7 @@ import { generateCouponCode } from '../utils/couponCode.js';
 import { toPaise } from '../utils/money.js';
 import logger from '../utils/logger.js';
 import { COUPON_VALIDITY_DAYS } from '../config/coupon.config.js';
+import { resolveClaimCustomer } from './guestCoupon.service.js';
 
 // The issue engine: a customer's paid food order (or dine-in bill) earns coupons from coupon
 // partners near the restaurant (COUPON_IMPLEMENTATION_PROMPTS.md § CB6).
@@ -62,13 +63,20 @@ const loadSource = async (sourceType, sourceId) => {
     };
   }
   if (sourceType === 'bill') {
-    const bill = await Bill.findById(sourceId).select('restaurantId customerId status paymentChannel grandTotal refund').lean();
+    const bill = await Bill.findById(sourceId).select('restaurantId customerId status paymentChannel grandTotal refund couponClaim').lean();
     if (!bill) return null;
     let skip = null;
     if (bill.status !== 'paid') skip = 'not paid';
     else if (bill.paymentChannel !== 'online') skip = 'not paid online';
     else if (LIVE_REFUND(bill.refund)) skip = 'being refunded';
-    return { restaurantId: bill.restaurantId, customerId: bill.customerId ?? null, totalPaise: toPaise(bill.grandTotal ?? 0), skip };
+    return {
+      restaurantId: bill.restaurantId,
+      customerId: bill.customerId ?? null,
+      // A QR-menu guest's "Get free coupons" details (services/guestCoupon.service.js).
+      claim: bill.couponClaim?.phone ? bill.couponClaim : null,
+      totalPaise: toPaise(bill.grandTotal ?? 0),
+      skip,
+    };
   }
   return null;
 };
@@ -206,11 +214,14 @@ const issueOne = async ({ candidate, category, sourceType, sourceId, customer, s
 export const issueForPayment = async ({ sourceType, sourceId }) => {
   try {
     const source = await loadSource(sourceType, sourceId);
-    if (!source || source.skip || !source.customerId) return [];
+    if (!source || source.skip || (!source.customerId && !source.claim)) return [];
 
     const [settings, customer, restaurant] = await Promise.all([
       getActiveCouponSettings(),
-      User.findById(source.customerId).select('name role isActive gender dateOfBirth').lean(),
+      // A signed-in customer's bill/order; otherwise the account behind a QR guest's mobile number.
+      source.customerId
+        ? User.findById(source.customerId).select('name role isActive gender dateOfBirth').lean()
+        : resolveClaimCustomer(source.claim),
       Restaurant.findById(source.restaurantId).select('location').lean(),
     ]);
     // A real customer account only — never a guest session or a staff/owner account.

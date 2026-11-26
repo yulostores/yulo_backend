@@ -135,6 +135,24 @@ const billSchema = new mongoose.Schema(
 
     restaurantSnapshot: { type: restaurantSnapshotSchema, default: null },
 
+    // A QR-menu guest's "Get free coupons" details, given before paying (services/guestCoupon.service.js).
+    // The bill's coupons go to the customer account with this mobile number. tokenHash: the hash
+    // of the token only the paying device holds, which lets it see those coupons afterwards.
+    couponClaim: {
+      type: new mongoose.Schema(
+        {
+          name: { type: String, default: null },
+          gender: { type: String, enum: ['male', 'female', 'other', null], default: null },
+          phone: { type: String, default: null },
+          dateOfBirth: { type: Date, default: null },
+          claimedAt: { type: Date, default: null },
+          tokenHash: { type: String, default: null, select: false },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
+
     batches: [batchSchema],
 
     // ── Money ──────────────────────────────────────────────────────────────────────
@@ -209,6 +227,7 @@ const billSchema = new mongoose.Schema(
 );
 
 billSchema.index({ tableSessionId: 1 });
+billSchema.index({ 'couponClaim.tokenHash': 1 }, { partialFilterExpression: { 'couponClaim.tokenHash': { $type: 'string' } } });
 billSchema.index({ paymentIntentHistory: 1 });
 // Refund webhooks and the "already owed back?" checks look bills up by payment.
 billSchema.index({ razorpayPaymentId: 1 }, { partialFilterExpression: { razorpayPaymentId: { $type: 'string' } } });
