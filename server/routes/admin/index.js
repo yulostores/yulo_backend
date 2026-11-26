@@ -19,6 +19,7 @@ import { couponsRouter, couponReportsRouter, couponSettingsRouter } from './coup
 import reminderCampaignRoutes from './reminderCampaign.routes.js';
 import sellerBillRoutes from './sellerBill.routes.js';
 import jobApplicationRoutes from './jobApplication.routes.js';
+import transactionRoutes from './transactions.routes.js';
 
 const router = Router();
 
@@ -35,6 +36,8 @@ router.use('/tickets', ticketRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/reports', reportRoutes);
 router.use('/finance', financeRoutes);
+// Every payment in and out, from all sources (services/transactions.service.js).
+router.use('/transactions', transactionRoutes);
 router.use('/orders', orderRoutes);
 router.use('/bills', billRoutes);
 router.use('/bank-requests', bankRequestRoutes);
