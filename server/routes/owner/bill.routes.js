@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   listBills,
+  exportBills,
   getBill,
   markBillPaid,
   releaseBillPayment,
@@ -14,8 +15,9 @@ import {
 const router = Router({ mergeParams: true });
 
 router.get('/', listBills);
-// Before /:billId so "open-tables" is not read as a bill id.
+// Before /:billId so "open-tables" / "export.xlsx" are not read as a bill id.
 router.get('/open-tables', listOpenTables);
+router.get('/export.xlsx', exportBills);
 router.post('/sessions/:sessionId/generate', generateBill);
 router.get('/:billId', getBill);
 router.post('/:billId/mark-paid', markBillPaid);

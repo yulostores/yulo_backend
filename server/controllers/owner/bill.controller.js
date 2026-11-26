@@ -2,6 +2,7 @@ import Bill from '../../models/Bill.js';
 import * as billViewService from '../../services/billView.service.js';
 import * as billingService from '../../services/billing.service.js';
 import * as billEditService from '../../services/billEdit.service.js';
+import * as billExportService from '../../services/billExport.service.js';
 import * as counterPaymentService from '../../services/counterPayment.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
@@ -45,6 +46,25 @@ export const listBills = asyncHandler(async (req, res) => {
     page: Number(page),
     pages: Math.ceil(total / Number(limit)),
   });
+});
+
+// GET /api/owner/:restaurantId/bills/export.xlsx?from=YYYY-MM-DD&to=YYYY-MM-DD[&status][&type]
+// Every bill raised on one IST day (no `to`) or across a range, as an Excel workbook:
+// a day-wise summary, one row per bill, and one row per dish (services/billExport.service.js).
+export const exportBills = asyncHandler(async (req, res) => {
+  const { from, to, status, type } = req.query;
+  const { buffer, filename } = await billExportService.buildBillsWorkbook({
+    restaurantId: req.restaurant._id,
+    restaurantName: req.restaurant.name,
+    from,
+    to,
+    status: status || undefined,
+    type: type || undefined,
+  });
+  res.set('Cache-Control', 'no-store');
+  res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.set('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(buffer);
 });
 
 // An open dine-in bill is re-priced on read, as the floor's and the guest's bill screens do —
