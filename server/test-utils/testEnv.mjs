@@ -33,6 +33,9 @@ for (const key of [
 
 const THROWAWAY_SECRET = 'test-only-not-a-real-secret-000000000000';
 process.env.NODE_ENV ??= 'test';
+// The weekly settlement tests run in weekly mode; the anytime-payout tests switch to 'anytime'
+// themselves (config/payoutMode.js __setPayoutModeForTests).
+process.env.RESTAURANT_PAYOUT_MODE ??= 'weekly';
 // Never connected to by anything that doesn't override it — DB tests use mongodb-memory-server
 // (test-utils/memoryMongo.mjs).
 process.env.MONGODB_URI = 'mongodb://127.0.0.1:1/never-connected';

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { payoutMode } from '../config/payoutMode.js';
 import Order from '../models/Order.js';
 import Bill from '../models/Bill.js';
 import Restaurant from '../models/Restaurant.js';
@@ -205,7 +206,7 @@ const destinationOf = (restaurant) => {
     last4: a.accountNumberLast4,
     status: a.status,
     holderName: a.accountHolderName,
-    frequency: 'weekly',
+    frequency: payoutMode() === 'weekly' ? 'weekly' : 'anytime',
     hasPendingChange: a.hasPendingChange,
   };
 };
@@ -571,7 +572,7 @@ export const payoutSettings = async (restaurantId) => {
         : null,
       hasPendingChange: a.hasPendingChange,
     },
-    frequency: 'weekly',
+    frequency: payoutMode() === 'weekly' ? 'weekly' : 'anytime',
     nextScheduledPayout: scheduled
       ? {
           statementId: scheduled._id,

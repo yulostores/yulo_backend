@@ -11,6 +11,11 @@ router.use((_req, res, next) => {
 });
 
 router.get('/overview', payments.overview);
+// Paid any day: balance, payments received, and the daily / range report.
+router.get('/balance', payments.balance);
+router.get('/received', payments.received);
+router.get('/daily', payments.daily);
+router.get('/daily/export.xlsx', payments.dailyExport);
 router.get('/history', payments.history);
 router.get('/statements/:statementId', payments.statement);
 router.get('/orders/:orderId', payments.order);

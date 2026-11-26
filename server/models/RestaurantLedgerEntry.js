@@ -13,6 +13,9 @@ import mongoose from 'mongoose';
 //   refund_gateway_fee   debit   — Razorpay's fee on a payment that was refunded (B5)
 //   adjustment           either  — a manual correction or penalty by an admin (B8)
 //   carry_forward        either  — a negative week rolled into the next one (B8)
+//   payout               debit   — money an admin paid the restaurant directly, any day, in full
+//                                  or in part (models/RestaurantPayment.js) — it lowers what is
+//                                  still owed, so nothing can be paid twice
 //
 // Rows are append-only facts: corrections are new rows, never edits. One event can only ever
 // produce one row — the partial unique indexes below make a retried hook or a replayed webhook
@@ -22,7 +25,7 @@ const ledgerEntrySchema = new mongoose.Schema(
     restaurantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Restaurant', required: true },
     type: {
       type: String,
-      enum: ['order_earning', 'dine_in_earning', 'counter_platform_fee', 'refund_gateway_fee', 'adjustment', 'carry_forward'],
+      enum: ['order_earning', 'dine_in_earning', 'counter_platform_fee', 'refund_gateway_fee', 'adjustment', 'carry_forward', 'payout'],
       required: true,
     },
     direction: { type: String, enum: ['credit', 'debit'], required: true },
@@ -30,6 +33,8 @@ const ledgerEntrySchema = new mongoose.Schema(
     amountPaise: { type: Number, required: true, min: 0, validate: Number.isInteger },
     orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: undefined },
     billId: { type: mongoose.Schema.Types.ObjectId, ref: 'Bill', default: undefined },
+    // The direct payment behind a `payout` row.
+    paymentId: { type: mongoose.Schema.Types.ObjectId, ref: 'RestaurantPayment', default: undefined },
     // The full settlement line the amount came from (computeRestaurantSettlementLine) — kept
     // with the row so a statement can always show how it was reached.
     breakdown: { type: mongoose.Schema.Types.Mixed, default: null },
@@ -58,7 +63,13 @@ ledgerEntrySchema.index(
   { type: 1, billId: 1 },
   { unique: true, partialFilterExpression: { billId: { $type: 'objectId' } } }
 );
+// One ledger row per direct payment, however often recording it is retried.
+ledgerEntrySchema.index(
+  { paymentId: 1 },
+  { unique: true, partialFilterExpression: { paymentId: { $type: 'objectId' } } }
+);
 ledgerEntrySchema.index({ restaurantId: 1, eligibleAt: -1 });
+ledgerEntrySchema.index({ restaurantId: 1, createdAt: -1 });
 ledgerEntrySchema.index({ restaurantId: 1, settlementId: 1, eligibleAt: 1 });
 // A settlement's own rows (generation re-totals, the settlement detail and its export).
 ledgerEntrySchema.index({ settlementId: 1 });

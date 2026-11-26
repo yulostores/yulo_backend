@@ -11,6 +11,7 @@ import { connectDB } from './config/db.js';
 import { connectRedis, redis } from './config/redis.js';
 import { env } from './config/env.js';
 import { startSettlementScheduler } from './jobs/settlementScheduler.js';
+import { isAnytimeMode } from './config/payoutMode.js';
 import { startCouponScheduler } from './jobs/couponScheduler.js';
 import { loadLiveActivityRestaurants, startLiveActivityAccessRefresh } from './services/liveActivityAccess.service.js';
 import logger from './utils/logger.js';
@@ -87,7 +88,8 @@ if (env.NODE_ENV === 'production') {
 server.listen(env.PORT, () => logger.info(`Server running on port ${env.PORT}`));
 
 // Weekly restaurant settlements (Monday 03:00 IST) — see jobs/settlementScheduler.js.
-const settlementScheduler = startSettlementScheduler();
+// Only in weekly mode — restaurants are paid any day otherwise (config/payoutMode.js).
+const settlementScheduler = isAnytimeMode() ? { stop: async () => {} } : startSettlementScheduler();
 // Coupon expiry (02:00 IST) and expiry-reminder SMS (10:00 IST) — see jobs/couponScheduler.js.
 const couponScheduler = startCouponScheduler();
 

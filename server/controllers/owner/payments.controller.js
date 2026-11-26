@@ -3,6 +3,8 @@ import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import * as ownerPayments from '../../services/ownerPayments.service.js';
+import * as restaurantPayouts from '../../services/restaurantPayouts.service.js';
+import { payoutMode } from '../../config/payoutMode.js';
 
 // The restaurant portal's Payments & Payouts screens (Figma owner frames, F5) — read-only, the
 // owner's own restaurant only. Every response is owner-safe (services/ownerPayments.service.js).
@@ -63,4 +65,35 @@ export const bill = asyncHandler(async (req, res) => {
 // GET /api/owner/:restaurantId/payments/settings
 export const settings = asyncHandler(async (req, res) => {
   sendSuccess(res, 200, 'Bank & payout settings', await ownerPayments.payoutSettings(req.restaurant._id));
+});
+
+// ── Paid any day (services/restaurantPayouts.service.js) ─────────────────────────────────────
+
+const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
+const rangeSchema = z.object({ from: day.optional(), to: day.optional() });
+
+/** GET /owner/:rId/payments/balance — owed now, still clearing, paid this month, last payment. */
+export const balance = asyncHandler(async (req, res) => {
+  sendSuccess(res, 200, 'Balance', { mode: payoutMode(), ...(await restaurantPayouts.ownerSummary(req.restaurant._id)) });
+});
+
+/** GET /owner/:rId/payments/received?from&to&page&limit — the payments Yulo made to this restaurant. */
+export const received = asyncHandler(async (req, res) => {
+  const q = parse(z.object({ from: day.optional(), to: day.optional(), ...paging }), req.query);
+  sendSuccess(res, 200, 'Payments received', await restaurantPayouts.listPayments({ ...q, restaurantId: req.restaurant._id, view: restaurantPayouts.ownerPaymentView }));
+});
+
+/** GET /owner/:rId/payments/daily?from&to — earned, deducted, paid and balance owed, day by day. */
+export const daily = asyncHandler(async (req, res) => {
+  const q = parse(rangeSchema, req.query);
+  sendSuccess(res, 200, 'Daily report', await restaurantPayouts.dailyReport({ ...q, restaurantId: req.restaurant._id }));
+});
+
+/** GET /owner/:rId/payments/daily/export.xlsx?from&to */
+export const dailyExport = asyncHandler(async (req, res) => {
+  const q = parse(rangeSchema, req.query);
+  const { buffer, filename } = await restaurantPayouts.dailyReportWorkbook({ ...q, restaurantId: req.restaurant._id, owner: true });
+  res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.set('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(buffer);
 });
