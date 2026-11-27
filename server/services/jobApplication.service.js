@@ -14,6 +14,7 @@ import {
   educationLabel,
   findDepartment,
   findRole,
+  MAX_ROLES_PER_APPLICATION,
 } from '../config/careers.config.js';
 import { ApiError } from '../utils/ApiError.js';
 import { now } from '../utils/clock.js';
@@ -81,10 +82,18 @@ export const catalogue = () => ({
 
 // ── Views ─────────────────────────────────────────────────────────────────────
 
-const positionLabels = (a) => ({
-  departmentLabel: findDepartment(a.department)?.label ?? a.department,
-  roleLabel: findRole(a.department, a.role)?.label ?? a.role,
-});
+// Every role on the application ([role] for one saved before several were allowed).
+const rolesOf = (a) => (a.roles?.length ? a.roles : a.role ? [a.role] : []);
+
+const positionLabels = (a) => {
+  const roleLabels = rolesOf(a).map((r) => findRole(a.department, r)?.label ?? r);
+  return {
+    departmentLabel: findDepartment(a.department)?.label ?? a.department,
+    // All chosen roles, joined — what every screen shows as "Role".
+    roleLabel: roleLabels.join(', '),
+    roleLabels,
+  };
+};
 
 /** What the applicant's browser sees. */
 export const publicView = (a) => ({
@@ -112,6 +121,7 @@ export const adminListView = (a) => ({
   city: a.city,
   department: a.department,
   role: a.role,
+  roles: rolesOf(a),
   ...positionLabels(a),
   expectedSalaryMin: a.expectedSalaryMin,
   expectedSalaryMax: a.expectedSalaryMax,
@@ -156,11 +166,24 @@ const looksLikePdf = (buffer) => Buffer.isBuffer(buffer) && buffer.subarray(0, 5
  * résumé, if one was attached. Returns { application, accessToken, razorpayOrder, paymentSimulated }.
  */
 export const createApplication = async (fields, file) => {
-  if (!findRole(fields.department, fields.role)) {
+  // Every role must be an open one in the chosen (open) position.
+  const department = findDepartment(fields.department);
+  const roles = fields.roles?.length ? fields.roles : [fields.role];
+  const offered = (key) => {
+    const r = findRole(fields.department, key);
+    return r && r.open !== false;
+  };
+  if (!department || department.open === false || !roles.length || !roles.every(offered)) {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Choose a role from the selected position', {
       fieldErrors: { role: ['Choose a role from the selected position'] },
     });
   }
+  if (roles.length > MAX_ROLES_PER_APPLICATION) {
+    throw new ApiError(400, 'VALIDATION_ERROR', `Choose at most ${MAX_ROLES_PER_APPLICATION} roles`, {
+      fieldErrors: { role: [`Choose at most ${MAX_ROLES_PER_APPLICATION} roles`] },
+    });
+  }
+  fields = { ...fields, roles, role: roles[0] };
   const age = ageOn(fields.dateOfBirth);
   if (age === null || age < MIN_AGE || age > MAX_AGE) {
     throw new ApiError(400, 'VALIDATION_ERROR', `Applicants must be between ${MIN_AGE} and ${MAX_AGE} years old`, {
@@ -178,14 +201,22 @@ export const createApplication = async (fields, file) => {
 
   // One live application per person per role: a second paid one for the same role is refused
   // up front, so nobody pays the fee twice by mistake. A rejected application can reapply.
-  const existing = await JobApplication.exists({
+  // With several roles: refused if any of them is already in a live application.
+  const existing = await JobApplication.findOne({
     phone: fields.phone,
-    role: fields.role,
+    $or: [{ role: { $in: roles } }, { roles: { $in: roles } }],
     'payment.status': 'paid',
     status: { $ne: 'rejected' },
-  });
+  })
+    .select('department role roles')
+    .lean();
   if (existing) {
-    throw new ApiError(409, 'ALREADY_APPLIED', 'You have already applied for this role with this mobile number');
+    const taken = rolesOf(existing).filter((r) => roles.includes(r)).map((r) => findRole(existing.department, r)?.label ?? r);
+    throw new ApiError(
+      409,
+      'ALREADY_APPLIED',
+      `You have already applied for ${taken.join(', ') || 'this role'} with this mobile number`
+    );
   }
 
   const accessToken = crypto.randomBytes(32).toString('hex');
@@ -412,7 +443,8 @@ const listFilter = ({ q, department, role, status, gender, city } = {}) => {
   const filter = {};
   if (status) filter.status = status;
   if (department) filter.department = department;
-  if (role) filter.role = role;
+  // A role matches any application that names it, first or not.
+  if (role) filter.$and = [{ $or: [{ role }, { roles: role }] }];
   if (gender) filter.gender = gender;
   if (city) filter.city = new RegExp(`^${escapeRegex(city.trim())}`, 'i');
   if (q?.trim()) {
@@ -495,7 +527,7 @@ export const exportCsv = async (filters) => {
   const rows = await JobApplication.find(listFilter(filters)).sort({ submittedAt: -1, createdAt: -1 }).limit(EXPORT_LIMIT).lean();
   const header = [
     'Application No', 'Submitted', 'Full Name', 'Mobile', 'Alternate Mobile', 'Date of Birth', 'Age', 'Gender', 'City',
-    'Position', 'Role', 'Expected Salary Min', 'Expected Salary Max', 'Current Salary', 'Available From',
+    'Position', 'Roles', 'Expected Salary Min', 'Expected Salary Max', 'Current Salary', 'Available From',
     'Education', 'Experience (years)', 'Experience', 'Resume', 'Status', 'Fee Paid',
   ];
   const lines = rows.map((a) => {

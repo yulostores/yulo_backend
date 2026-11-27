@@ -128,12 +128,25 @@ test('positions: every department with its roles, the education levels and the â
   const { departments, feePaise, feeRupees, educationLevels } = res.body.data;
   assert.equal(feePaise, 10_000);
   assert.equal(feeRupees, 100);
-  assert.equal(departments.length, 11);
+  // Business Development is folded into Sales: 10 positions on the form.
+  assert.equal(departments.length, 10);
+  assert.ok(!departments.some((d) => d.key === 'business_development'));
   assert.deepEqual(
     departments.find((d) => d.key === 'social_media').roles.map((r) => r.label),
-    ['Social Media Manager', 'Content Creator', 'Influencer']
+    ['Social Media Manager', 'Content Creator', 'Social Media Strategist', 'Influencer', 'Small Reel Creator']
   );
-  assert.deepEqual(departments.find((d) => d.key === 'restaurant').roles.map((r) => r.label), ['Chef', 'Waiter', 'Helper']);
+  assert.deepEqual(departments.find((d) => d.key === 'restaurant').roles.map((r) => r.label), [
+    'Chef, Cook, Chinese Chef, Halwai',
+    'Waiter',
+    'Kitchen Helper',
+    'Cleaner & Helper',
+    'Restaurant, Cafe Manager',
+    'Counter Billing Executive',
+  ]);
+  assert.equal(departments.find((d) => d.key === 'designing').label, 'Designing & Creating');
+  // Retired roles are not offered (older applications keep their labels).
+  assert.ok(!departments.find((d) => d.key === 'designing').roles.some((r) => r.key === 'editor'));
+  assert.ok(departments.find((d) => d.key === 'sales').roles.some((r) => r.key === 'business_development_executive'));
   assert.ok(educationLevels.some((e) => e.key === 'graduate'));
 });
 
@@ -299,10 +312,33 @@ test('apply: one live application per mobile number and role', async () => {
   assert.equal(again.status, 409);
   assert.equal(again.body.code, 'ALREADY_APPLIED');
   // Another role is fine.
-  assert.equal((await apply({ department: 'designing', role: 'editor' })).status, 201);
+  assert.equal((await apply({ department: 'designing', role: 'video_editor' })).status, 201);
   // After a rejection the same role is open again.
   await JobApplication.updateMany({ role: 'influencer', 'payment.status': 'paid' }, { $set: { status: 'rejected' } });
   assert.equal((await apply()).status, 201);
+});
+
+test('apply: up to 3 roles in one position; retired or other-position roles are refused', async () => {
+  const three = await apply({ role: undefined, roles: 'content_creator,influencer,small_reel_creator' });
+  assert.equal(three.status, 201, JSON.stringify(three.body));
+  assert.equal(three.body.data.application.roleLabel, 'Content Creator, Influencer, Small Reel Creator');
+  const saved = await JobApplication.findById(three.body.data.application.id).lean();
+  assert.deepEqual(saved.roles, ['content_creator', 'influencer', 'small_reel_creator']);
+  assert.equal(saved.role, 'content_creator', 'the first role is kept as `role` for older screens');
+
+  assert.equal((await apply({ role: undefined, roles: 'content_creator,influencer,small_reel_creator,social_media_manager' })).status, 400, 'four is too many');
+  assert.equal((await apply({ role: undefined, roles: 'content_creator,waiter' })).status, 400, 'a role from another position');
+  assert.equal((await apply({ department: 'designing', role: 'editor' })).status, 400, 'a retired role');
+  assert.equal((await apply({ department: 'business_development', role: 'business_development_executive' })).status, 400, 'a retired position');
+});
+
+test('apply: a role already in a live application is refused, even inside a multi-role one', async () => {
+  const first = await apply({ role: undefined, roles: 'content_creator,influencer' });
+  await JobApplication.updateOne({ _id: first.body.data.application.id }, { $set: { 'payment.status': 'paid', status: 'new' } });
+  const again = await apply({ role: undefined, roles: 'small_reel_creator,influencer' });
+  assert.equal(again.status, 409);
+  assert.match(again.body.message, /Influencer/);
+  assert.equal((await apply({ role: undefined, roles: 'small_reel_creator' })).status, 201, 'a different role is fine');
 });
 
 test('simulate-payment is off unless local simulation is enabled', async () => {

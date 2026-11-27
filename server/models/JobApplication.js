@@ -30,7 +30,10 @@ const jobApplicationSchema = new mongoose.Schema(
     city: { type: String, required: true, trim: true },
 
     department: { type: String, required: true }, // config/careers.config.js JOB_DEPARTMENTS key
-    role: { type: String, required: true }, // a role key within that department
+    role: { type: String, required: true }, // the first role chosen — kept for older screens/filters
+    // Every role chosen (1 to MAX_ROLES_PER_APPLICATION, same department). Older applications
+    // have only `role`; read them as [role].
+    roles: { type: [String], default: undefined },
 
     // Monthly, rupees.
     expectedSalaryMin: { type: Number, required: true },
@@ -84,5 +87,6 @@ jobApplicationSchema.index({ 'payment.razorpayOrderHistory': 1 });
 jobApplicationSchema.index({ 'payment.razorpayPaymentId': 1 }, { sparse: true });
 jobApplicationSchema.index({ status: 1, submittedAt: -1 });
 jobApplicationSchema.index({ phone: 1, role: 1 });
+jobApplicationSchema.index({ phone: 1, roles: 1 });
 
 export default mongoose.model('JobApplication', jobApplicationSchema);

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import * as careers from '../services/jobApplication.service.js';
-import { EDUCATION_LEVELS, GENDERS, JOB_DEPARTMENTS, MAX_SALARY_RUPEES } from '../config/careers.config.js';
+import { EDUCATION_LEVELS, GENDERS, JOB_DEPARTMENTS, MAX_ROLES_PER_APPLICATION, MAX_SALARY_RUPEES } from '../config/careers.config.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -52,7 +52,13 @@ const applicationSchema = z
     gender: z.enum(GENDERS, { message: 'Select your gender' }),
     city: z.string().trim().min(2, 'Enter your city').max(80),
     department: z.enum(JOB_DEPARTMENTS.map((d) => d.key), { message: 'Select a position' }),
-    role: z.string().trim().min(1, 'Select a role').max(60),
+    // One role, or several (up to MAX_ROLES_PER_APPLICATION) as `roles` — over multipart a
+    // comma-separated list ("content_creator,influencer"), over JSON an array.
+    role: z.string().trim().max(60).optional(),
+    roles: z
+      .union([z.array(z.string().trim().min(1).max(60)), z.string().trim()])
+      .transform((v) => (Array.isArray(v) ? v : v.split(',')).map((r) => r.trim()).filter(Boolean))
+      .optional(),
     expectedSalaryMin: rupees,
     expectedSalaryMax: rupees,
     currentSalary: optional(rupees),
@@ -62,7 +68,15 @@ const applicationSchema = z
     experience: optional(z.string().trim().max(1000)),
   })
   .strict()
+  .transform(({ role, roles, ...rest }) => {
+    const list = [...new Set(roles?.length ? roles : role ? [role] : [])];
+    return { ...rest, roles: list, role: list[0] ?? '' };
+  })
   .superRefine((v, ctx) => {
+    if (!v.roles.length) ctx.addIssue({ code: 'custom', path: ['role'], message: 'Select a role' });
+    if (v.roles.length > MAX_ROLES_PER_APPLICATION) {
+      ctx.addIssue({ code: 'custom', path: ['role'], message: `Choose at most ${MAX_ROLES_PER_APPLICATION} roles` });
+    }
     if (v.expectedSalaryMax < v.expectedSalaryMin) {
       ctx.addIssue({ code: 'custom', path: ['expectedSalaryMax'], message: 'Maximum must be at least the minimum' });
     }
