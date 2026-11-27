@@ -124,13 +124,13 @@ test('the plan list: base, GST and total for each plan, cheapest first, without 
   noComplimentaryIn(res.body, 'GET /plans');
 });
 
-test('plan routes: managers read, employees and unapproved sellers are refused', async () => {
+test('plan routes: the owner only — managers, employees and unapproved sellers are refused', async () => {
   const { seller: s } = await seller();
   const manager = await SellerUser.create({ sellerId: s._id, name: 'M', phone: '9111111111', role: 'manager' });
   const employee = await SellerUser.create({ sellerId: s._id, name: 'E', phone: '9222222222', role: 'employee' });
-  assert.equal((await call('GET', '/plans', undefined, sellerHeaders(manager))).status, 200);
-  assert.equal((await call('GET', '/subscriptions', undefined, sellerHeaders(manager))).status, 200);
-  assert.equal((await call('POST', '/subscriptions', { planKey: 'basic' }, sellerHeaders(manager))).status, 403, 'managers cannot buy');
+  for (const [method, path, body] of [['GET', '/plans'], ['GET', '/subscriptions'], ['POST', '/subscriptions', { planKey: 'basic' }]]) {
+    assert.equal((await call(method, path, body, sellerHeaders(manager))).status, 403, `manager ${method} ${path}`);
+  }
   for (const [method, path, body] of [['GET', '/plans'], ['GET', '/subscriptions'], ['POST', '/subscriptions', { planKey: 'basic' }]]) {
     assert.equal((await call(method, path, body, sellerHeaders(employee))).status, 403, `employee ${method} ${path}`);
     assert.equal((await call(method, path, body, {})).status, 401, `no token ${method} ${path}`);

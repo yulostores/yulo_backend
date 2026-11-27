@@ -172,6 +172,19 @@ export const create = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid store data', result.error.flatten());
   }
   const { owner, location, ...storeData } = result.data;
+  // Partner names: up to 4, only for a partnership (config/storeSettings.config.js).
+  if (storeData.settings) {
+    const raw = Array.isArray(storeData.settings.partnerNames) ? storeData.settings.partnerNames : [];
+    const names = raw.map((n) => String(n ?? '').trim()).filter(Boolean);
+    if (storeData.settings.legalEntityType === 'Partnership') {
+      const field = effectiveField(getStoreSettingsField('settings.partnerNames'), { settings: storeData.settings });
+      const message = validateField(field, names);
+      if (message) throw new ApiError(400, 'VALIDATION_ERROR', message, { fieldErrors: { 'settings.partnerNames': message } });
+      storeData.settings.partnerNames = names;
+    } else {
+      delete storeData.settings.partnerNames;
+    }
+  }
 
   // The admin form only collects an address, so the map point comes from geocoding it — same
   // as owner sign-up. This used to default to [0, 0], which parked every store added here in
@@ -415,6 +428,22 @@ export const update = asyncHandler(async (req, res) => {
       if (value === undefined || value === null || String(value).trim() === '' || value === current?.settings?.[key]) continue;
       const message = validateField(getStoreSettingsField(`settings.${key}`), value);
       if (message) fieldErrors[`settings.${key}`] = message;
+    }
+  }
+  // Partner names (config/storeSettings.config.js): up to 4, only for a partnership — cleaned
+  // here and cleared for any other legal entity type.
+  if (data.settings && typeof data.settings === 'object' && (Object.hasOwn(data.settings, 'partnerNames') || Object.hasOwn(data.settings, 'legalEntityType'))) {
+    const current = await Restaurant.findById(req.params.id).select('settings.legalEntityType settings.partnerNames').lean();
+    const entity = data.settings.legalEntityType ?? current?.settings?.legalEntityType;
+    const raw = Object.hasOwn(data.settings, 'partnerNames') ? data.settings.partnerNames : current?.settings?.partnerNames ?? [];
+    const names = Array.isArray(raw) ? raw.map((n) => String(n ?? '').trim()).filter(Boolean) : raw;
+    if (entity === 'Partnership') {
+      const field = effectiveField(getStoreSettingsField('settings.partnerNames'), { settings: { legalEntityType: entity } });
+      const message = validateField(field, names);
+      if (message) fieldErrors['settings.partnerNames'] = message;
+      else data.settings.partnerNames = names;
+    } else {
+      data.settings.partnerNames = [];
     }
   }
   if (Object.keys(fieldErrors).length) {

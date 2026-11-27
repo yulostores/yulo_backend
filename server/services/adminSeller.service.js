@@ -85,6 +85,8 @@ const loadLean = async (id) => {
 /** GET /api/admin/sellers/:id — everything about one seller, identity numbers masked. */
 export const getSeller = async (id) => {
   const seller = await loadLean(id);
+  // Whether the full Aadhaar is on file (the field itself is select: false and never read here).
+  const aadhaarStored = await Seller.exists({ _id: seller._id, 'owner.aadhaarEncrypted': { $type: 'string' } });
   const [category, team] = await Promise.all([
     CouponCategory.findById(seller.categoryId).select('key name enabled').lean(),
     SellerUser.find({ sellerId: id }).sort({ createdAt: 1 }).lean(),
@@ -111,8 +113,9 @@ export const getSeller = async (id) => {
       phone: seller.owner?.phone ?? null,
       panMasked: maskPan(seller.owner?.panLast4),
       aadhaarMasked: maskAadhaar(seller.owner?.aadhaarLast4),
-      // Aadhaar is never stored in full (§ Business rules), so only PAN can be revealed.
       panRevealable: Boolean(seller.owner?.panLast4),
+      // Stored in full (encrypted) since Nov 2026; earlier sellers have only the last 4 digits.
+      aadhaarRevealable: Boolean(aadhaarStored),
     },
     users: team.map((u) => ({ ...toTeamMemberView(u), removedAt: u.removedAt ?? null, lastLoginAt: u.lastLoginAt ?? null })),
     documents: (seller.documents ?? []).map(toDocumentView),
@@ -130,23 +133,30 @@ export const listSellerUsers = async (id) => {
   return users.map((u) => ({ ...toTeamMemberView(u), removedAt: u.removedAt ?? null, lastLoginAt: u.lastLoginAt ?? null }));
 };
 
-/** POST /api/admin/sellers/:id/reveal — the owner's full PAN, once, audit-logged. */
-export const revealIdentity = async (id, adminId, field) => {
-  if (field === 'aadhaar') {
-    throw new ApiError(404, 'NOT_STORED', 'Only the last 4 digits of the Aadhaar number are kept. Check the uploaded card.');
-  }
-  if (field !== 'pan') throw new ApiError(400, 'VALIDATION_ERROR', 'field must be "pan" or "aadhaar"');
-  const seller = await Seller.findById(id).select('+owner.panEncrypted owner.panLast4').lean();
-  if (!seller) throw new ApiError(404, 'NOT_FOUND', 'Seller not found');
-  if (!seller.owner?.panEncrypted) throw new ApiError(404, 'NOT_FOUND', 'No PAN has been given yet');
+const IDENTITY = {
+  pan: { encrypted: 'panEncrypted', last4: 'panLast4', label: 'PAN' },
+  aadhaar: { encrypted: 'aadhaarEncrypted', last4: 'aadhaarLast4', label: 'Aadhaar number' },
+};
 
-  const value = decryptField(seller.owner.panEncrypted);
+/** POST /api/admin/sellers/:id/reveal — the owner's full PAN or Aadhaar, once, audit-logged. */
+export const revealIdentity = async (id, adminId, field) => {
+  const spec = IDENTITY[field];
+  if (!spec) throw new ApiError(400, 'VALIDATION_ERROR', 'field must be "pan" or "aadhaar"');
+  const seller = await Seller.findById(id).select(`+owner.${spec.encrypted} owner.${spec.last4}`).lean();
+  if (!seller) throw new ApiError(404, 'NOT_FOUND', 'Seller not found');
+  if (!seller.owner?.[spec.encrypted]) {
+    throw field === 'aadhaar' && seller.owner?.aadhaarLast4
+      ? new ApiError(404, 'NOT_STORED', 'Only the last 4 digits were kept for this seller (given before full numbers were stored). Check the uploaded Aadhaar card.')
+      : new ApiError(404, 'NOT_FOUND', `No ${spec.label} has been given yet`);
+  }
+
+  const value = decryptField(seller.owner[spec.encrypted]);
   await logActivity({
     adminId,
-    action: 'seller.reveal_pan',
+    action: `seller.reveal_${field}`,
     targetType: 'seller',
     targetId: seller._id,
-    metadata: { panLast4: seller.owner.panLast4 },
+    metadata: { [spec.last4]: seller.owner[spec.last4] },
   });
   return { field, value };
 };

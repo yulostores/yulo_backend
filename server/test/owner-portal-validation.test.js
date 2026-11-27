@@ -306,3 +306,47 @@ describe('saved business and licence details are locked to the owner', () => {
     assert.equal(res.status, 200, JSON.stringify(res.body));
   });
 });
+
+describe('partnership: up to 4 partner names', () => {
+  test('a partnership saves its partners (trimmed, blanks dropped); more than 4 is refused; then they lock', async () => {
+    const tooMany = await call('PATCH', '/settings', { settings: { partnerNames: ['A1', 'B2', 'C3', 'D4', 'E5'] } });
+    assert.equal(tooMany.status, 400, JSON.stringify(tooMany.body));
+    assert.ok(tooMany.body.details?.fieldErrors?.['settings.partnerNames']);
+
+    const ok = await call('PATCH', '/settings', { settings: { partnerNames: [' Ravi Kumar ', '', 'Sunita Rao'] } });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.deepEqual((await Restaurant.findById(restaurant._id).lean()).settings.partnerNames, ['Ravi Kumar', 'Sunita Rao']);
+
+    // Business details are locked once saved — the owner can't change them, re-sending is fine.
+    const resend = await call('PATCH', '/settings', { settings: { partnerNames: ['Ravi Kumar', 'Sunita Rao'] } });
+    assert.equal(resend.status, 200, JSON.stringify(resend.body));
+    const changed = await call('PATCH', '/settings', { settings: { partnerNames: ['Someone Else'] } });
+    assert.equal(changed.status, 400);
+    assert.equal(changed.body.code, 'FIELD_LOCKED');
+  });
+
+  test('saved partner names cannot be cleared by the owner; a non-text name is refused', async () => {
+    assert.equal((await call('PATCH', '/settings', { settings: { partnerNames: ['Ravi Kumar'] } })).status, 200);
+    const cleared = await call('PATCH', '/settings', { settings: { partnerNames: [] } });
+    assert.equal(cleared.status, 400);
+    assert.deepEqual((await Restaurant.findById(restaurant._id).lean()).settings.partnerNames, ['Ravi Kumar']);
+    await Restaurant.updateOne({ _id: restaurant._id }, { $unset: { 'settings.partnerNames': '' } });
+    const bad = await call('PATCH', '/settings', { settings: { partnerNames: [42] } });
+    assert.equal(bad.status, 400, JSON.stringify(bad.body));
+  });
+
+  test('the requirements describe the field: shown and required only for a partnership', async () => {
+    const res = await srv.get('/api/owner/settings-requirements', { authorization: `Bearer ${generateTokens(owner._id, 'restaurant_owner').accessToken}` });
+    const field = res.body.data.requirements.fields.find((f) => f.path === 'settings.partnerNames');
+    assert.equal(field.maxItems, 4);
+    assert.deepEqual(field.showWhen, { path: 'settings.legalEntityType', equals: 'Partnership' });
+    assert.equal(field.requiredWhen.equals, 'Partnership');
+  });
+
+  test('another entity type never keeps partner names', async () => {
+    await Restaurant.updateOne({ _id: restaurant._id }, { $set: { 'settings.legalEntityType': null } });
+    const res = await call('PATCH', '/settings', { settings: { legalEntityType: 'Sole proprietorship', partnerNames: ['X Y'] } });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.deepEqual((await Restaurant.findById(restaurant._id).lean()).settings.partnerNames, []);
+  });
+});

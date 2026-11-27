@@ -51,7 +51,7 @@ const ledgerMoney = async ({ from, to }) => {
     .lean();
   const orderIds = rows.filter((r) => r.orderId).map((r) => r.orderId);
   const billIds = rows.filter((r) => r.billId).map((r) => r.billId);
-  const [orders, bills, { serviceGstPercent }] = await Promise.all([
+  const [orders, bills, { serviceGstPercent, platformFeeGstPercent = 18 }] = await Promise.all([
     orderIds.length ? Order.find({ _id: { $in: orderIds } }).select('charges').lean() : [],
     billIds.length ? Bill.find({ _id: { $in: billIds } }).select('charges').lean() : [],
     getActiveSettings(),
@@ -75,7 +75,7 @@ const ledgerMoney = async ({ from, to }) => {
     t.gatewayGst += b.gateway?.tax ?? 0;
     // The GST inside the fees, from the bill they were charged on (split from the
     // GST-inclusive amount when a line has no charges behind it).
-    t.platformFeeGst += charges?.platformFee?.gst ?? splitInclusiveGst(platformFee, serviceGstPercent).gst;
+    t.platformFeeGst += charges?.platformFee?.gst ?? splitInclusiveGst(platformFee, platformFeeGstPercent).gst;
     t.deliveryGst += delivery ? (charges?.delivery?.gst ?? splitInclusiveGst(delivery, serviceGstPercent).gst) : 0;
     if (r.type !== 'counter_platform_fee') t.foodGst += charges?.food?.gst ?? 0;
   }

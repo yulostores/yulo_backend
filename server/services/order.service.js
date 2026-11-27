@@ -68,7 +68,11 @@ const packagingPaiseOf = (lines, menuItemById) =>
     return sum + toPaise(mi?.packagingCharge ?? 0) * (line.quantity ?? line.qty ?? 0);
   }, 0);
 
-const priceAppOrder = async ({ type, restaurant, subtotal, discountAmount = 0, tip = 0, dropCoordinates, packagingPaise = 0 }) => {
+// The part of the food total priced GST-inclusive (order lines snapshot MenuItem.priceIncludesGst).
+export const inclusivePaiseOf = (lines) =>
+  lines.reduce((sum, l) => sum + (l.priceIncludesGst ? toPaise(l.price) * (l.quantity ?? l.qty ?? 0) : 0), 0);
+
+const priceAppOrder = async ({ type, restaurant, subtotal, discountAmount = 0, tip = 0, dropCoordinates, packagingPaise = 0, foodInclusivePaise = 0 }) => {
   let distanceKm = null;
   if (type === 'delivery') {
     const resolved = resolveDeliveryDistance(restaurant, dropCoordinates);
@@ -86,6 +90,7 @@ const priceAppOrder = async ({ type, restaurant, subtotal, discountAmount = 0, t
     distanceKm,
     tipPaise: toPaise(tip),
     packagingPaise,
+    foodInclusivePaise,
     settings: await getActiveSettings(),
   });
   return { charges, ...toLegacyTotals(charges) };
@@ -164,6 +169,7 @@ const createOrderOnce = async ({
       quantity: i.quantity,
       note: i.note || '',
       portion,
+      priceIncludesGst: Boolean(mi.priceIncludesGst),
     };
   });
 
@@ -256,6 +262,7 @@ const createOrderOnce = async ({
       subtotal,
       dropCoordinates: deliveryAddress?.coordinates,
       packagingPaise: packagingPaiseOf(items, menuItemMap),
+      foodInclusivePaise: inclusivePaiseOf(snapshots),
     })),
     specialInstructions,
     ...paymentFieldsFor({ paymentMethod, type }),
@@ -389,6 +396,7 @@ const createOrderFromCartOnce = async ({
       menuItemId: menuItem._id,
       name: nameWithPortion(menuItem.name, portion),
       portion,
+      priceIncludesGst: Boolean(menuItem.priceIncludesGst),
       price: pricing.totalPriceMinor,
       quantity: item.qty,
       note: '',
@@ -457,6 +465,7 @@ const createOrderFromCartOnce = async ({
     tip,
     dropCoordinates,
     packagingPaise: packagingPaiseOf(snapshots, menuItemById),
+    foodInclusivePaise: inclusivePaiseOf(snapshots),
   });
 
   // The total the customer was shown (the checkout summary's charges.grandTotal). When the app

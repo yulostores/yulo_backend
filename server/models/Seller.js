@@ -77,8 +77,12 @@ const sellerSchema = new mongoose.Schema(
     reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     rejectionReason: { type: String, default: null },
 
-    // The partner agreement the owner accepted (CouponSettings.agreementVersion at the time).
+    // The partner agreement the owner accepted: the general one (CouponSettings.agreementVersion)
+    // or its category's own (CouponCategory.agreement.version) — `scope` says which; an acceptance
+    // from before category agreements existed has none and was of the general one.
     agreement: {
+      scope: { type: String, enum: ['general', 'category', null], default: null },
+      categoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'CouponCategory', default: null },
       version: { type: Number, default: null },
       acceptedAt: { type: Date, default: null },
       acceptedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'SellerUser', default: null },

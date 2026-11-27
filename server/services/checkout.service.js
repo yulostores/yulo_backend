@@ -88,6 +88,7 @@ const withTip = async (bill, tip, restaurantId) => {
     distanceKm: delivery && !delivery.pending ? delivery.distanceKm : null,
     tipPaise: toPaise(tip),
     packagingPaise: bill.charges.packaging?.base ?? 0,
+    foodInclusivePaise: bill.charges.food.inclusive ?? 0,
     settings: await getActiveSettings(),
   });
   return { ...bill, ...toLegacyTotals(charges), charges };

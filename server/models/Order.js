@@ -17,6 +17,8 @@ const orderItemSchema = new mongoose.Schema(
     // for single-size dishes. The size is also in `name` ("Paneer Tikka (Half)") so every
     // ticket and bill shows it without reading this field.
     portion: { type: String, enum: ['half', 'full', null], default: null },
+    // The dish's price already includes GST (MenuItem.priceIncludesGst at order time).
+    priceIncludesGst: { type: Boolean, default: false },
     // Snapshotted from Cart.items[].selectedOptions at checkout (Prompt 10) — without
     // this, an order's price reflects its customization but there'd be no record of
     // WHICH options were actually picked, and Prompt 13's reorder would have nothing to

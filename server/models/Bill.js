@@ -10,6 +10,8 @@ const batchItemSchema = new mongoose.Schema(
     quantity: { type: Number },
     price: { type: Number },
     lineTotal: { type: Number },
+    // Priced GST-inclusive (Order.items[].priceIncludesGst) — its GST is inside lineTotal.
+    priceIncludesGst: { type: Boolean, default: false },
     // The guest's own note on that line ("no onion"), snapshotted from Order.items[].note.
     // A guest checking their bill has to be able to see what they asked for.
     note: { type: String, default: '' },

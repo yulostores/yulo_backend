@@ -31,8 +31,11 @@ const financeSettingsSchema = new mongoose.Schema(
     // GST on food, charged on top of the (GST-exclusive) menu price — GST-registered
     // restaurants only (applied in B3).
     foodGstPercent: { type: Number, required: true },
-    // GST on Yulo's own services: platform fee, delivery charge, settlement charge, ads.
+    // GST on Yulo's own services: delivery charge, settlement charge, ads.
     serviceGstPercent: { type: Number, required: true },
+    // GST inside the platform fee — its own rate (18 %) while every other Yulo charge is 5 %.
+    // Defaults to 18 so a version saved before this field existed keeps charging what it did.
+    platformFeeGstPercent: { type: Number, default: 18 },
 
     // ── What the customer pays ────────────────────────────────────────────────
     // Flat platform fee per delivery order / dine-in bill, GST-INCLUSIVE.

@@ -6,6 +6,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { sendSuccess } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import {
+  MAX_PARTNERS,
   STORE_SETTINGS_FIELDS,
   buildStoreSettingsRequirements,
   effectiveField,
@@ -25,6 +26,10 @@ const sameSavedValue = (field, saved, sent) => {
     if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return String(saved) === String(sent);
     const utc = (d) => d.toISOString().slice(0, 10);
     return IST_DAY.format(a) === IST_DAY.format(b) || utc(a) === utc(b) || IST_DAY.format(a) === utc(b);
+  }
+  if (field.type === 'tags') {
+    const list = (v) => (Array.isArray(v) ? v : []).map((x) => String(x ?? '').trim().toUpperCase()).filter(Boolean);
+    return JSON.stringify(list(saved)) === JSON.stringify(list(sent));
   }
   const norm = (v) => String(v ?? '').trim().toUpperCase();
   return norm(saved) === norm(sent);
@@ -130,6 +135,10 @@ export const updateSettings = asyncHandler(async (req, res) => {
     if (value !== undefined && (typeof value !== 'object' || value === null || Array.isArray(value))) {
       throw new ApiError(400, 'VALIDATION_ERROR', `${field} must be an object`);
     }
+  }
+  // Partner names arrive as the form's rows: trimmed, and empty rows dropped, before any check.
+  if (Array.isArray(settings?.partnerNames)) {
+    settings.partnerNames = settings.partnerNames.map((n) => (typeof n === 'string' ? n.trim() : n)).filter((n) => n !== '' && n != null);
   }
 
   // Mandatory fields are checked against the restaurant as it *would* be after this patch,
@@ -283,6 +292,13 @@ export const updateSettings = asyncHandler(async (req, res) => {
   const settingsPatch = {};
   for (const key of ['legalEntityType', 'ownerName', 'panNumber', 'gstNumber', 'healthPermitId', 'registrationNo']) {
     if (settings?.[key] !== undefined) settingsPatch[key] = settings[key];
+  }
+  // Partner names: trimmed, blanks dropped — and only kept for a partnership.
+  if (settings?.partnerNames !== undefined || settings?.legalEntityType !== undefined) {
+    const entity = settings?.legalEntityType ?? existingSettings.legalEntityType;
+    const names = Array.isArray(settings?.partnerNames) ? settings.partnerNames : existingSettings.partnerNames ?? [];
+    settingsPatch.partnerNames =
+      entity === 'Partnership' ? names.map((n) => String(n ?? '').trim()).filter(Boolean).slice(0, MAX_PARTNERS) : [];
   }
   // The fixed dine-in service charge; a cleared field means none.
   if (settings?.serviceChargeAmount !== undefined) {

@@ -61,6 +61,9 @@
           "base": 54000,
           "gstPercent": 0,
           "gst": 0,
+          "gstAdded": 0,
+          "gstIncluded": 0,
+          "inclusive": 0,
           "total": 54000
         },
         "packaging": {

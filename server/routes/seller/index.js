@@ -39,9 +39,9 @@ sellerRouter.use('/onboarding', authorizeSellerRole('owner'), onboardingRoutes);
 const ownerOrManager = authorizeSellerRole('owner', 'manager');
 const ownerOnly = authorizeSellerRole('owner');
 
-// Plans and purchases (CB4): owner and manager read, only the owner buys.
-sellerRouter.get('/plans', requireSellerActive, ownerOrManager, listPlans);
-sellerRouter.get('/subscriptions', requireSellerActive, ownerOrManager, listSubscriptions);
+// Plans and purchases (CB4): the owner only — managers don't see plans or what was paid.
+sellerRouter.get('/plans', requireSellerActive, ownerOnly, listPlans);
+sellerRouter.get('/subscriptions', requireSellerActive, ownerOnly, listSubscriptions);
 sellerRouter.post('/subscriptions', requireSellerActive, ownerOnly, buyPlan);
 sellerRouter.post('/subscriptions/:id/verify', requireSellerActive, ownerOnly, verifyPlanPayment);
 sellerRouter.post('/subscriptions/:id/simulate-payment', requireSellerActive, ownerOnly, simulatePlanPayment);
@@ -58,8 +58,8 @@ sellerRouter.use('/reports', requireSellerActive, ownerOrManager, reportsRoutes)
 sellerRouter.use('/users', requireSellerActive, ownerOrManager, teamRoutes);
 sellerRouter.get('/profile', requireSellerActive, ownerOrManager, getProfile);
 sellerRouter.patch('/profile', requireSellerActive, ownerOnly, updateProfile);
-// The partner agreement can be read and accepted before approval too (during onboarding).
-sellerRouter.get('/agreement', ownerOrManager, getAgreement);
+// The partner agreement can be read and accepted before approval too (during onboarding). Owner only.
+sellerRouter.get('/agreement', ownerOnly, getAgreement);
 sellerRouter.post('/agreement/accept', ownerOnly, acceptAgreement);
 
 // Reminder SMS (CB10): credits and the reminder screen — owner and manager (both may buy credits).

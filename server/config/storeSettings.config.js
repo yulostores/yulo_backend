@@ -29,6 +29,9 @@ export const LEGAL_ENTITY_TYPES = [
   'AOP/BOI',
 ];
 
+// A partnership firm lists at most this many partners in its business details.
+export const MAX_PARTNERS = 4;
+
 // The `day` enum on models/Restaurant.js's operatingHours, in the order the week reads.
 export const DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 
@@ -209,6 +212,25 @@ export const STORE_SETTINGS_FIELDS = [
     required: true,
     options: LEGAL_ENTITY_TYPES,
     placeholder: 'Select type',
+  },
+  // A partnership names its partners — up to 4. Only shown (and required) while the legal entity
+  // type is Partnership (`showWhen` / `requiredWhen`); for any other type it is cleared on save.
+  {
+    path: 'settings.partnerNames',
+    wide: true,
+    label: 'Partner Names',
+    section: 'business',
+    type: 'tags',
+    required: false,
+    maxItems: MAX_PARTNERS,
+    itemMaxLength: 120,
+    help: `The name of each partner in the firm — up to ${MAX_PARTNERS}.`,
+    showWhen: { path: 'settings.legalEntityType', equals: 'Partnership' },
+    requiredWhen: {
+      path: 'settings.legalEntityType',
+      equals: 'Partnership',
+      rules: { requiredMessage: "Add at least one partner's name" },
+    },
   },
   {
     path: 'settings.ownerName',

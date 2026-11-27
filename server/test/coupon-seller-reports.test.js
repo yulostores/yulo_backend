@@ -400,7 +400,11 @@ test('every seller endpoint, for owner and manager: no customer phone or id, not
     }
     for (const path of SELLER_GETS) {
       const res = await get(path, headers);
-      assert.equal(res.status, 200, `${path}: ${JSON.stringify(res.body)}`);
+      // Plans, purchases and the agreement are the owner's alone.
+      const ownerOnly = ['/plans', '/subscriptions', '/agreement'].includes(path);
+      const expected = ownerOnly && headers === fx.manager.headers ? 403 : 200;
+      assert.equal(res.status, expected, `${path}: ${JSON.stringify(res.body)}`);
+      assertSellerSafe(res.body, { ...fx.safe, label: `GET ${path}` });
     }
   }
   const csv = await srv.get('/api/seller/reports/coupons.csv', fx.manager.headers);

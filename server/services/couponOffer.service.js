@@ -276,8 +276,43 @@ export const adminListCategories = async () => {
       activeSellers: inCategory.length,
       sellersWithLiveOffer: inCategory.filter((s) => withOffer.has(String(s._id))).length,
       stockRemaining: inCategory.reduce((n, s) => n + (stockBySeller.get(String(s._id)) ?? 0), 0),
+      // This category's own partner agreement; version 0 = its sellers sign the general one.
+      agreement: {
+        version: c.agreement?.version ?? 0,
+        text: c.agreement?.text ?? '',
+        updatedAt: c.agreement?.updatedAt ?? null,
+      },
     };
   });
+};
+
+export const categoryAgreementSchema = z.object({ text: z.string().max(50_000, 'The agreement is too long') }).strict();
+
+/**
+ * PUT /api/admin/coupon-categories/:id/agreement { text } — publishes this category's own partner
+ * agreement as a new version (every seller in the category is asked to accept it). An empty text
+ * removes it: the category's sellers go back to the general agreement.
+ */
+export const setCategoryAgreement = async (adminId, id, { text }) => {
+  const before = await CouponCategory.findById(id).select('agreement name').lean();
+  if (!before) throw new ApiError(404, 'NOT_FOUND', 'Category not found');
+  const clean = text.trim();
+  const current = before.agreement ?? {};
+  if (clean === (current.text ?? '').trim() && (clean !== '' || !(current.version > 0))) {
+    throw new ApiError(400, 'NO_CHANGES', 'This agreement is already in force');
+  }
+  const agreement = clean
+    ? { version: (current.version ?? 0) + 1, text: clean, updatedAt: new Date(), updatedBy: adminId }
+    : { version: 0, text: '', updatedAt: new Date(), updatedBy: adminId };
+  const after = await CouponCategory.findByIdAndUpdate(id, { $set: { agreement } }, { new: true }).lean();
+  await logActivity({
+    adminId,
+    action: clean ? 'COUPON_CATEGORY_AGREEMENT_PUBLISHED' : 'COUPON_CATEGORY_AGREEMENT_REMOVED',
+    targetType: 'coupon_category',
+    targetId: id,
+    metadata: { name: before.name, version: agreement.version, previousVersion: current.version ?? 0 },
+  });
+  return { _id: after._id, name: after.name, agreement: { version: after.agreement.version, text: after.agreement.text, updatedAt: after.agreement.updatedAt } };
 };
 
 export const createCategory = async (adminId, body) => {

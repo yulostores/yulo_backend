@@ -36,7 +36,7 @@ const price = (overrides) =>
 
 test('PDF Case 1 — delivery: ₹300 food + ₹15 GST + ₹30 delivery + ₹12 platform = ₹357', () => {
   const c = price();
-  assert.deepEqual(c.food, { subtotal: 30000, discount: 0, base: 30000, gstPercent: 5, gst: 1500, total: 31500 });
+  assert.deepEqual(c.food, { subtotal: 30000, discount: 0, base: 30000, gstPercent: 5, gst: 1500, gstAdded: 1500, gstIncluded: 0, inclusive: 0, total: 31500 });
   assert.equal(c.delivery.base, 2542);
   assert.equal(c.delivery.gst, 458);
   assert.equal(c.delivery.total, 3000);
@@ -216,4 +216,53 @@ test('resolveDeliveryDistance: unlocated address / restaurant', () => {
   assert.equal(resolveDeliveryDistance(restaurant, null).issue, 'ADDRESS_NOT_LOCATED');
   assert.equal(resolveDeliveryDistance(restaurant, []).issue, 'ADDRESS_NOT_LOCATED');
   assert.equal(resolveDeliveryDistance({ delivery: {} }, [77.6, 12.97]).issue, 'RESTAURANT_NOT_LOCATED');
+});
+
+// Nov 2026: only the platform fee carries 18 % GST; the delivery charge and settlement charge 5 %.
+test('GST split: platform fee GST at its own 18 %, delivery GST at the 5 % service rate', () => {
+  const c = price({ settings: { ...SETTINGS, serviceGstPercent: 5, platformFeeGstPercent: 18 } });
+  // ₹12 platform fee, GST-inclusive at 18 % → ₹10.17 + ₹1.83.
+  assert.equal(c.platformFee.total, 1200);
+  assert.equal(c.platformFee.gst, 183);
+  // ₹25.42 delivery base + 5 % = ₹1.27 GST (not 18 %).
+  assert.equal(c.delivery.base, 2542);
+  assert.equal(c.delivery.gst, 127);
+  // A version saved before the split existed (no platformFeeGstPercent) still charges 18 %.
+  const legacy = price({ settings: { ...SETTINGS, serviceGstPercent: 5 } });
+  assert.equal(legacy.platformFee.gst, 183);
+});
+
+// Dishes priced GST-inclusive (MenuItem.priceIncludesGst): their GST is taken out, not added.
+test('GST-inclusive dish prices: the customer pays the menu price; GST is split out of it', () => {
+  // ₹105 inclusive dish (₹100 + ₹5 GST) and a ₹200 exclusive one (+ ₹10 GST), dine-in.
+  const c = price({ orderType: 'dine_in', foodSubtotalPaise: 30500, foodInclusivePaise: 10500, distanceKm: null });
+  assert.equal(c.food.gstAdded, 1000);
+  assert.equal(c.food.gstIncluded, 500);
+  assert.equal(c.food.gst, 1500);
+  assert.equal(c.food.base, 30000, 'taxable value of both');
+  assert.equal(c.food.total, 31500, '₹105 + ₹200 + ₹10');
+  const itemLine = c.lines.find((l) => l.key === 'item_total');
+  assert.equal(itemLine.amountPaise, 30500);
+  assert.equal(itemLine.sublabel, 'incl. ₹5.00 GST');
+  assert.equal(c.lines.find((l) => l.key === 'food_gst').amountPaise, 1000, 'only the added GST is a line');
+  // The bill lines add up to the total.
+  const sum = c.lines.filter((l) => l.key !== 'grand_total').reduce((n, l) => n + (l.amountPaise ?? 0), 0);
+  assert.equal(sum, c.grandTotal);
+  // Legacy totals keep subtotal + fees + tax − discount + round-off = total.
+  const legacy = toLegacyTotals(c);
+  assert.equal(legacy.tax, 10);
+
+  // All inclusive: no GST line at all, the menu price is the price.
+  const all = price({ orderType: 'dine_in', foodSubtotalPaise: 10500, foodInclusivePaise: 10500, distanceKm: null });
+  assert.equal(all.food.total, 10500);
+  assert.equal(all.lines.find((l) => l.key === 'food_gst'), undefined);
+
+  // A discount is shared in proportion: ₹30.50 off ₹305 (10 %).
+  const d = price({ orderType: 'dine_in', foodSubtotalPaise: 30500, foodInclusivePaise: 10500, discountPaise: 3050, distanceKm: null });
+  assert.equal(d.food.total, 9450 + 18000 + 900, 'inclusive ₹94.50 + exclusive ₹180 + ₹9 GST');
+
+  // A restaurant not registered for GST: no GST either way.
+  const noGst = price({ orderType: 'dine_in', foodSubtotalPaise: 30500, foodInclusivePaise: 10500, distanceKm: null, restaurant: { gstRegistered: false } });
+  assert.equal(noGst.food.gst, 0);
+  assert.equal(noGst.food.total, 30500);
 });

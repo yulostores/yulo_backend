@@ -93,9 +93,12 @@ export const computeCustomerCharges = ({
   serviceChargePaise = 0,
   platformFeeCount = 1,
   packagingPaise = 0,
+  // The part of foodSubtotalPaise whose menu prices already INCLUDE GST (MenuItem.priceIncludesGst):
+  // its GST is taken out of the price rather than added on top.
+  foodInclusivePaise = 0,
   settings,
 }) => {
-  for (const [name, value] of Object.entries({ foodSubtotalPaise, discountPaise, tipPaise, serviceChargePaise, packagingPaise })) {
+  for (const [name, value] of Object.entries({ foodSubtotalPaise, discountPaise, tipPaise, serviceChargePaise, packagingPaise, foodInclusivePaise })) {
     if (!Number.isInteger(value) || value < 0) throw new TypeError(`${name} must be a non-negative integer (paise)`);
   }
   if (tipPaise > MAX_TIP_PAISE) {
@@ -104,16 +107,31 @@ export const computeCustomerCharges = ({
 
   // ── Food ────────────────────────────────────────────────────────────────────
   const discount = Math.min(discountPaise, foodSubtotalPaise);
-  const foodBase = foodSubtotalPaise - discount;
   const foodGstPercent = restaurant?.gstRegistered ? settings.foodGstPercent : 0;
-  const foodGst = percentOf(foodBase, foodGstPercent);
+  // Dishes priced GST-inclusive vs. GST-exclusive. The discount is shared between them in
+  // proportion to their value; the exclusive part gets GST added, the inclusive part has its GST
+  // taken out (its customer price stays exactly what the menu shows).
+  const inclusive = Math.min(foodInclusivePaise, foodSubtotalPaise);
+  const exclusive = foodSubtotalPaise - inclusive;
+  const discountOnInclusive = foodSubtotalPaise > 0 ? Math.round((discount * inclusive) / foodSubtotalPaise) : 0;
+  const exclusiveBase = exclusive - (discount - discountOnInclusive);
+  const inclusivePaid = inclusive - discountOnInclusive;
+  const gstAdded = percentOf(exclusiveBase, foodGstPercent);
+  const inclusiveSplit = foodGstPercent > 0 ? splitInclusiveGst(inclusivePaid, foodGstPercent) : { base: inclusivePaid, gst: 0 };
+  const foodBase = exclusiveBase + inclusiveSplit.base;
+  const foodGst = gstAdded + inclusiveSplit.gst;
   const food = {
     subtotal: foodSubtotalPaise,
     discount,
+    // The taxable value of the food (both kinds), and all its GST.
     base: foodBase,
     gstPercent: foodGstPercent,
     gst: foodGst,
-    total: foodBase + foodGst,
+    // GST added on top of GST-exclusive prices, and GST already inside GST-inclusive ones.
+    gstAdded,
+    gstIncluded: inclusiveSplit.gst,
+    inclusive,
+    total: exclusiveBase + gstAdded + inclusivePaid,
   };
 
   // ── Packaging (delivery/takeaway) ──────────────────────────────────────────
@@ -154,7 +172,7 @@ export const computeCustomerCharges = ({
   }
 
   // ── Platform fee (GST-inclusive) ────────────────────────────────────────────
-  const perFee = splitInclusiveGst(settings.customerPlatformFee, settings.serviceGstPercent);
+  const perFee = splitInclusiveGst(settings.customerPlatformFee, settings.platformFeeGstPercent ?? 18);
   const count = Math.max(0, Math.trunc(platformFeeCount));
   const platformFee = {
     count,
@@ -169,16 +187,24 @@ export const computeCustomerCharges = ({
   const { rounded: grandTotal, roundOff } = roundToRupee(subtotalBeforeRoundOff);
 
   // ── Display lines (in the order a bill reads) ───────────────────────────────
-  const lines = [{ key: 'item_total', label: 'Item total', amountPaise: food.subtotal, sublabel: null }];
+  const lines = [
+    {
+      key: 'item_total',
+      label: 'Item total',
+      amountPaise: food.subtotal,
+      // Dishes priced GST-inclusive: their GST is inside the item total, shown for the record.
+      sublabel: food.gstIncluded > 0 ? `incl. ${rupeeText(food.gstIncluded)} GST` : null,
+    },
+  ];
   if (discount > 0) {
     lines.push({ key: 'discount', label: 'Discount', amountPaise: -discount, sublabel: null });
   }
-  if (foodGst > 0) {
+  if (gstAdded > 0) {
     lines.push({
       key: 'food_gst',
       label: 'GST on food',
-      amountPaise: foodGst,
-      sublabel: `${foodGstPercent}% of ${rupeeText(foodBase)}`,
+      amountPaise: gstAdded,
+      sublabel: `${foodGstPercent}% of ${rupeeText(exclusiveBase)}`,
     });
   }
   if (packaging.total > 0) {
@@ -250,7 +276,9 @@ export const toLegacyTotals = (charges) => ({
   packagingCharge: toRupees(charges.packaging?.total ?? 0),
   deliveryFee: toRupees(charges.delivery?.customerPays ?? 0),
   platformFee: toRupees(charges.platformFee.total),
-  tax: toRupees(charges.food.gst),
+  // GST added on top of the prices — so subtotal + … + tax − discount + roundOff = grandTotal still
+  // holds when some dishes are priced GST-inclusive (that GST is inside `subtotal` already).
+  tax: toRupees(charges.food.gstAdded ?? charges.food.gst),
   tip: toRupees(charges.tip),
   discountAmount: toRupees(charges.food.discount),
   grandTotal: toRupees(charges.grandTotal),

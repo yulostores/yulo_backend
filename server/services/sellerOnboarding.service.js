@@ -268,9 +268,10 @@ export const saveOwner = async (sellerId, body) => {
     seller.set('owner.panLast4', data.pan.slice(-4));
   }
   if (data.aadhaar) {
-    // Checked, then only its last 4 kept. aadhaarEncrypted stays empty by design.
+    // Kept encrypted, like PAN (Nov 2026: the super admin needs the full number). Only the last 4
+    // are ever shown; the super admin's audited "Reveal" decrypts it.
+    seller.set('owner.aadhaarEncrypted', encryptField(data.aadhaar));
     seller.set('owner.aadhaarLast4', data.aadhaar.slice(-4));
-    seller.set('owner.aadhaarEncrypted', null);
   }
   await seller.save();
   // The owner's login shows the same name.

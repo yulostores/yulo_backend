@@ -3,6 +3,7 @@ import {
   listCategories,
   createCategory,
   updateCategory,
+  setCategoryAgreement,
   listOffers,
   approveOffer,
   rejectOffer,
@@ -15,6 +16,7 @@ export const categoryRouter = Router();
 categoryRouter.get('/', listCategories);
 categoryRouter.post('/', createCategory);
 categoryRouter.patch('/:id', updateCategory);
+categoryRouter.put('/:id/agreement', setCategoryAgreement);
 
 export const offerRouter = Router();
 offerRouter.get('/', listOffers);

@@ -19,6 +19,12 @@ const menuItemSchema = new mongoose.Schema(
     // ₹ per unit charged for packing this dish on delivery and takeaway orders (never dine-in).
     // Restaurant income; food GST applies to it like the food (services/charges.service.js).
     packagingCharge: { type: Number, default: 0, min: 0 },
+    // GST details for a GST-registered restaurant. hsnCode: the dish's HSN / SAC code for tax
+    // invoices (restaurant service is usually SAC 996331). priceIncludesGst: the prices above
+    // already include GST ("with tax") — the bill takes the GST out of them instead of adding
+    // it on top (services/charges.service.js foodInclusivePaise). Default: GST added on top.
+    hsnCode: { type: String, trim: true, default: null, match: [/^\d{4,8}$/, 'HSN / SAC code must be 4 to 8 digits'] },
+    priceIncludesGst: { type: Boolean, default: false },
     // Off = a dine-in-only dish: hidden from the delivery app and refused in its carts and
     // orders, still on the table-QR menu and the waiter app (utils/onlineMenu.js).
     availableOnline: { type: Boolean, default: true },

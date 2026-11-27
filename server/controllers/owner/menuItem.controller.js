@@ -97,6 +97,22 @@ const parseOnline = (raw) => {
   throw new ApiError(400, 'VALIDATION_ERROR', 'availableOnline must be true or false');
 };
 
+// HSN / SAC code: optional, 4–8 digits (a GST-registered restaurant's tax invoices).
+const parseHsn = (raw) => {
+  if (raw === undefined) return undefined;
+  const v = String(raw ?? '').replace(/\s/g, '');
+  if (v === '' || v === 'null') return null;
+  if (!/^\d{4,8}$/.test(v)) throw new ApiError(400, 'VALIDATION_ERROR', 'HSN / SAC code must be 4 to 8 digits');
+  return v;
+};
+// "With tax" (the price includes GST) or not; as "true"/"false" over multipart.
+const parseIncludesGst = (raw) => {
+  if (raw === undefined) return undefined;
+  if (raw === true || raw === 'true') return true;
+  if (raw === false || raw === 'false' || raw === '' || raw == null) return false;
+  throw new ApiError(400, 'VALIDATION_ERROR', 'priceIncludesGst must be true or false');
+};
+
 // Half-plate price: optional; when given it must be a real amount below the full plate.
 const parseHalfPlate = (raw) =>
   raw === '' || raw == null || raw === 'null' ? null : parsePrice(raw, 'Half plate price');
@@ -127,13 +143,13 @@ const assertOwnCategory = async (restaurantId, categoryId) => {
 const EDITABLE_FIELDS = [
   'name', 'description', 'foodType', 'sellingPrice', 'discountedPrice', 'categoryId',
   'subCategoryId', 'prepTime', 'ingredients', 'badges', 'vegVariantId', 'halfPlatePrice',
-  'packagingCharge', 'availableOnline',
+  'packagingCharge', 'availableOnline', 'hsnCode', 'priceIncludesGst',
 ];
 
 export const create = asyncHandler(async (req, res) => {
   const { name, description, foodType, sellingPrice, discountedPrice, categoryId,
     subCategoryId, prepTime, ingredients, badges, vegVariantId, halfPlatePrice,
-    packagingCharge, availableOnline } = req.body;
+    packagingCharge, availableOnline, hsnCode, priceIncludesGst } = req.body;
 
   const price = parsePrice(sellingPrice, 'Selling price');
   const discount = parseDiscount(discountedPrice);
@@ -156,6 +172,8 @@ export const create = asyncHandler(async (req, res) => {
     halfPlatePrice: half,
     packagingCharge: parsePackaging(packagingCharge),
     availableOnline: parseOnline(availableOnline) ?? true,
+    hsnCode: parseHsn(hsnCode) ?? null,
+    priceIncludesGst: parseIncludesGst(priceIncludesGst) ?? false,
     prepTime: parsePrepTime(prepTime),
     ingredients: parseIngredients(ingredients),
     badges: parseArrayField(badges),
@@ -218,6 +236,8 @@ export const update = asyncHandler(async (req, res) => {
   if (updates.halfPlatePrice !== undefined) updates.halfPlatePrice = parseHalfPlate(updates.halfPlatePrice);
   if (updates.packagingCharge !== undefined) updates.packagingCharge = parsePackaging(updates.packagingCharge);
   if (updates.availableOnline !== undefined) updates.availableOnline = parseOnline(updates.availableOnline);
+  if (updates.hsnCode !== undefined) updates.hsnCode = parseHsn(updates.hsnCode);
+  if (updates.priceIncludesGst !== undefined) updates.priceIncludesGst = parseIncludesGst(updates.priceIncludesGst);
   assertHalfBelowFull(
     (updates.discountedPrice !== undefined ? updates.discountedPrice : existing.discountedPrice) ??
       updates.sellingPrice ?? existing.sellingPrice,

@@ -18,7 +18,10 @@ import logger from '../utils/logger.js';
 // had tuned one keeps it. Read once, at seed time; after that the database is authoritative.
 const seedDefaults = () => ({
   foodGstPercent: env.CART_TAX_PERCENT ?? 5,
+  // Live databases are moved to 5 % by scripts/applyGstRates.js (Nov 2026: only the platform fee
+  // carries 18 %); a fresh one starts from the originally agreed rates its worked examples use.
   serviceGstPercent: 18,
+  platformFeeGstPercent: 18,
   customerPlatformFee: env.CART_PLATFORM_FEE !== undefined ? toPaise(env.CART_PLATFORM_FEE) : 1200,
   dineInPlatformFeeUnit: 'bill',
   deliveryPerKmRate: 800,
@@ -50,6 +53,7 @@ const seedDefaults = () => ({
 export const FINANCE_SETTINGS_UNITS = {
   foodGstPercent: 'percent',
   serviceGstPercent: 'percent',
+  platformFeeGstPercent: 'percent',
   customerPlatformFee: 'paise (GST-inclusive)',
   dineInPlatformFeeUnit: 'enum',
   deliveryPerKmRate: 'paise per km (GST-exclusive)',
@@ -104,6 +108,8 @@ const bearersSchema = z.object({
 const fieldShape = {
   foodGstPercent: percent(28),
   serviceGstPercent: percent(28),
+  // .default: versions saved before the platform fee had its own rate charged it 18 %.
+  platformFeeGstPercent: percent(28).default(18),
   customerPlatformFee: paise(100_000), // ≤ ₹1,000
   dineInPlatformFeeUnit: z.enum(['bill', 'order']),
   deliveryPerKmRate: paise(10_000), // ≤ ₹100 per km
@@ -143,6 +149,8 @@ export const financeSettingsPatchSchema = z
     // No .default here: in a patch an absent field means "unchanged", and a default would
     // silently switch the payout file format back on every unrelated edit.
     payoutBankFileFormat: z.enum(BANK_FILE_FORMAT_IDS),
+    // Same for the platform fee's GST: an unrelated edit must not reset it to 18 %.
+    platformFeeGstPercent: percent(28),
   })
   .partial()
   .strict();
@@ -150,7 +158,10 @@ export const financeSettingsPatchSchema = z
 const SETTING_KEYS = Object.keys(fieldShape);
 const NESTED_KEYS = new Set(['settlementCycle', 'refundFeeBorneBy']);
 
-const pickSettings = (doc) => Object.fromEntries(SETTING_KEYS.map((k) => [k, doc[k]]));
+// A version saved before the platform fee had its own GST rate charged it 18 % — read it so, or
+// the history would show the change as "0 % → 18 %".
+const pickSettings = (doc) =>
+  Object.fromEntries(SETTING_KEYS.map((k) => [k, k === 'platformFeeGstPercent' ? doc[k] ?? 18 : doc[k]]));
 
 // Plain objects/arrays only — an ObjectId or Date is left alone (an ObjectId holds a Buffer,
 // which cannot be frozen).

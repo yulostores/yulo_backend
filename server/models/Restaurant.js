@@ -105,6 +105,8 @@ const restaurantSchema = new mongoose.Schema(
     settings: {
       legalEntityType:      { type: String },
       ownerName:            { type: String },
+      // A partnership's partners (config/storeSettings.config.js — up to 4, only for Partnership).
+      partnerNames:         { type: [String], default: undefined },
       alternatePhone:       { type: String },
       panNumber:            { type: String },
       gstNumber:            { type: String },

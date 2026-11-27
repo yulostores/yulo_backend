@@ -188,13 +188,14 @@ const publish = (version, text) =>
 test('agreement: nothing to accept until published; accept records version, time, user and IP; a new version needs a new acceptance', async () => {
   const none = await call('GET', '/agreement');
   assert.equal(none.status, 200);
-  assert.deepEqual(none.body.data.agreement, { published: false, version: 0, text: '', acceptance: null, upToDate: false });
+  assert.deepEqual(none.body.data.agreement, { published: false, version: 0, scope: 'general', categoryName: null, text: '', acceptance: null, upToDate: false });
   const early = await call('POST', '/agreement/accept', { version: 1 });
   assert.equal(early.status, 409);
   assert.equal(early.body.code, 'NO_AGREEMENT');
 
   await publish(1, 'Partner terms v1');
-  const v1 = (await call('GET', '/agreement', undefined, manager.headers)).body.data.agreement;
+  assert.equal((await call('GET', '/agreement', undefined, manager.headers)).status, 403, 'managers do not see the agreement');
+  const v1 = (await call('GET', '/agreement')).body.data.agreement;
   assert.equal(v1.text, 'Partner terms v1');
   assert.equal(v1.upToDate, false);
   assert.equal((await call('POST', '/agreement/accept', { version: 1 }, manager.headers)).status, 403, 'owner only');

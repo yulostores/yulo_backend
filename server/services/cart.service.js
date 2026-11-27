@@ -193,9 +193,15 @@ export const computeBill = async (cart, restaurant, { dropCoordinates } = {}) =>
 
   // Each dish's packaging charge × quantity (delivery/takeaway packing).
   const packagingRows = await MenuItem.find({ _id: { $in: cart.items.map((i) => i.menuItemId) } })
-    .select('packagingCharge')
+    .select('packagingCharge priceIncludesGst')
     .lean();
   const packagingById = new Map(packagingRows.map((m) => [String(m._id), m.packagingCharge ?? 0]));
+  // Dishes priced GST-inclusive: their GST is taken out of the price, not added on top.
+  const inclusiveIds = new Set(packagingRows.filter((m) => m.priceIncludesGst).map((m) => String(m._id)));
+  const foodInclusivePaise = cart.items.reduce(
+    (sum, item) => sum + (inclusiveIds.has(String(item.menuItemId)) ? toPaise(item.unitPrice) * item.qty : 0),
+    0
+  );
   const packagingPaise = cart.items.reduce(
     (sum, item) => sum + toPaise(packagingById.get(String(item.menuItemId)) ?? 0) * item.qty,
     0
@@ -211,6 +217,7 @@ export const computeBill = async (cart, restaurant, { dropCoordinates } = {}) =>
     // An address the restaurant won't deliver to has no meaningful fee — shown as pending.
     distanceKm: issue ? null : distanceKm,
     packagingPaise,
+    foodInclusivePaise,
     settings: await getActiveSettings(),
   });
 

@@ -191,7 +191,7 @@ test('business details: every invalid field is refused', async () => {
 
 // ── Owner, PAN and Aadhaar ────────────────────────────────────────────────────
 
-test('owner details: PAN stored only encrypted, Aadhaar only as its last 4, neither ever returned', async () => {
+test('owner details: PAN and Aadhaar stored only encrypted, neither ever returned', async () => {
   const { headers, seller, owner } = await signUp();
   const res = await call('PUT', '/onboarding/owner', ownerBody({ pan: 'abcde 1234 f', aadhaar: '2341 2341 2346' }), headers);
   assert.equal(res.status, 200, JSON.stringify(res.body));
@@ -202,7 +202,7 @@ test('owner details: PAN stored only encrypted, Aadhaar only as its last 4, neit
 
   const raw = await mongoose.connection.collection('sellers').findOne({ _id: seller._id });
   assert.match(raw.owner.panEncrypted, /^v1:/);
-  assert.equal(raw.owner.aadhaarEncrypted, null, 'the full Aadhaar number is never stored');
+  assert.match(raw.owner.aadhaarEncrypted, /^v1:/, 'the full Aadhaar is kept, encrypted');
   assert.equal(raw.owner.aadhaarLast4, '2346');
   assertNoClearIdentity(raw, 'database document');
 

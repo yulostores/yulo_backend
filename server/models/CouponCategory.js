@@ -12,6 +12,15 @@ const couponCategorySchema = new mongoose.Schema(
     enabled: { type: Boolean, default: false },
     // Issue order when a customer earns coupons from several categories at once.
     sortOrder: { type: Number, default: 0 },
+    // This category's own partner agreement. version 0 = none: sellers in the category then sign
+    // the general one (CouponSettings.agreementText). Publishing again bumps the version, which
+    // asks every seller in the category to accept the new text (services/sellerAccount.service.js).
+    agreement: {
+      version: { type: Number, default: 0 },
+      text: { type: String, default: '' },
+      updatedAt: { type: Date, default: null },
+      updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    },
   },
   { timestamps: true }
 );

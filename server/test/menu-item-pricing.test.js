@@ -97,3 +97,25 @@ test('the category has to be one of the restaurant’s own', async () => {
   const { body } = await create({});
   assert.equal((await update(body.data.item._id, { categoryId: String(otherCategory._id) })).status, 400);
 });
+
+test('GST details: HSN / SAC code (4–8 digits) and a "with tax" price flag', async () => {
+  const bad = await create({ hsnCode: '12' });
+  assert.equal(bad.status, 400, JSON.stringify(bad.body));
+
+  const plain = await create({});
+  assert.equal(plain.status, 201, JSON.stringify(plain.body));
+  assert.equal(plain.body.data.item.priceIncludesGst, false, 'GST added on top unless told otherwise');
+  assert.equal(plain.body.data.item.hsnCode, null);
+
+  const withTax = await create({ hsnCode: '9963 31', priceIncludesGst: 'true' });
+  assert.equal(withTax.status, 201, JSON.stringify(withTax.body));
+  assert.equal(withTax.body.data.item.hsnCode, '996331');
+  assert.equal(withTax.body.data.item.priceIncludesGst, true);
+
+  const off = await update(withTax.body.data.item._id, { priceIncludesGst: 'false', hsnCode: '' });
+  assert.equal(off.status, 200, JSON.stringify(off.body));
+  const saved = await MenuItem.findById(withTax.body.data.item._id).lean();
+  assert.equal(saved.priceIncludesGst, false);
+  assert.equal(saved.hsnCode, null);
+  assert.equal((await update(withTax.body.data.item._id, { priceIncludesGst: 'maybe' })).status, 400);
+});

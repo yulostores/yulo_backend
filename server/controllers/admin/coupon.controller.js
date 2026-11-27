@@ -40,6 +40,15 @@ export const updateCategory = asyncHandler(async (req, res) => {
   sendSuccess(res, 200, message, { category });
 });
 
+/** PUT /api/admin/coupon-categories/:id/agreement  { text } — empty text = back to the general agreement. */
+export const setCategoryAgreement = asyncHandler(async (req, res) => {
+  assertId(req.params.id, 'category');
+  const body = parseOr400(coupons.categoryAgreementSchema, req.body, 'Invalid agreement');
+  const category = await coupons.setCategoryAgreement(req.user._id, req.params.id, body);
+  const message = category.agreement.version > 0 ? `Agreement version ${category.agreement.version} published` : 'Sellers in this category now sign the general agreement';
+  sendSuccess(res, 200, message, { category });
+});
+
 // ── Offer review ──────────────────────────────────────────────────────────────
 
 const offerQuery = z.object({

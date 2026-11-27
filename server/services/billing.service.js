@@ -131,6 +131,7 @@ const batchOf = (order, staffById) => {
       quantity: i.quantity,
       price: round2(i.price),
       lineTotal: round2(i.price * i.quantity),
+      priceIncludesGst: Boolean(i.priceIncludesGst),
       note: i.note ?? '',
     })),
     batchTotal: round2(order.subtotal),
@@ -156,7 +157,13 @@ const batchOf = (order, staffById) => {
  * `charges` breakdown. `discountTotal` is passed in so this stays the one place the
  * arithmetic lives, for a fresh assemble and for a re-total after a discount.
  */
-const dineInTotals = async ({ subtotal, restaurant, discountTotal = 0, billedOrderCount, serviceChargeRemoved = false }) => {
+// The part of a bill's food priced GST-inclusive — the billed rounds' lines that say so.
+const inclusivePaiseOfBatches = (batches) =>
+  (batches ?? [])
+    .filter((b) => isBilledOrder(b))
+    .reduce((sum, b) => sum + (b.items ?? []).reduce((n, i) => n + (i.priceIncludesGst ? toPaise(round2(i.lineTotal ?? i.price * i.quantity)) : 0), 0), 0);
+
+const dineInTotals = async ({ subtotal, restaurant, discountTotal = 0, billedOrderCount, serviceChargeRemoved = false, foodInclusivePaise = 0 }) => {
   const settings = await getActiveSettings();
   const subtotalPaise = toPaise(round2(subtotal));
   // A fixed ₹ per table bill (Store Settings), only on a bill with food on it, and not when the
@@ -174,6 +181,7 @@ const dineInTotals = async ({ subtotal, restaurant, discountTotal = 0, billedOrd
     restaurant,
     serviceChargePaise,
     platformFeeCount,
+    foodInclusivePaise,
     settings,
   });
 
@@ -426,6 +434,7 @@ export const assembleBill = async (tableSessionId) => {
       discountTotal,
       billedOrderCount: orders.filter(isBilledOrder).length,
       serviceChargeRemoved: Boolean(existing?.serviceChargeRemoved),
+      foodInclusivePaise: inclusivePaiseOfBatches(batches),
     })),
   };
 
@@ -574,6 +583,7 @@ export const applyDiscount = async ({ billId, discountCode, restaurantId }) => {
     discountTotal: bill.discountsApplied.reduce((s, d) => s + (d.amount ?? 0), 0),
     billedOrderCount: bill.batches.filter((b) => isBilledOrder(b)).length,
     serviceChargeRemoved: Boolean(bill.serviceChargeRemoved),
+    foodInclusivePaise: inclusivePaiseOfBatches(bill.batches),
   });
   const update = { ...totals, discountsApplied: bill.discountsApplied };
   // Same as a re-assemble: a changed total retires the amount Razorpay was asked for.

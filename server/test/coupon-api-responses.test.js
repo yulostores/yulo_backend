@@ -275,7 +275,11 @@ test('admin sellers: list, detail, users, PAN reveal, document, approve / reject
 
   const revealed = ok(await call('POST', '/api/admin/sellers/:id/reveal', { params: { id: ctx.sellerId }, headers: H, body: { field: 'pan' } }), 'Identity number', ['field', 'value']);
   assert.deepEqual(revealed, { field: 'pan', value: fx.VALID.pan });
-  err(await srv.request('POST', `/api/admin/sellers/${ctx.sellerId}/reveal`, { headers: H, body: { field: 'aadhaar' } }), 'NOT_STORED');
+  // The full Aadhaar is kept encrypted (since Nov 2026) and revealed the same audited way.
+  assert.equal(detail.owner.aadhaarRevealable, true);
+  assert.ok(!JSON.stringify(detail.owner).includes(fx.VALID.aadhaar), 'Aadhaar masked in the detail');
+  const aadhaar = ok(await call('POST', '/api/admin/sellers/:id/reveal', { params: { id: ctx.sellerId }, headers: H, body: { field: 'aadhaar' } }), 'Identity number', ['field', 'value']);
+  assert.deepEqual(aadhaar, { field: 'aadhaar', value: fx.VALID.aadhaar });
 
   const file = await call('GET', '/api/admin/sellers/:id/documents/:docId/file', { params: { id: ctx.sellerId, docId: ctx.panDocId }, headers: H, raw: true });
   assert.equal(file.body, 'PNGDATA');
@@ -390,8 +394,16 @@ test('admin plans and categories: list, edit, create, enable', async () => {
   assert.equal(enabled.enabled, true);
   const list = ok(await call('GET', '/api/admin/coupon-categories', { headers: H }), 'Coupon categories', ['categories']).categories;
   const salon = list.find((c) => c.key === 'salon');
-  keys(salon, ['_id', 'key', 'name', 'icon', 'enabled', 'sortOrder', 'activeSellers', 'sellersWithLiveOffer', 'stockRemaining'], 'admin category');
+  keys(salon, ['_id', 'key', 'name', 'icon', 'enabled', 'sortOrder', 'activeSellers', 'sellersWithLiveOffer', 'stockRemaining', 'agreement'], 'admin category');
   assert.deepEqual([salon.activeSellers, salon.sellersWithLiveOffer, salon.stockRemaining], [1, 0, 250]);
+  assert.deepEqual(salon.agreement, { version: 0, text: '', updatedAt: null });
+  const withAgreement = ok(
+    await call('PUT', '/api/admin/coupon-categories/:id/agreement', { params: { id: salon._id }, headers: H, body: { text: 'Salon terms' } }),
+    'Agreement version 1 published',
+    ['category'],
+  ).category;
+  assert.equal(withAgreement.agreement.version, 1);
+  ok(await call('PUT', '/api/admin/coupon-categories/:id/agreement', { params: { id: salon._id }, headers: H, body: { text: '' } }), 'Sellers in this category now sign the general agreement', ['category']);
 });
 
 // ── 6. Offers ─────────────────────────────────────────────────────────────────
@@ -569,8 +581,10 @@ test('profile and agreement: view, edit contact details; publish, read and accep
   assert.deepEqual(settings.changes.map((c) => c.field).sort(), ['agreementText', 'agreementVersion']);
   assert.equal(settings.version.version, 2);
 
-  const agreement = ok(await call('GET', '/api/seller/agreement', { headers: ctx.managerH }), 'Agreement', ['agreement']).agreement;
-  assert.deepEqual(agreement, { published: true, version: 1, text: 'Partner terms v1', acceptance: null, upToDate: false });
+  // The agreement is the owner's alone; a manager is refused.
+  await call('GET', '/api/seller/agreement', { headers: ctx.managerH, status: 403 });
+  const agreement = ok(await call('GET', '/api/seller/agreement', { headers: H }), 'Agreement', ['agreement']).agreement;
+  assert.deepEqual(agreement, { published: true, version: 1, scope: 'general', categoryName: null, text: 'Partner terms v1', acceptance: null, upToDate: false });
   const accepted = ok(await call('POST', '/api/seller/agreement/accept', { headers: H, body: { version: 1 } }), 'Agreement accepted', ['agreement']).agreement;
   assert.equal(accepted.upToDate, true);
   keys(accepted.acceptance, ['version', 'acceptedAt', 'acceptedByName'], 'acceptance');

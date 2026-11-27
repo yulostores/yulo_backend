@@ -65,8 +65,8 @@ const TABLE = [
   ['GET', '/api/seller/onboarding/documents/:docId/file', OWN, null],
   ['DELETE', '/api/seller/onboarding/documents/:docId', OWN, null],
   // Plans
-  ['GET', '/api/seller/plans', OM, null],
-  ['GET', '/api/seller/subscriptions', OM, null],
+  ['GET', '/api/seller/plans', OWN, null],
+  ['GET', '/api/seller/subscriptions', OWN, null],
   ['POST', '/api/seller/subscriptions', OWN, { planKey: 5 }],
   ['POST', '/api/seller/subscriptions/:id/verify', OWN, {}],
   ['POST', '/api/seller/subscriptions/:id/simulate-payment', OWN, null],
@@ -93,7 +93,7 @@ const TABLE = [
   ['DELETE', '/api/seller/users/:id', OM, null],
   ['GET', '/api/seller/profile', OM, null],
   ['PATCH', '/api/seller/profile', OWN, { businessPhone: '1' }],
-  ['GET', '/api/seller/agreement', OM, null],
+  ['GET', '/api/seller/agreement', OWN, null],
   ['POST', '/api/seller/agreement/accept', OWN, { version: 'one' }],
   // SMS credits and reminders
   ['GET', '/api/seller/sms-credits', OM, null],
@@ -121,6 +121,7 @@ const TABLE = [
   ['GET', '/api/admin/coupon-categories', ADMIN, null],
   ['POST', '/api/admin/coupon-categories', ADMIN, {}],
   ['PATCH', '/api/admin/coupon-categories/:id', ADMIN, BAD],
+  ['PUT', '/api/admin/coupon-categories/:id/agreement', ADMIN, BAD],
   ['GET', '/api/admin/coupon-offers', ADMIN, null],
   ['PATCH', '/api/admin/coupon-offers/:id/approve', ADMIN, { updatedAt: 'yesterday' }],
   ['PATCH', '/api/admin/coupon-offers/:id/reject', ADMIN, {}],

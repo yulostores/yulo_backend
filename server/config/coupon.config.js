@@ -87,14 +87,13 @@ export const SELLER_PERMISSIONS = Object.freeze({
     'onboarding.edit',
     'redeem',
   ]),
+  // No plans or agreement: those are the owner's alone.
   manager: Object.freeze([
     'dashboard.view',
     'reports.view',
-    'plans.view',
     'offers.manage',
     'reminders.view',
     'reminders.buy',
-    'agreement.view',
     'profile.view',
     'team.manage_employees',
     'redeem',
