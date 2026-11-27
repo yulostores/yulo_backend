@@ -43,4 +43,12 @@ router.post('/applications/:id/pay', applyLimiter, careers.pay);
 router.post('/applications/:id/verify', careers.verify);
 router.post('/applications/:id/simulate-payment', careers.simulatePayment);
 
+// "Choose your business": a shop applying to become a coupon partner (₹100 form fee, no file).
+router.get('/partner-form', careers.partnerForm);
+router.post('/partner-applications', applyLimiter, careers.createPartnerApplication);
+router.get('/partner-applications/:id', careers.getPartnerApplication);
+router.post('/partner-applications/:id/pay', applyLimiter, careers.payPartner);
+router.post('/partner-applications/:id/verify', careers.verifyPartner);
+router.post('/partner-applications/:id/simulate-payment', careers.simulatePartnerPayment);
+
 export default router;

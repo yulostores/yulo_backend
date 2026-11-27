@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import * as careers from '../services/jobApplication.service.js';
+import * as partners from '../services/partnerApplication.service.js';
+import { MAX_EMPLOYEES, PARTNER_CATEGORIES } from '../config/partnerApplication.config.js';
 import { EDUCATION_LEVELS, GENDERS, JOB_DEPARTMENTS, MAX_ROLES_PER_APPLICATION, MAX_SALARY_RUPEES } from '../config/careers.config.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
@@ -127,4 +129,61 @@ export const simulatePayment = asyncHandler(async (req, res) => {
   sendSuccess(res, 200, 'Application submitted (simulated payment)', {
     application: await careers.simulatePayment(req.params.id, tokenOf(req)),
   });
+});
+
+// ── "Choose your business" (services/partnerApplication.service.js) ───────────
+
+const partnerSchema = z
+  .object({
+    businessName: z.string().trim().min(2, 'Enter the business name').max(120),
+    category: z.enum(PARTNER_CATEGORIES.map((c) => c.key), { message: 'Choose a business category' }),
+    otherCategory: optional(z.string().trim().min(2, 'Tell us what kind of store it is').max(80)),
+    address: z.string().trim().min(5, 'Enter the address').max(300),
+    city: z.string().trim().min(2, 'Enter the city').max(80),
+    hasGst: z.preprocess(
+      (v) => (v === 'true' || v === true ? true : v === 'false' || v === false ? false : v),
+      z.boolean({ message: 'Tell us whether you have a GST number' })
+    ),
+    employees: z.coerce.number({ message: 'Enter the number of employees' }).int('Whole number only').min(0).max(MAX_EMPLOYEES),
+    ownerName: z.string().trim().min(2, "Enter the owner's name").max(100),
+    phone: phone("owner's contact number"),
+    alternatePhone: optional(phone('alternate contact number')),
+    questions: optional(z.string().trim().max(1000)),
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    if (v.category === 'other' && !v.otherCategory) {
+      ctx.addIssue({ code: 'custom', path: ['otherCategory'], message: 'Tell us what kind of store it is' });
+    }
+    if (v.alternatePhone && v.alternatePhone === v.phone) {
+      ctx.addIssue({ code: 'custom', path: ['alternatePhone'], message: 'Use a different number from the owner contact number' });
+    }
+  });
+
+/** GET /api/careers/partner-form */
+export const partnerForm = asyncHandler(async (_req, res) => {
+  sendSuccess(res, 200, 'Business form', partners.formInfo());
+});
+
+/** POST /api/careers/partner-applications */
+export const createPartnerApplication = asyncHandler(async (req, res) => {
+  const fields = parseOr400(partnerSchema, req.body);
+  sendSuccess(res, 201, 'Application saved — pay the form fee to submit it', await partners.createApplication(fields));
+});
+
+export const getPartnerApplication = asyncHandler(async (req, res) => {
+  sendSuccess(res, 200, 'Application', { application: await partners.getOwned(req.params.id, tokenOf(req)) });
+});
+
+export const payPartner = asyncHandler(async (req, res) => {
+  sendSuccess(res, 200, 'Payment started', await partners.retryPayment(req.params.id, tokenOf(req)));
+});
+
+export const verifyPartner = asyncHandler(async (req, res) => {
+  const body = parseOr400(verifySchema, req.body, 'Invalid payment details');
+  sendSuccess(res, 200, 'Application submitted', { application: await partners.verifyPayment(req.params.id, tokenOf(req), body) });
+});
+
+export const simulatePartnerPayment = asyncHandler(async (req, res) => {
+  sendSuccess(res, 200, 'Payment simulated', { application: await partners.simulatePayment(req.params.id, tokenOf(req)) });
 });

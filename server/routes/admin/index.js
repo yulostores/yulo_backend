@@ -19,6 +19,7 @@ import { couponsRouter, couponReportsRouter, couponSettingsRouter } from './coup
 import reminderCampaignRoutes from './reminderCampaign.routes.js';
 import sellerBillRoutes from './sellerBill.routes.js';
 import jobApplicationRoutes from './jobApplication.routes.js';
+import partnerApplicationRoutes from './partnerApplication.routes.js';
 import transactionRoutes from './transactions.routes.js';
 
 const router = Router();
@@ -53,5 +54,6 @@ router.use('/reminder-campaigns', reminderCampaignRoutes);
 router.use('/seller-bills', sellerBillRoutes);
 // Careers portal applications.
 router.use('/job-applications', jobApplicationRoutes);
+router.use('/partner-applications', partnerApplicationRoutes);
 
 export default router;

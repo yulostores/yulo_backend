@@ -9,6 +9,7 @@
 //        seller_plan        a coupon seller's plan purchase (Razorpay, or admin "Amount Received")
 //        sms_credits        a seller's SMS credit pack
 //        job_fee            a careers-portal application fee
+//        partner_fee        a "Choose your business" form fee (shop applying to be a coupon partner)
 //        stray_payment      a payment captured but refused (duplicate, wrong amount…) — owed back
 //   OUT  refund             money returned to a customer, seller or applicant through Razorpay
 //        restaurant_payout  a weekly settlement paid to a restaurant's bank account
@@ -27,6 +28,7 @@ import Bill from '../models/Bill.js';
 import SellerSubscription from '../models/SellerSubscription.js';
 import SmsCreditPurchase from '../models/SmsCreditPurchase.js';
 import JobApplication from '../models/JobApplication.js';
+import PartnerApplication from '../models/PartnerApplication.js';
 import StrayPayment from '../models/StrayPayment.js';
 import RestaurantSettlement from '../models/RestaurantSettlement.js';
 import Payout from '../models/Payout.js';
@@ -41,6 +43,7 @@ export const KINDS = {
   seller_plan: { label: 'Seller plan', direction: 'in' },
   sms_credits: { label: 'SMS credits', direction: 'in' },
   job_fee: { label: 'Job application fee', direction: 'in' },
+  partner_fee: { label: 'Seller application fee', direction: 'in' },
   stray_payment: { label: 'Unmatched payment', direction: 'in' },
   refund: { label: 'Refund', direction: 'out' },
   restaurant_payout: { label: 'Restaurant payout', direction: 'out' },
@@ -173,6 +176,28 @@ const sources = ({ start, end }) => {
       ],
     },
     {
+      coll: PartnerApplication.collection.name,
+      pipeline: [
+        { $match: { ...at('payment.paidAt'), 'payment.status': 'paid' } },
+        row({
+          id: { $concat: ['partner_fee:', { $toString: '$_id' }] },
+          docId: '$_id',
+          at: '$payment.paidAt',
+          kind: 'partner_fee',
+          direction: 'in',
+          amountPaise: '$payment.amountPaise',
+          channel: 'online',
+          method: 'online',
+          status: 'completed',
+          partyType: 'business',
+          partyId: '$_id',
+          partyName: '$businessName',
+          reference: '$applicationNumber',
+          gatewayId: '$payment.razorpayPaymentId',
+        }),
+      ],
+    },
+    {
       coll: StrayPayment.collection.name,
       pipeline: [
         { $match: at('createdAt') },
@@ -188,9 +213,10 @@ const sources = ({ start, end }) => {
           status: 'completed',
           partyType: {
             $cond: [{ $ne: [{ $ifNull: ['$restaurantId', null] }, null] }, 'restaurant',
-              { $cond: [{ $ne: [{ $ifNull: ['$sellerId', null] }, null] }, 'seller', 'applicant'] }],
+              { $cond: [{ $ne: [{ $ifNull: ['$sellerId', null] }, null] }, 'seller',
+                { $cond: [{ $ne: [{ $ifNull: ['$partnerApplicationId', null] }, null] }, 'business', 'applicant'] }] }],
           },
-          partyId: { $ifNull: ['$restaurantId', { $ifNull: ['$sellerId', '$jobApplicationId'] }] },
+          partyId: { $ifNull: ['$restaurantId', { $ifNull: ['$sellerId', { $ifNull: ['$jobApplicationId', '$partnerApplicationId'] }] }] },
           reference: '$kind',
           gatewayId: '$razorpayPaymentId',
         }),
@@ -200,7 +226,7 @@ const sources = ({ start, end }) => {
     ...[
       { model: Order, partyType: 'restaurant', partyId: '$restaurantId', ref: { $literal: null }, extra: { type: { $in: ['delivery', 'takeaway'] } } },
       { model: Bill, partyType: 'restaurant', partyId: '$restaurantId', ref: '$billNumber', extra: { type: 'dine_in' } },
-      { model: StrayPayment, partyType: 'stray', partyId: { $ifNull: ['$restaurantId', { $ifNull: ['$sellerId', '$jobApplicationId'] }] }, ref: '$kind', extra: {} },
+      { model: StrayPayment, partyType: 'stray', partyId: { $ifNull: ['$restaurantId', { $ifNull: ['$sellerId', { $ifNull: ['$jobApplicationId', '$partnerApplicationId'] }] }] }, ref: '$kind', extra: {} },
     ].map(({ model, partyType, partyId, ref, extra }) => ({
       coll: model.collection.name,
       pipeline: [
@@ -225,7 +251,8 @@ const sources = ({ start, end }) => {
             partyType === 'stray'
               ? {
                   $cond: [{ $ne: [{ $ifNull: ['$restaurantId', null] }, null] }, 'restaurant',
-                    { $cond: [{ $ne: [{ $ifNull: ['$sellerId', null] }, null] }, 'seller', 'applicant'] }],
+                    { $cond: [{ $ne: [{ $ifNull: ['$sellerId', null] }, null] }, 'seller',
+                      { $cond: [{ $ne: [{ $ifNull: ['$partnerApplicationId', null] }, null] }, 'business', 'applicant'] }] }],
                 }
               : partyType,
           partyId,
@@ -378,23 +405,27 @@ const STRAY_LABEL = {
   sms_credits_duplicate_payment: 'SMS paid twice',
   job_application_payment_refused: 'Fee refused',
   job_application_duplicate_payment: 'Fee paid twice',
+  partner_application_payment_refused: 'Seller application fee refused',
+  partner_application_duplicate_payment: 'Seller application fee paid twice',
 };
 
 const shortRef = (id) => `#${String(id).slice(-6).toUpperCase()}`;
 
 const decorate = async (rows) => {
   const idsOf = (type) => [...new Set(rows.filter((r) => r.partyType === type && r.partyId).map((r) => String(r.partyId)))];
-  const [restaurants, sellers, riders, applicants] = await Promise.all([
+  const [restaurants, sellers, riders, applicants, businesses] = await Promise.all([
     Restaurant.find({ _id: { $in: idsOf('restaurant') } }).select('name').lean(),
     Seller.find({ _id: { $in: idsOf('seller') } }).select('businessName').lean(),
     DeliveryPartner.find({ _id: { $in: idsOf('rider') } }).select('fullName phone').lean(),
     JobApplication.find({ _id: { $in: idsOf('applicant') } }).select('fullName applicationNumber').lean(),
+    PartnerApplication.find({ _id: { $in: idsOf('business') } }).select('businessName').lean(),
   ]);
   const names = new Map([
     ...restaurants.map((d) => [`restaurant:${d._id}`, d.name]),
     ...sellers.map((d) => [`seller:${d._id}`, d.businessName]),
     ...riders.map((d) => [`rider:${d._id}`, d.fullName || d.phone]),
     ...applicants.map((d) => [`applicant:${d._id}`, d.fullName]),
+    ...businesses.map((d) => [`business:${d._id}`, d.businessName]),
   ]);
 
   return rows.map((r) => {
@@ -434,6 +465,8 @@ const linkOf = (r) => {
       return r.partyId ? `/sellers/${r.partyId}` : null;
     case 'job_fee':
       return `/job-applications/${r.docId}`;
+    case 'partner_fee':
+      return `/partner-applications/${r.docId}`;
     case 'refund':
     case 'stray_payment':
       return '/finance/refunds';
