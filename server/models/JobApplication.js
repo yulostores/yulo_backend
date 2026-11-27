@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { followUpSchemaFields } from '../services/applicationFollowUp.service.js';
 import { APPLICATION_STATUSES, EDUCATION_LEVELS, GENDERS } from '../config/careers.config.js';
 
 // One application from the public careers portal (yulo_careers). Created unpaid
@@ -77,6 +78,8 @@ const jobApplicationSchema = new mongoose.Schema(
       paidAt: { type: Date, default: null },
     },
     submittedAt: { type: Date, default: null }, // when the fee was paid
+    // The super admin's follow-up: called, interested / not, and deleting unpaid entries.
+    ...followUpSchemaFields,
   },
   { timestamps: true }
 );

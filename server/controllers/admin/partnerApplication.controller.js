@@ -20,6 +20,8 @@ const filtersSchema = z.object({
   category: z.preprocess(blank, z.enum(PARTNER_CATEGORIES.map((c) => c.key)).optional()),
   status: z.preprocess(blank, z.enum(PARTNER_APPLICATION_STATUSES).optional()),
   city: z.preprocess(blank, z.string().trim().max(80).optional()),
+  called: z.preprocess(blank, z.enum(['yes', 'no']).optional()),
+  interest: z.preprocess(blank, z.enum(['interested', 'not_interested', 'none']).optional()),
 });
 
 const listSchema = filtersSchema.extend({
@@ -60,4 +62,23 @@ export const setStatus = asyncHandler(async (req, res) => {
 export const addNote = asyncHandler(async (req, res) => {
   const { text } = parseOr400(z.object({ text: z.string().trim().min(1, 'Write a note').max(1000) }).strict(), req.body);
   sendSuccess(res, 201, 'Note added', { application: await partners.addNote(req.params.id, req.user._id, text) });
+});
+
+// ── Follow-up (services/applicationFollowUp.service.js) ───────────────────────
+
+/** POST …/:id/call { called } — the Call button marks it called (green); false undoes it. */
+export const markCalled = asyncHandler(async (req, res) => {
+  const { called } = parseOr400(z.object({ called: z.boolean().default(true) }).strict(), req.body ?? {});
+  sendSuccess(res, 200, called ? 'Marked called' : 'Marked not called', { application: await partners.markCalled(req.params.id, req.user._id, called) });
+});
+
+/** PATCH …/:id/interest { interest: 'interested' | 'not_interested' | null } */
+export const setInterest = asyncHandler(async (req, res) => {
+  const { interest } = parseOr400(z.object({ interest: z.enum(['interested', 'not_interested']).nullable() }).strict(), req.body);
+  sendSuccess(res, 200, 'Saved', { application: await partners.setInterest(req.params.id, req.user._id, interest) });
+});
+
+/** DELETE …/:id — only an entry whose form fee is unpaid. */
+export const remove = asyncHandler(async (req, res) => {
+  sendSuccess(res, 200, 'Application deleted', await partners.deleteApplication(req.params.id, req.user._id));
 });

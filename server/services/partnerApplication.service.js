@@ -20,6 +20,7 @@ import { createRazorpayOrder, confirmCapturedPayment } from './payment.service.j
 import { recordStrayPayment } from './refund.service.js';
 import { getRazorpay } from './razorpayClient.js';
 import { logActivity } from './activityLog.service.js';
+import * as followUp from './applicationFollowUp.service.js';
 
 // "Choose your business" on the careers portal: a shop applying to become a Yulo coupon partner,
 // with a ₹100 form fee — the same flow as a job application (services/jobApplication.service.js):
@@ -80,6 +81,7 @@ export const adminListView = (a) => ({
   paid: a.payment?.status === 'paid',
   submittedAt: a.submittedAt ?? null,
   createdAt: a.createdAt,
+  ...followUp.followUpView(a),
 });
 
 /** The full record for the admin detail screen. */
@@ -199,6 +201,9 @@ const markPaid = async (application, payment, via) => {
         'payment.razorpayPaymentId': payment?.id ?? null,
         'payment.confirmedVia': via,
         'payment.paidAt': at,
+        // Paid after an admin deleted it as unpaid: it comes back (applicationFollowUp.service.js).
+        deletedAt: null,
+        deletedBy: null,
       },
     },
     { new: true }
@@ -286,8 +291,8 @@ export const simulatePayment = async (id, token) => {
 
 const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const listFilter = ({ q, category, status, city } = {}) => {
-  const filter = {};
+const listFilter = ({ q, category, status, city, called, interest } = {}) => {
+  const filter = followUp.followUpFilter({ called, interest });
   if (status) filter.status = status;
   if (category) filter.category = category;
   if (city) filter.city = new RegExp(`^${escapeRegex(city.trim())}`, 'i');
@@ -322,7 +327,7 @@ export const adminList = async ({ page = 1, limit = 20, ...filters }) => {
 
 const loadForAdmin = async (id) => {
   if (!mongoose.isValidObjectId(id)) throw new ApiError(404, 'NOT_FOUND', 'Application not found');
-  const a = await PartnerApplication.findById(id).lean();
+  const a = await PartnerApplication.findOne({ _id: id, deletedAt: null }).lean();
   if (!a) throw new ApiError(404, 'NOT_FOUND', 'Application not found');
   return a;
 };
@@ -359,14 +364,30 @@ export const exportCsv = async (filters) => {
   const rows = await PartnerApplication.find(listFilter(filters)).sort({ submittedAt: -1, createdAt: -1 }).limit(5000).lean();
   const header = [
     'Application No', 'Submitted', 'Business Name', 'Category', 'Address', 'City', 'GST', 'Employees',
-    'Owner Name', 'Owner Mobile', 'Alternate Mobile', 'Questions', 'Status', 'Fee Paid',
+    'Owner Name', 'Owner Mobile', 'Alternate Mobile', 'Questions', 'Status', 'Fee Paid', 'Called', 'Interest',
   ];
   const lines = rows.map((a) =>
     [
       a.applicationNumber ?? '', a.submittedAt ? a.submittedAt.toISOString() : '', a.businessName, categoryOf(a), a.address,
       a.city, a.hasGst ? 'Yes' : 'No', a.employees, a.ownerName, a.phone, a.alternatePhone ?? '', a.questions ?? '',
       a.status, a.payment?.status === 'paid' ? 'Yes' : 'No',
+      a.followUp?.calledAt ? 'Yes' : 'No', INTEREST_LABEL[a.followUp?.interest] ?? '',
     ].map(csvCell).join(',')
   );
   return [header.map(csvCell).join(','), ...lines].join('\r\n');
 };
+
+const MODEL = PartnerApplication;
+const TARGET = 'partner_application';
+const INTEREST_LABEL = { interested: 'Interested', not_interested: 'Not interested' };
+
+// ── Follow-up: called, interested / not, delete unpaid (services/applicationFollowUp.service.js) ──
+
+/** POST …/:id/call { called } */
+export const markCalled = async (id, adminId, called) => adminDetailView(await followUp.setCalled(MODEL, id, adminId, called));
+
+/** PATCH …/:id/interest { interest } */
+export const setInterest = async (id, adminId, interest) => adminDetailView(await followUp.setInterest(MODEL, id, adminId, interest));
+
+/** DELETE …/:id — only while the fee is unpaid. */
+export const deleteApplication = (id, adminId) => followUp.deleteUnpaid(MODEL, id, adminId, TARGET);

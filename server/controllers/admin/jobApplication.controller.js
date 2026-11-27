@@ -21,6 +21,8 @@ const filtersSchema = z.object({
   status: z.preprocess(blank, z.enum(APPLICATION_STATUSES).optional()),
   gender: z.preprocess(blank, z.enum(GENDERS).optional()),
   city: z.preprocess(blank, z.string().trim().max(80).optional()),
+  called: z.preprocess(blank, z.enum(['yes', 'no']).optional()),
+  interest: z.preprocess(blank, z.enum(['interested', 'not_interested', 'none']).optional()),
 });
 
 const listSchema = filtersSchema.extend({
@@ -71,4 +73,23 @@ export const addNote = asyncHandler(async (req, res) => {
 /** GET /api/admin/job-applications/:id/resume — the PDF, streamed through the API. */
 export const resumeFile = asyncHandler(async (req, res) => {
   await streamDocument(await jobs.resumeDocument(req.params.id), res);
+});
+
+// ── Follow-up (services/applicationFollowUp.service.js) ───────────────────────
+
+/** POST …/:id/call { called } — the Call button marks it called (green); false undoes it. */
+export const markCalled = asyncHandler(async (req, res) => {
+  const { called } = parseOr400(z.object({ called: z.boolean().default(true) }).strict(), req.body ?? {});
+  sendSuccess(res, 200, called ? 'Marked called' : 'Marked not called', { application: await jobs.markCalled(req.params.id, req.user._id, called) });
+});
+
+/** PATCH …/:id/interest { interest: 'interested' | 'not_interested' | null } */
+export const setInterest = asyncHandler(async (req, res) => {
+  const { interest } = parseOr400(z.object({ interest: z.enum(['interested', 'not_interested']).nullable() }).strict(), req.body);
+  sendSuccess(res, 200, 'Saved', { application: await jobs.setInterest(req.params.id, req.user._id, interest) });
+});
+
+/** DELETE …/:id — only an entry whose form fee is unpaid. */
+export const remove = asyncHandler(async (req, res) => {
+  sendSuccess(res, 200, 'Application deleted', await jobs.deleteApplication(req.params.id, req.user._id));
 });

@@ -9,5 +9,8 @@ router.get('/export.csv', partners.exportCsv);
 router.get('/:id', partners.getOne);
 router.patch('/:id/status', partners.setStatus);
 router.post('/:id/notes', partners.addNote);
+router.post('/:id/call', partners.markCalled);
+router.patch('/:id/interest', partners.setInterest);
+router.delete('/:id', partners.remove);
 
 export default router;

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { followUpSchemaFields } from '../services/applicationFollowUp.service.js';
 import { PARTNER_APPLICATION_STATUSES, PARTNER_CATEGORIES } from '../config/partnerApplication.config.js';
 
 // A business applying from the careers portal to become a Yulo coupon partner ("Choose your
@@ -49,6 +50,8 @@ const partnerApplicationSchema = new mongoose.Schema(
       paidAt: { type: Date, default: null },
     },
     submittedAt: { type: Date, default: null }, // when the fee was paid
+    // The super admin's follow-up: called, interested / not, and deleting unpaid entries.
+    ...followUpSchemaFields,
   },
   { timestamps: true }
 );
