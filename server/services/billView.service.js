@@ -208,7 +208,12 @@ const buildOne = (rawBill, ctx) => {
   const billedBatches = batches.filter((b) => !isUnbilled(b.status));
   const items = aggregateItems(batches);
 
-  const gstAmount = round2(bill.gstAmount);
+  // The GST ADDED on top of the prices — what the CGST/SGST rows show, so the bill adds up. For
+  // dishes priced GST-inclusive (MenuItem.priceIncludesGst) the rest is already inside the item
+  // total; that part is gstIncludedAmount (the item total line says "incl. ₹… GST").
+  const food = bill.charges?.food;
+  const gstAmount = food?.gstAdded != null ? round2(food.gstAdded / 100) : round2(bill.gstAmount);
+  const gstIncludedAmount = food?.gstIncluded ? round2(food.gstIncluded / 100) : 0;
   const discountTotal = round2(
     bill.discountTotal ?? (bill.discountsApplied ?? []).reduce((s, d) => s + (d.amount ?? 0), 0)
   );
@@ -286,6 +291,9 @@ const buildOne = (rawBill, ctx) => {
       discountTotal,
       gstPercent: bill.gstPercent ?? 0,
       gstAmount,
+      gstIncludedAmount,
+      // All the food GST on the bill (added + included) — the tax figure for an invoice.
+      totalGstAmount: round2(gstAmount + gstIncludedAmount),
       // An Indian restaurant bill states GST as its two intra-state halves. Both are
       // derived from the single gstPercent the restaurant configures — there is no
       // separate CGST/SGST setting to read, and no rate is assumed here.

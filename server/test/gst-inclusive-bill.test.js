@@ -59,4 +59,14 @@ test('dine-in: a ₹105 "with tax" dish and a ₹200 one → GST split out of th
   assert.equal(food.gstAdded, Math.round(dishPrice * 100 * 0.05));
   assert.equal(food.total, 10500 + dishPrice * 100 + food.gstAdded, 'the "with tax" dish costs exactly ₹105');
   assert.equal(bill.batches[0].items.find((i) => i.name.startsWith('Thali (with tax)')).priceIncludesGst, true);
+
+  // The bill screens' CGST/SGST rows show only the GST ADDED on top, so the rows add up to the
+  // total; the GST inside the "with tax" price is reported separately.
+  const c = bill.charges;
+  assert.equal(c.gstAmount, food.gstAdded / 100);
+  assert.equal(c.gstIncludedAmount, 5);
+  assert.equal(c.totalGstAmount, food.gst / 100);
+  assert.equal(c.cgstAmount + c.sgstAmount, c.gstAmount);
+  const rows = c.subtotal + c.gstAmount + c.platformFee + (c.serviceChargeAmount ?? 0) + c.roundOff - c.discountTotal;
+  assert.ok(Math.abs(rows - c.grandTotal) < 0.01, `bill rows ${rows} add up to the total ${c.grandTotal}`);
 });
